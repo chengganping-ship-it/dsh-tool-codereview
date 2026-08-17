@@ -1,7 +1,7 @@
 {
   "name": "dsh-tool-codereview",
-  "version": "0.3.0",
-  "description": "Professional Code Review & Security Scan plugin for DeepSeek Harness - SARIF output, OWASP Top 10, AI-enhanced analysis, auto-fixes",
+  "version": "0.4.0",
+  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 10 tools, SARIF output, OWASP Top 10, Architecture Review, Test Coverage",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
@@ -28,7 +28,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/YOUR_USERNAME/dsh-tool-codereview.git"
+    "url": "git+https://github.com/chengganping-ship-it/dsh-tool-codereview.git"
   },
   "keywords": [
     "dsh",
@@ -42,6 +42,10 @@
     "dependency-audit",
     "performance",
     "auto-fix",
+    "architecture-review",
+    "test-coverage",
+    "api-docs",
+    "style-check",
     "ai-agent",
     "sast",
     "devsecops"
