@@ -54,9 +54,17 @@
  * - File organization (deep imports, barrel exports, large files)
  * - Commit message quality (conventional commits, length, vagueness)
  * - Code splitting opportunities (heavy imports, lazy-loading)
+ * - WebAssembly compatibility (JS interop, memory, types)
+ * - Authentication security (JWT, sessions, credentials, bcrypt)
+ * - Payment compliance (PCI-DSS, precision, idempotency)
+ * - Email/SMTP security (injection, TLS, DKIM)
+ * - Rate limiting (endpoints, algorithms, distributed)
+ * - WebSocket health (heartbeat, reconnection, backpressure)
+ * - Cron job robustness (idempotency, locks, timeouts)
+ * - Event sourcing (versioning, snapshots, upcasting)
  * 
  * @module dsh-tool-codereview
- * @version 0.15.0
+ * @version 0.16.0
  * @license MIT
  */
 
@@ -66,7 +74,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 export const name = 'dsh-tool-codereview'
 export const inject = ['tools']
 
-const VERSION = '0.15.0'
+const VERSION = '0.16.0'
 
 // ==================== TYPES ====================
 
@@ -10342,6 +10350,709 @@ function formatSplitReport(r: SplitResult): string {
   return lines.join('\n')
 }
 
+// ==================== V0.16.0 NEW TOOLS ====================
+
+// ---- Tool 90: WebAssembly Compatibility ----
+
+interface WasmResult {
+  totalIssues: number
+  severity: Severity
+  jsInteropIssues: { line: number; issue: string; suggestion: string }[]
+  memoryLeaks: { line: number; issue: string; suggestion: string }[]
+  typeMismatches: { line: number; issue: string; suggestion: string }[]
+  missingErrorHandling: { line: number; issue: string; suggestion: string }[]
+  wasmScore: number
+  summary: string
+}
+
+function checkWasmCompat(code: string): WasmResult {
+  const lines = code.split('\n')
+  const jsInteropIssues: WasmResult['jsInteropIssues'] = []
+  const memoryLeaks: WasmResult['memoryLeaks'] = []
+  const typeMismatches: WasmResult['typeMismatches'] = []
+  const missingErrorHandling: WasmResult['missingErrorHandling'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/\/|\/\*|\*)/)) return
+
+    // Detect direct memory access without bounds checking
+    if (line.match(/\bUint8Array|Int32Array|Float64Array\s*\(/) && !line.match(/new\s+.*Memory/)) {
+      const nextLines = lines.slice(i, i + 5).join('\n')
+      if (nextLines.match(/\[.+\]/) && !nextLines.match(/length|bound|check/)) {
+        jsInteropIssues.push({ line: i + 1, issue: 'Array buffer access without bounds check', suggestion: 'Validate offset and length before accessing WASM memory' })
+      }
+    }
+
+    // Detect missing .then() error handling on wasm calls
+    if (line.match(/wasm|WebAssembly|instantiate\s*\(|compile\s*\(/) && !line.match(/\.catch|error|Error|try/)) {
+      const context = lines.slice(i, i + 5).join('\n')
+      if (!context.match(/\.catch|error/) && line.match(/\.then\s*\(/)) {
+        missingErrorHandling.push({ line: i + 1, issue: 'WebAssembly instantiation without error handler', suggestion: 'Add .catch() for instantiation failures and import errors' })
+      }
+    }
+
+    // Detect pointer dereference without null check
+    if (line.match(/get\w+\s*\(\s*\)\s*\./) && lines.slice(Math.max(0, i - 2), i).some(l => l.match(/wasm|exports/))) {
+      typeMismatches.push({ line: i + 1, issue: 'Possible null pointer from WASM export', suggestion: 'Check export existence before calling methods on it' })
+    }
+
+    // Detect memory not freed
+    if (line.match(/malloc|alloc\s*\(/) && !lines.slice(i, i + 10).some(l => l.match(/free\s*\(/))) {
+      memoryLeaks.push({ line: i + 1, issue: 'WASM memory allocated without corresponding free()', suggestion: 'Ensure every malloc/alloc has matching free() in all code paths' })
+    }
+
+    // Detect string passing without length
+    if (line.match(/stringToUTF8|UTF8ToString|allocateUTF8/)) {
+      if (!line.match(/length|byteLength/)) {
+        jsInteropIssues.push({ line: i + 1, issue: 'String conversion without explicit length', suggestion: 'Use lengthBytesUTF8() to get exact byte length for buffer allocation' })
+      }
+    }
+  })
+
+  const totalIssues = jsInteropIssues.length + memoryLeaks.length + typeMismatches.length + missingErrorHandling.length
+  const wasmScore = Math.max(0, 100 - totalIssues * 12)
+  const severity: Severity = memoryLeaks.length > 0 ? 'warning' : totalIssues >= 3 ? 'info' : 'info'
+
+  return {
+    totalIssues, severity, jsInteropIssues, memoryLeaks, typeMismatches, missingErrorHandling, wasmScore,
+    summary: `${memoryLeaks.length} memory leak risk(s), ${jsInteropIssues.length} interop issue(s), ${missingErrorHandling.length} missing error handler(s)`
+  }
+}
+
+function formatWasmReport(r: WasmResult): string {
+  const lines: string[] = []
+  lines.push(`# WebAssembly Compatibility Analysis`)
+  lines.push(``)
+  lines.push(`**WASM Score:** ${r.wasmScore}/100 | **Issues:** ${r.totalIssues} | **Severity:** ${r.severity.toUpperCase()}`)
+  lines.push(``)
+  lines.push(`> ${r.summary}`)
+  lines.push(``)
+
+  if (r.memoryLeaks.length > 0) {
+    lines.push(`## Memory Leaks (${r.memoryLeaks.length})`)
+    r.memoryLeaks.forEach(m => lines.push(`- Line ${m.line}: ${m.suggestion}`))
+    lines.push(``)
+  }
+
+  if (r.jsInteropIssues.length > 0) {
+    lines.push(`## JS Interop Issues (${r.jsInteropIssues.length})`)
+    r.jsInteropIssues.forEach(j => lines.push(`- Line ${j.line}: ${j.suggestion}`))
+    lines.push(``)
+  }
+
+  if (r.missingErrorHandling.length > 0) {
+    lines.push(`## Missing Error Handling (${r.missingErrorHandling.length})`)
+    r.missingErrorHandling.forEach(e => lines.push(`- Line ${e.line}: ${e.suggestion}`))
+    lines.push(``)
+  }
+
+  return lines.join('\n')
+}
+
+// ---- Tool 91: Authentication Security ----
+
+interface AuthResult {
+  totalIssues: number
+  severity: Severity
+  weakConfig: { line: number; issue: string; suggestion: string }[]
+  missingMFA: { line: number; issue: string; suggestion: string }[]
+  sessionIssues: { line: number; issue: string; suggestion: string }[]
+  hardcodedCreds: { line: number; issue: string; suggestion: string }[]
+  authScore: number
+  summary: string
+}
+
+function analyzeAuthSecurity(code: string): AuthResult {
+  const lines = code.split('\n')
+  const weakConfig: AuthResult['weakConfig'] = []
+  const missingMFA: AuthResult['missingMFA'] = []
+  const sessionIssues: AuthResult['sessionIssues'] = []
+  const hardcodedCreds: AuthResult['hardcodedCreds'] = []
+
+  const codeLower = code.toLowerCase()
+
+  // Detect hardcoded secrets
+  lines.forEach((line, i) => {
+    if (line.match(/password|secret|apikey|api_key|token|credential/i) && line.match(/['"][^'"]{8,}['"]/) && !line.match(/process\.env|var\.|config\.|getenv/i)) {
+      hardcodedCreds.push({ line: i + 1, issue: 'Hardcoded credential detected', suggestion: 'Use environment variables or secret management service' })
+    }
+  })
+
+  // Detect JWT without expiration
+  if (codeLower.includes('jwt') || codeLower.includes('jsonwebtoken')) {
+    if (!codeLower.includes('expiresin') && !codeLower.includes('exp')) {
+      weakConfig.push({ line: 1, issue: 'JWT tokens without expiration', suggestion: 'Set expiresIn claim to limit token lifetime (recommended: 15min-1hr)' })
+    }
+    if (!codeLower.includes('refresh')) {
+      weakConfig.push({ line: 1, issue: 'No token refresh mechanism', suggestion: 'Implement refresh token rotation for long-lived sessions' })
+    }
+  }
+
+  // Detect missing HTTPS enforcement
+  if (!codeLower.includes('secure') && !codeLower.includes('https') && codeLower.includes('cookie')) {
+    sessionIssues.push({ line: 1, issue: 'Cookies without Secure flag', suggestion: 'Set secure: true for cookies in production (HTTPS only)' })
+  }
+
+  // Detect session without timeout
+  if (codeLower.includes('session') && !codeLower.includes('maxage') && !codeLower.includes('expires') && !codeLower.includes('timeout')) {
+    sessionIssues.push({ line: 1, issue: 'Session without maxAge or timeout', suggestion: 'Set session.maxAge to prevent indefinite session persistence' })
+  }
+
+  // Detect basic auth (weak)
+  if (codeLower.includes('basic') && codeLower.includes('auth')) {
+    weakConfig.push({ line: 1, issue: 'Basic Auth sends credentials with every request', suggestion: 'Upgrade to OAuth 2.0 or Bearer token authentication' })
+  }
+
+  // Detect bcrypt cost factor too low
+  const bcryptMatch = code.match(/bcrypt.*(?:cost|rounds?)\s*[:=]\s*(\d+)/i)
+  if (bcryptMatch && parseInt(bcryptMatch[1]) < 10) {
+    weakConfig.push({ line: 1, issue: `bcrypt cost factor ${bcryptMatch[1]} is too low`, suggestion: 'Use bcrypt cost factor >= 10 (12 recommended for production)' })
+  }
+
+  const totalIssues = weakConfig.length + missingMFA.length + sessionIssues.length + hardcodedCreds.length
+  const authScore = Math.max(0, 100 - hardcodedCreds.length * 20 - weakConfig.length * 10)
+  const severity: Severity = hardcodedCreds.length > 0 ? 'critical' : weakConfig.length > 0 ? 'warning' : 'info'
+
+  return {
+    totalIssues, severity, weakConfig, missingMFA, sessionIssues, hardcodedCreds, authScore,
+    summary: `${hardcodedCreds.length} hardcoded credential(s), ${weakConfig.length} weak config(s), ${sessionIssues.length} session issue(s)`
+  }
+}
+
+function formatAuthReport(r: AuthResult): string {
+  const lines: string[] = []
+  lines.push(`# Authentication Security Analysis`)
+  lines.push(``)
+  lines.push(`**Auth Score:** ${r.authScore}/100 | **Issues:** ${r.totalIssues} | **Severity:** ${r.severity.toUpperCase()}`)
+  lines.push(``)
+  lines.push(`> ${r.summary}`)
+  lines.push(``)
+
+  if (r.hardcodedCreds.length > 0) {
+    lines.push(`## Hardcoded Credentials (${r.hardcodedCreds.length}) ⚠️`)
+    r.hardcodedCreds.forEach(c => lines.push(`- Line ${c.line}: ${c.suggestion}`))
+    lines.push(``)
+  }
+
+  if (r.weakConfig.length > 0) {
+    lines.push(`## Weak Configuration (${r.weakConfig.length})`)
+    r.weakConfig.forEach(w => lines.push(`- ${w.suggestion}`))
+    lines.push(``)
+  }
+
+  if (r.sessionIssues.length > 0) {
+    lines.push(`## Session Issues (${r.sessionIssues.length})`)
+    r.sessionIssues.forEach(s => lines.push(`- ${s.suggestion}`))
+    lines.push(``)
+  }
+
+  return lines.join('\n')
+}
+
+// ---- Tool 92: Payment Compliance ----
+
+interface PaymentResult {
+  totalIssues: number
+  severity: Severity
+  pciViolations: { line: number; issue: string; suggestion: string }[]
+  precisionIssues: { line: number; issue: string; suggestion: string }[]
+  idempotencyIssues: { line: number; issue: string; suggestion: string }[]
+  auditTrail: { line: number; issue: string; suggestion: string }[]
+  paymentScore: number
+  summary: string
+}
+
+function analyzePaymentCompliance(code: string): PaymentResult {
+  const lines = code.split('\n')
+  const pciViolations: PaymentResult['pciViolations'] = []
+  const precisionIssues: PaymentResult['precisionIssues'] = []
+  const idempotencyIssues: PaymentResult['idempotencyIssues'] = []
+  const auditTrail: PaymentResult['auditTrail'] = []
+
+  const codeLower = code.toLowerCase()
+
+  // Detect card data logging
+  lines.forEach((line, i) => {
+    if (line.match(/card|cvv|pan|track1|track2|emv/i) && line.match(/console|log|print|info/)) {
+      pciViolations.push({ line: i + 1, issue: 'Potential card data logging (PCI violation)', suggestion: 'Never log full card numbers, CVV, or track data' })
+    }
+  })
+
+  // Detect floating point for money
+  if (codeLower.includes('amount') || codeLower.includes('price') || codeLower.includes('total') || codeLower.includes('payment')) {
+    lines.forEach((line, i) => {
+      if (line.match(/(?:amount|price|total|payment|balance)\s*[=:]/) && !line.match(/decimal|bigint|integer|cents|minor.*unit|string/) && line.match(/\d+\.\d+/)) {
+        precisionIssues.push({ line: i + 1, issue: 'Floating-point arithmetic for monetary values', suggestion: 'Use integer cents/minimal units or Decimal type to avoid rounding errors' })
+      }
+    })
+  }
+
+  // Detect missing idempotency key
+  if (codeLower.includes('payment') || codeLower.includes('charge') || codeLower.includes('transaction')) {
+    if (!codeLower.includes('idempotency') && !codeLower.includes('idempotent') && !codeLower.includes('dedup')) {
+      idempotencyIssues.push({ line: 1, issue: 'Payment flow without idempotency mechanism', suggestion: 'Add idempotency keys to prevent duplicate charges on network retries' })
+    }
+  }
+
+  // Detect missing receipt/audit logging
+  if (codeLower.includes('payment') && !codeLower.includes('receipt') && !codeLower.includes('audit') && !codeLower.includes('transaction_log')) {
+    auditTrail.push({ line: 1, issue: 'No transaction audit trail', suggestion: 'Log all payment events with timestamps, amounts, and reference IDs for dispute resolution' })
+  }
+
+  // Detect storing full card number
+  lines.forEach((line, i) => {
+    if (line.match(/store|save|persist|insert.*card|create.*card/i) && !line.match(/tokenized|masked|encrypted|vault/)) {
+      pciViolations.push({ line: i + 1, issue: 'Storing raw card data without tokenization', suggestion: 'Use payment processor tokenization (Stripe tokens) instead of storing raw PANs' })
+    }
+  })
+
+  const totalIssues = pciViolations.length + precisionIssues.length + idempotencyIssues.length + auditTrail.length
+  const paymentScore = Math.max(0, 100 - pciViolations.length * 20 - precisionIssues.length * 10)
+  const severity: Severity = pciViolations.length > 0 ? 'critical' : totalIssues >= 3 ? 'warning' : 'info'
+
+  return {
+    totalIssues, severity, pciViolations, precisionIssues, idempotencyIssues, auditTrail, paymentScore,
+    summary: `${pciViolations.length} PCI violation(s), ${precisionIssues.length} precision issue(s), ${idempotencyIssues.length} idempotency gap(s)`
+  }
+}
+
+function formatPaymentReport(r: PaymentResult): string {
+  const lines: string[] = []
+  lines.push(`# Payment Compliance Analysis`)
+  lines.push(``)
+  lines.push(`**Payment Score:** ${r.paymentScore}/100 | **Issues:** ${r.totalIssues} | **Severity:** ${r.severity.toUpperCase()}`)
+  lines.push(``)
+  lines.push(`> ${r.summary}`)
+  lines.push(``)
+
+  if (r.pciViolations.length > 0) {
+    lines.push(`## PCI-DSS Violations (${r.pciViolations.length}) ⚠️`)
+    r.pciViolations.forEach(p => lines.push(`- Line ${p.line}: ${p.suggestion}`))
+    lines.push(``)
+  }
+
+  if (r.precisionIssues.length > 0) {
+    lines.push(`## Precision Issues (${r.precisionIssues.length})`)
+    r.precisionIssues.forEach(p => lines.push(`- Line ${p.line}: ${p.suggestion}`))
+    lines.push(``)
+  }
+
+  if (r.idempotencyIssues.length > 0) {
+    lines.push(`## Idempotency Gaps (${r.idempotencyIssues.length})`)
+    r.idempotencyIssues.forEach(i => lines.push(`- ${i.suggestion}`))
+    lines.push(``)
+  }
+
+  return lines.join('\n')
+}
+
+// ---- Tool 93: Email/SMTP Security ----
+
+interface EmailResult {
+  totalIssues: number
+  severity: Severity
+  injectionRisks: { line: number; issue: string; suggestion: string }[]
+  missingAuth: { line: number; issue: string; suggestion: string }[]
+  templateIssues: { line: number; issue: string; suggestion: string }[]
+  emailScore: number
+  summary: string
+}
+
+function analyzeEmailSecurity(code: string): EmailResult {
+  const lines = code.split('\n')
+  const injectionRisks: EmailResult['injectionRisks'] = []
+  const missingAuth: EmailResult['missingAuth'] = []
+  const templateIssues: EmailResult['templateIssues'] = []
+
+  const codeLower = code.toLowerCase()
+
+  // Detect email header injection
+  lines.forEach((line, i) => {
+    if (line.match(/mailto:|email.*subject|email.*from/i) && line.match(/\$\{/) && !line.match(/escape|sanitize|validate/)) {
+      injectionRisks.push({ line: i + 1, issue: 'Email header injection risk via template interpolation', suggestion: 'Sanitize user input used in email headers to prevent CRLF injection' })
+    }
+  })
+
+  // Detect SMTP without TLS
+  if (codeLower.includes('smtp') && !codeLower.includes('tls') && !codeLower.includes('ssl') && !codeLower.includes('starttls')) {
+    missingAuth.push({ line: 1, issue: 'SMTP connection without TLS/SSL', suggestion: 'Use secure transport (STARTTLS or SMTPS on port 465/587)' })
+  }
+
+  // Detect SMTP credential in code
+  lines.forEach((line, i) => {
+    if (line.match(/smtp.*pass|mail.*password|email.*pass/i) && line.match(/['"][^'"]+['"]/) && !line.match(/process\.env|config\./)) {
+      injectionRisks.push({ line: i + 1, issue: 'SMTP credentials hardcoded', suggestion: 'Use environment variables for SMTP authentication credentials' })
+    }
+  })
+
+  // Detect sending user-controlled content without sanitization
+  if (codeLower.includes('sendmail') || codeLower.includes('send_mail') || codeLower.includes('\.send\(')) {
+    const hasSanitization = codeLower.includes('sanitize') || codeLower.includes('escape') || codeLower.includes('strip')
+    if (!hasSanitization) {
+      templateIssues.push({ line: 1, issue: 'Email content without input sanitization', suggestion: 'Sanitize HTML content in emails to prevent XSS in email clients' })
+    }
+  }
+
+  // Detect missing DKIM/SPF for domains
+  if (codeLower.includes('nodemailer') || codeLower.includes('sendgrid') || codeLower.includes('mailgun')) {
+    if (!codeLower.includes('dkim')) {
+      templateIssues.push({ line: 1, issue: 'Email without DKIM signing configuration', suggestion: 'Configure DKIM signatures to improve deliverability and prevent spoofing' })
+    }
+  }
+
+  const totalIssues = injectionRisks.length + missingAuth.length + templateIssues.length
+  const emailScore = Math.max(0, 100 - injectionRisks.length * 15 - missingAuth.length * 10)
+  const severity: Severity = injectionRisks.length > 0 ? 'warning' : totalIssues >= 2 ? 'info' : 'info'
+
+  return {
+    totalIssues, severity, injectionRisks, missingAuth, templateIssues, emailScore,
+    summary: `${injectionRisks.length} injection risk(s), ${missingAuth.length} auth issue(s), ${templateIssues.length} template issue(s)`
+  }
+}
+
+function formatEmailReport(r: EmailResult): string {
+  const lines: string[] = []
+  lines.push(`# Email/SMTP Security Analysis`)
+  lines.push(``)
+  lines.push(`**Email Score:** ${r.emailScore}/100 | **Issues:** ${r.totalIssues} | **Severity:** ${r.severity.toUpperCase()}`)
+  lines.push(``)
+  lines.push(`> ${r.summary}`)
+  lines.push(``)
+
+  if (r.injectionRisks.length > 0) {
+    lines.push(`## Injection Risks (${r.injectionRisks.length})`)
+    r.injectionRisks.forEach(r => lines.push(`- Line ${r.line}: ${r.suggestion}`))
+    lines.push(``)
+  }
+
+  if (r.missingAuth.length > 0) {
+    lines.push(`## Missing Security (${r.missingAuth.length})`)
+    r.missingAuth.forEach(m => lines.push(`- ${m.suggestion}`))
+    lines.push(``)
+  }
+
+  return lines.join('\n')
+}
+
+// ---- Tool 94: Rate Limiting Analysis ----
+
+interface RateLimitResult {
+  totalIssues: number
+  severity: Severity
+  missingLimit: { line: number; endpoint: string; suggestion: string }[]
+  weakAlgorithms: { line: number; issue: string; suggestion: string }[]
+  noDistributed: { line: number; issue: string; suggestion: string }[]
+  rateScore: number
+  summary: string
+}
+
+function analyzeRateLimiting(code: string): RateLimitResult {
+  const lines = code.split('\n')
+  const missingLimit: RateLimitResult['missingLimit'] = []
+  const weakAlgorithms: RateLimitResult['weakAlgorithms'] = []
+  const noDistributed: RateLimitResult['noDistributed'] = []
+
+  const codeLower = code.toLowerCase()
+
+  // Detect endpoints without rate limiting
+  const endpoints = code.match(/(?:app|router)\.\w+\s*\(\s*['"][^'"]+['"]/g) || []
+  endpoints.forEach(ep => {
+    const idx = code.indexOf(ep)
+    const context = code.substring(idx, idx + 500)
+    if (!context.match(/rate.?limit|throttl|debounce|token.?bucket|leaky.?bucket/i)) {
+      const pathMatch = ep.match(/['"](\/[^'"]+)['"]/)
+      if (pathMatch) {
+        missingLimit.push({ line: lines.findIndex(l => l.includes(ep)) + 1, endpoint: pathMatch[1], suggestion: `No rate limiting on '${pathMatch[1]}' — add throttle middleware` })
+      }
+    }
+  })
+
+  // Detect in-memory rate limiting (won't scale)
+  if (codeLower.includes('ratelimit') || codeLower.includes('rate-limit')) {
+    if (!codeLower.includes('redis') && !codeLower.includes('memcache') && !codeLower.includes('distributed')) {
+      noDistributed.push({ line: 1, issue: 'Rate limiter uses in-memory store', suggestion: 'Use Redis-backed rate limiting for multi-instance deployments' })
+    }
+  }
+
+  // Detect basic counter without time window
+  if (codeLower.includes('request count') || codeLower.includes('requestcount')) {
+    if (!codeLower.includes('window') && !codeLower.includes('reset')) {
+      weakAlgorithms.push({ line: 1, issue: 'Simple request counter without time window', suggestion: 'Implement sliding window or token bucket algorithm for accurate limiting' })
+    }
+  }
+
+  const totalIssues = missingLimit.length + weakAlgorithms.length + noDistributed.length
+  const rateScore = Math.max(0, 100 - missingLimit.length * 12 - weakAlgorithms.length * 10)
+  const severity: Severity = missingLimit.length > 0 ? 'warning' : totalIssues >= 2 ? 'info' : 'info'
+
+  return {
+    totalIssues, severity, missingLimit, weakAlgorithms, noDistributed, rateScore,
+    summary: `${missingLimit.length} unprotected endpoint(s), ${weakAlgorithms.length} weak algorithm(s), ${noDistributed.length} non-distributed limiter(s)`
+  }
+}
+
+function formatRateLimitReport(r: RateLimitResult): string {
+  const lines: string[] = []
+  lines.push(`# Rate Limiting Analysis`)
+  lines.push(``)
+  lines.push(`**Rate Score:** ${r.rateScore}/100 | **Issues:** ${r.totalIssues} | **Severity:** ${r.severity.toUpperCase()}`)
+  lines.push(``)
+  lines.push(`> ${r.summary}`)
+  lines.push(``)
+
+  if (r.missingLimit.length > 0) {
+    lines.push(`## Unprotected Endpoints (${r.missingLimit.length})`)
+    r.missingLimit.forEach(m => lines.push(`- Line ${m.line}: \`${m.endpoint}\` — ${m.suggestion}`))
+    lines.push(``)
+  }
+
+  if (r.noDistributed.length > 0) {
+    lines.push(`## Scalability Issues (${r.noDistributed.length})`)
+    r.noDistributed.forEach(n => lines.push(`- ${n.suggestion}`))
+    lines.push(``)
+  }
+
+  return lines.join('\n')
+}
+
+// ---- Tool 95: WebSocket Health ----
+
+interface WsResult {
+  totalIssues: number
+  severity: Severity
+  missingHeartbeat: { line: number; issue: string; suggestion: string }[]
+  noReconnect: { line: number; issue: string; suggestion: string }[]
+  noBackpressure: { line: number; issue: string; suggestion: string }[]
+  wsScore: number
+  summary: string
+}
+
+function analyzeWebSocketHealth(code: string): WsResult {
+  const lines = code.split('\n')
+  const missingHeartbeat: WsResult['missingHeartbeat'] = []
+  const noReconnect: WsResult['noReconnect'] = []
+  const noBackpressure: WsResult['noBackpressure'] = []
+
+  const codeLower = code.toLowerCase()
+
+  if (codeLower.includes('websocket') || codeLower.includes('new ws\\(') || codeLower.includes('socket\.io') || codeLower.includes('wss://')) {
+    // Check for heartbeat/ping-pong
+    if (!codeLower.includes('ping') && !codeLower.includes('pong') && !codeLower.includes('heartbeat') && !codeLower.includes('keepalive')) {
+      missingHeartbeat.push({ line: 1, issue: 'WebSocket without heartbeat mechanism', suggestion: 'Implement ping/pong frames every 30s to detect stale connections' })
+    }
+
+    // Check for reconnection logic
+    if (!codeLower.includes('reconnect') && !codeLower.includes('retry') && !codeLower.includes('close.*connect')) {
+      noReconnect.push({ line: 1, issue: 'No reconnection logic on disconnect', suggestion: 'Add exponential backoff reconnection on close event' })
+    }
+
+    // Check for backpressure handling
+    if (codeLower.includes('send') && !codeLower.includes('bufferedamount') && !codeLower.includes('backpressure')) {
+      noBackpressure.push({ line: 1, issue: 'Sending without checking bufferedAmount', suggestion: 'Check ws.bufferedAmount before sending to prevent memory buildup' })
+    }
+  }
+
+  const totalIssues = missingHeartbeat.length + noReconnect.length + noBackpressure.length
+  const wsScore = Math.max(0, 100 - totalIssues * 20)
+  const severity: Severity = totalIssues >= 2 ? 'warning' : totalIssues >= 1 ? 'info' : 'info'
+
+  return {
+    totalIssues, severity, missingHeartbeat, noReconnect, noBackpressure, wsScore,
+    summary: `${missingHeartbeat.length} missing heartbeat(s), ${noReconnect.length} no reconnect, ${noBackpressure.length} no backpressure handling`
+  }
+}
+
+function formatWsReport(r: WsResult): string {
+  const lines: string[] = []
+  lines.push(`# WebSocket Health Analysis`)
+  lines.push(``)
+  lines.push(`**WS Score:** ${r.wsScore}/100 | **Issues:** ${r.totalIssues} | **Severity:** ${r.severity.toUpperCase()}`)
+  lines.push(``)
+  lines.push(`> ${r.summary}`)
+  lines.push(``)
+
+  if (r.missingHeartbeat.length > 0) {
+    lines.push(`## Missing Heartbeat (${r.missingHeartbeat.length})`)
+    r.missingHeartbeat.forEach(h => lines.push(`- ${h.suggestion}`))
+    lines.push(``)
+  }
+
+  if (r.noReconnect.length > 0) {
+    lines.push(`## No Reconnection (${r.noReconnect.length})`)
+    r.noReconnect.forEach(r => lines.push(`- ${r.suggestion}`))
+    lines.push(``)
+  }
+
+  return lines.join('\n')
+}
+
+// ---- Tool 96: Cron Job Robustness ----
+
+interface CronResult {
+  totalIssues: number
+  severity: Severity
+  missingIdempotency: { line: number; issue: string; suggestion: string }[]
+  noLock: { line: number; issue: string; suggestion: string }[]
+  missingErrorHandling: { line: number; issue: string; suggestion: string }[]
+  cronScore: number
+  summary: string
+}
+
+function analyzeCronJobs(code: string): CronResult {
+  const lines = code.split('\n')
+  const missingIdempotency: CronResult['missingIdempotency'] = []
+  const noLock: CronResult['noLock'] = []
+  const missingErrorHandling: CronResult['missingErrorHandling'] = []
+
+  const codeLower = code.toLowerCase()
+
+  // Detect cron usage
+  const hasCron = codeLower.includes('cron') || codeLower.includes('setinterval') || codeLower.includes('schedule') || codeLower.includes('node-cron')
+  if (hasCron) {
+    // Check for idempotency
+    if (!codeLower.includes('idempotent') && !codeLower.includes('duplicate') && !codeLower.includes('already.*processed') && !codeLower.includes('dedup')) {
+      missingIdempotency.push({ line: 1, issue: 'Cron job without idempotency check', suggestion: 'Use unique job IDs or processed-record tracking to prevent duplicate execution' })
+    }
+
+    // Check for distributed lock
+    if (!codeLower.includes('lock') && !codeLower.includes('mutex') && !codeLower.includes('redlock') && !codeLower.includes('distributed')) {
+      noLock.push({ line: 1, issue: 'No distributed lock for cron job', suggestion: 'Use Redis Redlock or DB advisory locks to prevent concurrent execution across instances' })
+    }
+
+    // Check for error handling
+    const cronBlock = code.substring(codeLower.indexOf('cron'), codeLower.indexOf('cron') + 1000)
+    if (!cronBlock.toLowerCase().includes('try') && !cronBlock.toLowerCase().includes('catch')) {
+      missingErrorHandling.push({ line: 1, issue: 'Cron job without error handling', suggestion: 'Wrap cron handler in try/catch with alerting to detect silent failures' })
+    }
+
+    // Check for timeout
+    if (!codeLower.includes('timeout') && !codeLower.includes('deadline') && !codeLower.includes('maxtime')) {
+      missingErrorHandling.push({ line: 1, issue: 'No execution timeout for cron job', suggestion: 'Set max execution time to prevent zombie jobs blocking subsequent runs' })
+    }
+  }
+
+  const totalIssues = missingIdempotency.length + noLock.length + missingErrorHandling.length
+  const cronScore = Math.max(0, 100 - totalIssues * 15)
+  const severity: Severity = noLock.length > 0 ? 'warning' : totalIssues >= 2 ? 'info' : 'info'
+
+  return {
+    totalIssues, severity, missingIdempotency, noLock, missingErrorHandling, cronScore,
+    summary: `${missingIdempotency.length} missing idempotency, ${noLock.length} no lock, ${missingErrorHandling.length} no error handling`
+  }
+}
+
+function formatCronReport(r: CronResult): string {
+  const lines: string[] = []
+  lines.push(`# Cron Job Robustness Analysis`)
+  lines.push(``)
+  lines.push(`**Cron Score:** ${r.cronScore}/100 | **Issues:** ${r.totalIssues} | **Severity:** ${r.severity.toUpperCase()}`)
+  lines.push(``)
+  lines.push(`> ${r.summary}`)
+  lines.push(``)
+
+  if (r.missingIdempotency.length > 0) {
+    lines.push(`## Missing Idempotency (${r.missingIdempotency.length})`)
+    r.missingIdempotency.forEach(i => lines.push(`- ${i.suggestion}`))
+    lines.push(``)
+  }
+
+  if (r.noLock.length > 0) {
+    lines.push(`## No Distributed Lock (${r.noLock.length})`)
+    r.noLock.forEach(l => lines.push(`- ${l.suggestion}`))
+    lines.push(``)
+  }
+
+  return lines.join('\n')
+}
+
+// ---- Tool 97: Event Sourcing Patterns ----
+
+interface EventSourcingResult {
+  totalIssues: number
+  severity: Severity
+  missingVersioning: { line: number; issue: string; suggestion: string }[]
+  noSnapshot: { line: number; issue: string; suggestion: string }[]
+  eventDesign: { line: number; issue: string; suggestion: string }[]
+  eventScore: number
+  summary: string
+}
+
+function analyzeEventSourcing(code: string): EventSourcingResult {
+  const lines = code.split('\n')
+  const missingVersioning: EventSourcingResult['missingVersioning'] = []
+  const noSnapshot: EventSourcingResult['noSnapshot'] = []
+  const eventDesign: EventSourcingResult['eventDesign'] = []
+
+  const codeLower = code.toLowerCase()
+
+  // Detect event-sourcing patterns
+  const hasEvents = codeLower.includes('event') && (codeLower.includes('store') || codeLower.includes('emitter') || codeLower.includes('dispatch') || codeLower.includes('apply'))
+  if (hasEvents) {
+    // Check for event versioning
+    if (!codeLower.includes('version') && !codeLower.includes('v1') && !codeLower.includes('schema')) {
+      missingVersioning.push({ line: 1, issue: 'Events without version field', suggestion: 'Add version field to all events for backward-compatible schema evolution' })
+    }
+
+    // Check for upcasting/legacy handler
+    if (!codeLower.includes('upgrade') && !codeLower.includes('migrate') && !codeLower.includes('legacy') && !codeLower.includes('upcast')) {
+      missingVersioning.push({ line: 1, issue: 'No event schema migration strategy', suggestion: 'Implement upcasters to transform old event versions to current schema' })
+    }
+
+    // Check for snapshots
+    if (codeLower.includes('aggregate') || codeLower.includes('rebuild') || codeLower.includes('replay')) {
+      if (!codeLower.includes('snapshot')) {
+        noSnapshot.push({ line: 1, issue: 'Aggregate rebuild without snapshot support', suggestion: 'Save periodic snapshots to avoid replaying entire event history' })
+      }
+    }
+
+    // Detect anemic events (events with no data)
+    lines.forEach((line, i) => {
+      if (line.match(/emit\s*\(\s*['"][^'"]+['"]\s*\)/) || line.match(/dispatch\s*\(\s*['"]/)) {
+        eventDesign.push({ line: i + 1, issue: 'Event emitted without data payload', suggestion: 'Events should carry all data needed for downstream processing (event-carried state transfer)' })
+      }
+    })
+  }
+
+  const totalIssues = missingVersioning.length + noSnapshot.length + eventDesign.length
+  const eventScore = Math.max(0, 100 - totalIssues * 15)
+  const severity: Severity = totalIssues >= 2 ? 'warning' : totalIssues >= 1 ? 'info' : 'info'
+
+  return {
+    totalIssues, severity, missingVersioning, noSnapshot, eventDesign, eventScore,
+    summary: `${missingVersioning.length} versioning gap(s), ${noSnapshot.length} missing snapshot(s), ${eventDesign.length} event design issue(s)`
+  }
+}
+
+function formatEventSourcingReport(r: EventSourcingResult): string {
+  const lines: string[] = []
+  lines.push(`# Event Sourcing Analysis`)
+  lines.push(``)
+  lines.push(`**Event Score:** ${r.eventScore}/100 | **Issues:** ${r.totalIssues} | **Severity:** ${r.severity.toUpperCase()}`)
+  lines.push(``)
+  lines.push(`> ${r.summary}`)
+  lines.push(``)
+
+  if (r.missingVersioning.length > 0) {
+    lines.push(`## Schema Versioning (${r.missingVersioning.length})`)
+    r.missingVersioning.forEach(v => lines.push(`- ${v.suggestion}`))
+    lines.push(``)
+  }
+
+  if (r.noSnapshot.length > 0) {
+    lines.push(`## Missing Snapshots (${r.noSnapshot.length})`)
+    r.noSnapshot.forEach(s => lines.push(`- ${s.suggestion}`))
+    lines.push(``)
+  }
+
+  if (r.eventDesign.length > 0) {
+    lines.push(`## Event Design (${r.eventDesign.length})`)
+    r.eventDesign.forEach(e => lines.push(`- Line ${e.line}: ${e.suggestion}`))
+    lines.push(``)
+  }
+
+  return lines.join('\n')
+}
+
 // ==================== PLUGIN REGISTRATION ====================
 
 export function apply(ctx: Context) {
@@ -11704,5 +12415,117 @@ export function apply(ctx: Context) {
     }
   }))
 
-  console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting`)
+  // Tool 90: WebAssembly Compatibility (v0.16.0)
+  ctx.tools.register(defineTool({
+    name: 'wasm_check',
+    description: 'Check WebAssembly compatibility: JS interop, memory leaks, type safety, error handling.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The WASM-related code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = checkWasmCompat(args.code)
+      return formatWasmReport(result)
+    }
+  }))
+
+  // Tool 91: Authentication Security (v0.16.0)
+  ctx.tools.register(defineTool({
+    name: 'auth_security',
+    description: 'Analyze authentication: JWT config, sessions, hardcoded credentials, bcrypt strength.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The auth code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeAuthSecurity(args.code)
+      return formatAuthReport(result)
+    }
+  }))
+
+  // Tool 92: Payment Compliance (v0.16.0)
+  ctx.tools.register(defineTool({
+    name: 'payment_compliance',
+    description: 'Check payment compliance: PCI-DSS, precision, idempotency, audit trail.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The payment code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzePaymentCompliance(args.code)
+      return formatPaymentReport(result)
+    }
+  }))
+
+  // Tool 93: Email/SMTP Security (v0.16.0)
+  ctx.tools.register(defineTool({
+    name: 'email_smtp',
+    description: 'Analyze email security: injection risks, SMTP auth, DKIM, template safety.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The email code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeEmailSecurity(args.code)
+      return formatEmailReport(result)
+    }
+  }))
+
+  // Tool 94: Rate Limiting (v0.16.0)
+  ctx.tools.register(defineTool({
+    name: 'rate_limit',
+    description: 'Analyze rate limiting: unprotected endpoints, weak algorithms, distributed support.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The API code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeRateLimiting(args.code)
+      return formatRateLimitReport(result)
+    }
+  }))
+
+  // Tool 95: WebSocket Health (v0.16.0)
+  ctx.tools.register(defineTool({
+    name: 'websocket_health',
+    description: 'Analyze WebSocket health: heartbeat, reconnection, backpressure handling.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The WebSocket code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeWebSocketHealth(args.code)
+      return formatWsReport(result)
+    }
+  }))
+
+  // Tool 96: Cron Job Robustness (v0.16.0)
+  ctx.tools.register(defineTool({
+    name: 'cron_job',
+    description: 'Analyze cron job robustness: idempotency, distributed locks, error handling, timeouts.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The cron job code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeCronJobs(args.code)
+      return formatCronReport(result)
+    }
+  }))
+
+  // Tool 97: Event Sourcing Patterns (v0.16.0)
+  ctx.tools.register(defineTool({
+    name: 'event_sourcing',
+    description: 'Analyze event sourcing: versioning, snapshots, upcasting, event design.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The event-sourced code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeEventSourcing(args.code)
+      return formatEventSourcingReport(result)
+    }
+  }))
+
+  console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing`)
 }
