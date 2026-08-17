@@ -72,7 +72,7 @@
  * - API gateway (BFF pattern, service routing)
  * 
  * @module dsh-tool-codereview
- * @version 0.34.0
+ * @version 0.35.0
  * @license MIT
  */
 
@@ -82,7 +82,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 export const name = 'dsh-tool-codereview'
 export const inject = ['tools']
 
-const VERSION = '0.34.0'
+const VERSION = '0.35.0'
 
 // ==================== TYPES ====================
 
@@ -21062,6 +21062,526 @@ function formatSchemaEvolutionReport(r: SchemaEvolutionResult): string {
   return lines.join('\n')
 }
 
+// ==================== V0.35.0: WEBASSEMBLY INTEROP ====================
+
+interface WasmInteropResult {
+  totalIssues: number
+  severity: Severity
+  memory: { line: number; issue: string; suggestion: string }[]
+  boundary: { line: number; issue: string; suggestion: string }[]
+  wasmScore: number
+  summary: string
+}
+
+function analyzeWasmInterop(code: string): WasmInteropResult {
+  const lines = code.split('\n')
+  const memory: WasmInteropResult['memory'] = []
+  const boundary: WasmInteropResult['boundary'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/wasm|webassembly|wasi/i) && line.match(/memory|buffer|alloc|malloc/i) && !line.match(/shared.*memory|atomic|mutex|lock|safe.*access/i)) {
+      memory.push({ line: i + 1, issue: 'WASM memory access without synchronization', suggestion: 'Use SharedArrayBuffer with atomic operations or ensure single-threaded access to prevent data races' })
+    }
+
+    if (line.match(/wasm.*call|call.*wasm|invoke.*wasm|wasm.*export/i) && !line.match(/serialize|marshal|json.*parse|json.*stringify/i)) {
+      boundary.push({ line: i + 1, issue: 'WASM boundary call without type marshalling', suggestion: 'Serialize data at WASM boundary (JSON or structured clone); validate types on both sides' })
+    }
+
+    if (line.match(/wasm.*gc|garbage.*collect|wasm.*object|externref/i) && !line.match(/ref.*table|finalization|weak.*ref|manual.*drop/i)) {
+      memory.push({ line: i + 1, issue: 'WASM GC object without lifecycle management', suggestion: 'Use FinalizationRegistry or explicit drop() for externref objects to prevent memory leaks' })
+    }
+
+    if (line.match(/instantiate|compile.*wasm|wasm.*module/i) && !line.match(/cache|module.*cache|compile.*cache|instantiate.*cached/i)) {
+      boundary.push({ line: i + 1, issue: 'WASM instantiation without caching', suggestion: 'Cache compiled WASM modules; reuse instances to avoid repeated compilation overhead' })
+    }
+  })
+
+  const totalIssues = memory.length + boundary.length
+  const wasmScore = Math.max(0, 100 - memory.length * 8 - boundary.length * 8)
+  const severity: Severity = memory.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, memory, boundary, wasmScore,
+    summary: memory.length + ' memory gap(s), ' + boundary.length + ' boundary gap(s)' }
+}
+
+function formatWasmInteropReport(r: WasmInteropResult): string {
+  const lines: string[] = []
+  lines.push('# WebAssembly Interop Analysis')
+  lines.push('')
+  lines.push('**WASM Score:** ' + r.wasmScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.memory.length > 0) {
+    lines.push('## Memory (' + r.memory.length + ')')
+    r.memory.forEach(m => lines.push('- Line ' + m.line + ': ' + m.suggestion))
+    lines.push('')
+  }
+  if (r.boundary.length > 0) {
+    lines.push('## Boundary (' + r.boundary.length + ')')
+    r.boundary.forEach(b => lines.push('- Line ' + b.line + ': ' + b.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.35.0: DATA PARTITIONING ====================
+
+interface DataPartitionResult {
+  totalIssues: number
+  severity: Severity
+  sharding: { line: number; issue: string; suggestion: string }[]
+  pruning: { line: number; issue: string; suggestion: string }[]
+  partitionScore: number
+  summary: string
+}
+
+function analyzeDataPartition(code: string): DataPartitionResult {
+  const lines = code.split('\n')
+  const sharding: DataPartitionResult['sharding'] = []
+  const pruning: DataPartitionResult['pruning'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/shard|partition|split.*data|data.*split/i) && !line.match(/shard.*key|partition.*key|hash.*mod|consistent.*hash/i)) {
+      sharding.push({ line: i + 1, issue: 'Data partitioning without shard key', suggestion: 'Define shard key (e.g., tenant_id) for even distribution; use consistent hashing for rebalancing' })
+    }
+
+    if (line.match(/cross.*partition|cross.*shard|multi.*partition|multi.*shard/i) && !line.match(/scatter.*gather|parallel.*query|batch.*parallel|map.*reduce/i)) {
+      pruning.push({ line: i + 1, issue: 'Cross-partition query without optimization', suggestion: 'Use scatter-gather with parallel execution; minimize cross-partition queries by colocating related data' })
+    }
+
+    if (line.match(/rebalance|re.*shard|migrate.*partition|move.*partition/i) && !line.match(/dual.*write|shadow.*write|online.*migrate|zero.*downtime/i)) {
+      sharding.push({ line: i + 1, issue: 'Partition rebalancing without online migration', suggestion: 'Use dual-write during rebalancing; migrate data online with zero downtime' })
+    }
+
+    if (line.match(/hot.*partition|hot.*shard|skew|uneven.*load/i) && !line.match(/split.*hot|re.*key|pre.*split|salting/i)) {
+      pruning.push({ line: i + 1, issue: 'Hot partition without mitigation', suggestion: 'Split hot partition; use salting or pre-splitting to distribute load evenly' })
+    }
+  })
+
+  const totalIssues = sharding.length + pruning.length
+  const partitionScore = Math.max(0, 100 - sharding.length * 8 - pruning.length * 8)
+  const severity: Severity = sharding.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, sharding, pruning, partitionScore,
+    summary: sharding.length + ' sharding gap(s), ' + pruning.length + ' pruning gap(s)' }
+}
+
+function formatDataPartitionReport(r: DataPartitionResult): string {
+  const lines: string[] = []
+  lines.push('# Data Partitioning Analysis')
+  lines.push('')
+  lines.push('**Partition Score:** ' + r.partitionScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.sharding.length > 0) {
+    lines.push('## Sharding (' + r.sharding.length + ')')
+    r.sharding.forEach(s => lines.push('- Line ' + s.line + ': ' + s.suggestion))
+    lines.push('')
+  }
+  if (r.pruning.length > 0) {
+    lines.push('## Pruning (' + r.pruning.length + ')')
+    r.pruning.forEach(p => lines.push('- Line ' + p.line + ': ' + p.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.35.0: PLUGIN LIFECYCLE ====================
+
+interface PluginLifecycleResult {
+  totalIssues: number
+  severity: Severity
+  isolation: { line: number; issue: string; suggestion: string }[]
+  teardown: { line: number; issue: string; suggestion: string }[]
+  pluginScore: number
+  summary: string
+}
+
+function analyzePluginLifecycle(code: string): PluginLifecycleResult {
+  const lines = code.split('\n')
+  const isolation: PluginLifecycleResult['isolation'] = []
+  const teardown: PluginLifecycleResult['teardown'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/plugin.*load|load.*plugin|dynamic.*import|import.*plugin/i) && !line.match(/sandbox|isolate|vm|worker|child.*process|separate.*context/i)) {
+      isolation.push({ line: i + 1, issue: 'Plugin loaded without isolation', suggestion: 'Run plugins in isolated context (VM, worker thread, or child process) to prevent main process crashes' })
+    }
+
+    if (line.match(/plugin.*start|plugin.*init|plugin.*enable|start.*plugin/i) && !line.match(/plugin.*stop|plugin.*disable|plugin.*destroy|cleanup|teardown|dispose/i)) {
+      teardown.push({ line: i + 1, issue: 'Plugin without teardown/cleanup', suggestion: 'Implement plugin teardown (stop/dispose) to release resources, close connections, and unsubscribe events' })
+    }
+
+    if (line.match(/plugin.*conflict|plugin.*override|plugin.*dependency/i) && !line.match(/version.*lock|dependency.*resolve|isolate.*dependency|separate.*namespace/i)) {
+      isolation.push({ line: i + 1, issue: 'Plugin dependency without conflict resolution', suggestion: 'Lock plugin dependencies; use isolated namespaces to prevent version conflicts between plugins' })
+    }
+
+    if (line.match(/hot.*reload|hot.*swap|plugin.*restart|plugin.*update/i) && !line.match(/graceful.*drain|finish.*inflight|state.*transfer|connection.*drain/i)) {
+      teardown.push({ line: i + 1, issue: 'Hot reload without graceful drain', suggestion: 'Drain in-flight requests before plugin reload; transfer state to new instance for seamless update' })
+    }
+  })
+
+  const totalIssues = isolation.length + teardown.length
+  const pluginScore = Math.max(0, 100 - isolation.length * 8 - teardown.length * 8)
+  const severity: Severity = isolation.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, isolation, teardown, pluginScore,
+    summary: isolation.length + ' isolation gap(s), ' + teardown.length + ' teardown gap(s)' }
+}
+
+function formatPluginLifecycleReport(r: PluginLifecycleResult): string {
+  const lines: string[] = []
+  lines.push('# Plugin Lifecycle Analysis')
+  lines.push('')
+  lines.push('**Plugin Score:** ' + r.pluginScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.isolation.length > 0) {
+    lines.push('## Isolation (' + r.isolation.length + ')')
+    r.isolation.forEach(iso => lines.push('- Line ' + iso.line + ': ' + iso.suggestion))
+    lines.push('')
+  }
+  if (r.teardown.length > 0) {
+    lines.push('## Teardown (' + r.teardown.length + ')')
+    r.teardown.forEach(td => lines.push('- Line ' + td.line + ': ' + td.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.35.0: TIME SYNCHRONIZATION ====================
+
+interface TimeSyncResult {
+  totalIssues: number
+  severity: Severity
+  clock: { line: number; issue: string; suggestion: string }[]
+  ordering: { line: number; issue: string; suggestion: string }[]
+  timeScore: number
+  summary: string
+}
+
+function analyzeTimeSync(code: string): TimeSyncResult {
+  const lines = code.split('\n')
+  const clock: TimeSyncResult['clock'] = []
+  const ordering: TimeSyncResult['ordering'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/Date\.now|new.*Date|current.*time|system.*time/i) && !line.match(/ntp|clock.*sync|logical.*clock|lamport|vector.*clock|hybrid.*clock/i)) {
+      clock.push({ line: i + 1, issue: 'System time dependency without clock sync', suggestion: 'Use NTP-synchronized clocks; for distributed ordering use logical clocks (Lamport/Hybrid Logical Clock)' })
+    }
+
+    if (line.match(/order.*by.*time|sort.*by.*time|time.*order|latest.*record/i) && !line.match(/logical.*clock|monotonic|causal.*order|HLC|tiebreaker/i)) {
+      ordering.push({ line: i + 1, issue: 'Time-based ordering without causality guarantee', suggestion: 'Use Hybrid Logical Clock (HLC) or Lamport timestamps for causal ordering across nodes' })
+    }
+
+    if (line.match(/timeout|deadline|expir|TTL/i) && !line.match(/monotonic|performance\.now|process\.hrtime|steady.*clock/i)) {
+      clock.push({ line: i + 1, issue: 'Timeout using wall clock (subject to NTP adjustment)', suggestion: 'Use monotonic clock (performance.now, hrtime) for timeout measurement to avoid NTP skew issues' })
+    }
+
+    if (line.match(/clock.*skew|time.*drift|time.*differ|out.*of.*sync/i) && !line.match(/tolerance|epsilon|confidence.*interval|clock.*bound/i)) {
+      ordering.push({ line: i + 1, issue: 'Clock skew handling without tolerance bound', suggestion: 'Define clock skew tolerance (epsilon); use clock bound algorithms for confidence intervals' })
+    }
+  })
+
+  const totalIssues = clock.length + ordering.length
+  const timeScore = Math.max(0, 100 - clock.length * 8 - ordering.length * 8)
+  const severity: Severity = clock.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, clock, ordering, timeScore,
+    summary: clock.length + ' clock gap(s), ' + ordering.length + ' ordering gap(s)' }
+}
+
+function formatTimeSyncReport(r: TimeSyncResult): string {
+  const lines: string[] = []
+  lines.push('# Time Synchronization Analysis')
+  lines.push('')
+  lines.push('**Time Score:** ' + r.timeScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.clock.length > 0) {
+    lines.push('## Clock (' + r.clock.length + ')')
+    r.clock.forEach(c => lines.push('- Line ' + c.line + ': ' + c.suggestion))
+    lines.push('')
+  }
+  if (r.ordering.length > 0) {
+    lines.push('## Ordering (' + r.ordering.length + ')')
+    r.ordering.forEach(o => lines.push('- Line ' + o.line + ': ' + o.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.35.0: FEATURE STORE ====================
+
+interface FeatureStoreResult {
+  totalIssues: number
+  severity: Severity
+  freshness: { line: number; issue: string; suggestion: string }[]
+  serving: { line: number; issue: string; suggestion: string }[]
+  featureScore: number
+  summary: string
+}
+
+function analyzeFeatureStore(code: string): FeatureStoreResult {
+  const lines = code.split('\n')
+  const freshness: FeatureStoreResult['freshness'] = []
+  const serving: FeatureStoreResult['serving'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/feature.*store|feature.*engineer|feature.*pipeline|feature.*compute/i) && !line.match(/point.*in.*time|temporal.*correct|time.*travel|event.*time/i)) {
+      freshness.push({ line: i + 1, issue: 'Feature computation without point-in-time correctness', suggestion: 'Use point-in-time correct joins (event time, not processing time) to prevent training-serving skew' })
+    }
+
+    if (line.match(/online.*feature|serve.*feature|feature.*serve|realtime.*feature/i) && !line.match(/low.*latency|cache|redis|in.*memory|p99.*ms/i)) {
+      serving.push({ line: i + 1, issue: 'Online feature serving without latency optimization', suggestion: 'Cache online features in Redis/in-memory; target p99 < 10ms for feature serving' })
+    }
+
+    if (line.match(/offline.*feature|training.*feature|batch.*feature/i) && !line.match(/backfill|historical.*replay|feature.*history|snapshot/i)) {
+      freshness.push({ line: i + 1, issue: 'Offline feature without backfill capability', suggestion: 'Implement historical feature backfill; maintain feature history for training data generation' })
+    }
+
+    if (line.match(/feature.*schema|feature.*type|feature.*cast/i) && !line.match(/schema.*enforce|type.*check|validation|contract/i)) {
+      serving.push({ line: i + 1, issue: 'Feature schema without enforcement', suggestion: 'Enforce feature schema with validation; use contract tests for training-serving consistency' })
+    }
+  })
+
+  const totalIssues = freshness.length + serving.length
+  const featureScore = Math.max(0, 100 - freshness.length * 8 - serving.length * 8)
+  const severity: Severity = freshness.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, freshness, serving, featureScore,
+    summary: freshness.length + ' freshness gap(s), ' + serving.length + ' serving gap(s)' }
+}
+
+function formatFeatureStoreReport(r: FeatureStoreResult): string {
+  const lines: string[] = []
+  lines.push('# Feature Store Analysis')
+  lines.push('')
+  lines.push('**Feature Score:** ' + r.featureScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.freshness.length > 0) {
+    lines.push('## Freshness (' + r.freshness.length + ')')
+    r.freshness.forEach(f => lines.push('- Line ' + f.line + ': ' + f.suggestion))
+    lines.push('')
+  }
+  if (r.serving.length > 0) {
+    lines.push('## Serving (' + r.serving.length + ')')
+    r.serving.forEach(s => lines.push('- Line ' + s.line + ': ' + s.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.35.0: VECTOR DATABASE ====================
+
+interface VectorDBResult {
+  totalIssues: number
+  severity: Severity
+  indexing: { line: number; issue: string; suggestion: string }[]
+  search: { line: number; issue: string; suggestion: string }[]
+  vectorScore: number
+  summary: string
+}
+
+function analyzeVectorDB(code: string): VectorDBResult {
+  const lines = code.split('\n')
+  const indexing: VectorDBResult['indexing'] = []
+  const search: VectorDBResult['search'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/vector.*db|vector.*search|embedding.*index|vector.*store/i) && !line.match(/ANN|HNSW|IVF|LSH|approximate.*nearest|index.*type/i)) {
+      indexing.push({ line: i + 1, issue: 'Vector DB without ANN index specification', suggestion: 'Specify ANN index type (HNSW, IVF-PQ, LSH) based on recall/latency requirements' })
+    }
+
+    if (line.match(/similarity.*search|nearest.*neighbor|top.*k|semantic.*search/i) && !line.match(/rerank|re.*rank|cross.*encoder|hybrid.*search|BM25/i)) {
+      search.push({ line: i + 1, issue: 'Vector search without reranking', suggestion: 'Add cross-encoder reranking for top-K results; use hybrid search (BM25 + vector) for better precision' })
+    }
+
+    if (line.match(/embedding.*dim|vector.*dim|dimension.*reduc|high.*dim/i) && !line.match(/PCA|UMAP|product.*quantization|PQ|OPQ|compress/i)) {
+      indexing.push({ line: i + 1, issue: 'High-dimensional vector without compression', suggestion: 'Use Product Quantization (PQ) or dimension compression to reduce memory and improve search speed' })
+    }
+
+    if (line.match(/vector.*insert|vector.*update|embedding.*update/i) && !line.match(/batch.*insert|bulk.*load|async.*index|index.*rebuild/i)) {
+      search.push({ line: i + 1, issue: 'Vector insert without batch/bulk optimization', suggestion: 'Use batch insert + periodic index rebuild for better throughput; avoid per-row indexing' })
+    }
+  })
+
+  const totalIssues = indexing.length + search.length
+  const vectorScore = Math.max(0, 100 - indexing.length * 8 - search.length * 8)
+  const severity: Severity = indexing.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, indexing, search, vectorScore,
+    summary: indexing.length + ' indexing gap(s), ' + search.length + ' search gap(s)' }
+}
+
+function formatVectorDBReport(r: VectorDBResult): string {
+  const lines: string[] = []
+  lines.push('# Vector Database Analysis')
+  lines.push('')
+  lines.push('**Vector Score:** ' + r.vectorScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.indexing.length > 0) {
+    lines.push('## Indexing (' + r.indexing.length + ')')
+    r.indexing.forEach(idx => lines.push('- Line ' + idx.line + ': ' + idx.suggestion))
+    lines.push('')
+  }
+  if (r.search.length > 0) {
+    lines.push('## Search (' + r.search.length + ')')
+    r.search.forEach(s => lines.push('- Line ' + s.line + ': ' + s.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.35.0: API COMPOSITION ====================
+
+interface APICompositionResult {
+  totalIssues: number
+  severity: Severity
+  batching: { line: number; issue: string; suggestion: string }[]
+  dedup: { line: number; issue: string; suggestion: string }[]
+  compositionScore: number
+  summary: string
+}
+
+function analyzeAPIComposition(code: string): APICompositionResult {
+  const lines = code.split('\n')
+  const batching: APICompositionResult['batching'] = []
+  const dedup: APICompositionResult['dedup'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/graphql|federation|schema.*stitch|api.*compose|api.*aggregate/i) && !line.match(/data.*loader|batch.*loader|dedup|query.*batch| DataLoader/i)) {
+      batching.push({ line: i + 1, issue: 'GraphQL/federation without DataLoader batching', suggestion: 'Use DataLoader for batching and deduplication; prevents N+1 query problem in federated schemas' })
+    }
+
+    if (line.match(/N\+1|multiple.*query|query.*per.*item|loop.*query|loop.*fetch/i) && !line.match(/batch|preload|join|include|eager.*load|data.*loader/i)) {
+      batching.push({ line: i + 1, issue: 'N+1 query pattern detected in composition', suggestion: 'Batch related queries using DataLoader or JOIN; preload associations to eliminate N+1' })
+    }
+
+    if (line.match(/api.*cache|response.*cache|compose.*cache/i) && !line.match(/cache.*key|cache.*invalid|TTL|etag|stale.*while.*revalidate/i)) {
+      dedup.push({ line: i + 1, issue: 'API composition cache without invalidation', suggestion: 'Define cache key strategy and TTL; use stale-while-revalidate for composed API responses' })
+    }
+
+    if (line.match(/partial.*failure|partial.*error|some.*fail|compose.*error/i) && !line.match(/fallback.*partial|partial.*result|degrade.*partial|best.*effort/i)) {
+      dedup.push({ line: i + 1, issue: 'Partial failure in API composition without degradation', suggestion: 'Return partial results with error indicators; degrade gracefully when upstream fails' })
+    }
+  })
+
+  const totalIssues = batching.length + dedup.length
+  const compositionScore = Math.max(0, 100 - batching.length * 8 - dedup.length * 8)
+  const severity: Severity = batching.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, batching, dedup, compositionScore,
+    summary: batching.length + ' batching gap(s), ' + dedup.length + ' dedup gap(s)' }
+}
+
+function formatAPICompositionReport(r: APICompositionResult): string {
+  const lines: string[] = []
+  lines.push('# API Composition Analysis')
+  lines.push('')
+  lines.push('**Composition Score:** ' + r.compositionScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.batching.length > 0) {
+    lines.push('## Batching (' + r.batching.length + ')')
+    r.batching.forEach(b => lines.push('- Line ' + b.line + ': ' + b.suggestion))
+    lines.push('')
+  }
+  if (r.dedup.length > 0) {
+    lines.push('## Dedup (' + r.dedup.length + ')')
+    r.dedup.forEach(d => lines.push('- Line ' + d.line + ': ' + d.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.35.0: AUDIT TRAIL ====================
+
+interface AuditTrailResult {
+  totalIssues: number
+  severity: Severity
+  integrity: { line: number; issue: string; suggestion: string }[]
+  retention: { line: number; issue: string; suggestion: string }[]
+  auditScore: number
+  summary: string
+}
+
+function analyzeAuditTrail(code: string): AuditTrailResult {
+  const lines = code.split('\n')
+  const integrity: AuditTrailResult['integrity'] = []
+  const retention: AuditTrailResult['retention'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/audit.*log|audit.*trail|audit.*record|audit.*entry/i) && !line.match(/append.*only|immutable|tamper.*proof|hash.*chain|merkle/i)) {
+      integrity.push({ line: i + 1, issue: 'Audit log without tamper-proof mechanism', suggestion: 'Use append-only storage with hash chain or Merkle tree for tamper detection' })
+    }
+
+    if (line.match(/log.*delete|log.*modify|log.*update|delete.*audit|remove.*log/i) && !line.match(/compliance.*hold|legal.*hold|retention.*policy.*delete|scheduled.*purge/i)) {
+      integrity.push({ line: i + 1, issue: 'Audit log allows deletion/modification', suggestion: 'Prevent log deletion/modification; implement compliance hold for legal requirements' })
+    }
+
+    if (line.match(/audit.*retention|log.*retention|audit.*period|log.*period/i) && !line.match(/auto.*delete|auto.*purge|TTL|expir|compliance.*period|regulatory/i)) {
+      retention.push({ line: i + 1, issue: 'Audit retention without auto-purge', suggestion: 'Implement auto-purge after compliance period; adhere to regulatory retention requirements (e.g., 7 years for SOX)' })
+    }
+
+    if (line.match(/who.*accessed|who.*modified|who.*viewed|actor.*track/i) && !line.match(/timestamp|ip.*address|user.*agent|session.*id/i)) {
+      retention.push({ line: i + 1, issue: 'Actor tracking without context', suggestion: 'Capture timestamp, IP address, user agent, and session ID with each audit entry for forensic analysis' })
+    }
+  })
+
+  const totalIssues = integrity.length + retention.length
+  const auditScore = Math.max(0, 100 - integrity.length * 8 - retention.length * 8)
+  const severity: Severity = integrity.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, integrity, retention, auditScore,
+    summary: integrity.length + ' integrity gap(s), ' + retention.length + ' retention gap(s)' }
+}
+
+function formatAuditTrailReport(r: AuditTrailResult): string {
+  const lines: string[] = []
+  lines.push('# Audit Trail Analysis')
+  lines.push('')
+  lines.push('**Audit Score:** ' + r.auditScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.integrity.length > 0) {
+    lines.push('## Integrity (' + r.integrity.length + ')')
+    r.integrity.forEach(ig => lines.push('- Line ' + ig.line + ': ' + ig.suggestion))
+    lines.push('')
+  }
+  if (r.retention.length > 0) {
+    lines.push('## Retention (' + r.retention.length + ')')
+    r.retention.forEach(rt => lines.push('- Line ' + rt.line + ': ' + rt.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
 // ==================== PLUGIN REGISTRATION ====================
 
 export function apply(ctx: Context) {
@@ -24512,5 +25032,93 @@ ctx.tools.register(defineTool({
   }
 }))
 
-console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design, container_security, ml_pipeline, api_deprecation, design_system, pwa_compliance, type_system, green_computing, realtime_collab, a11y_deep, i18n_deep, css_architecture, state_machine, web_components, resilience, module_federation, review_automation, observability, migration_safety, edge_computing, api_versioning, wasm_advanced, feature_toggles, email_deliverability, seo_analysis, monorepo_boundaries, ddd_patterns, mf_runtime, realtime_protocols, data_pipeline, gateway_deep, test_rigor, quality_gate, graphql_schema, event_sourcing_integrity, rate_limiting, migration_safety, auth_hardening, distributed_tracing, infrastructure_as_code, review_automation, contract_testing, sec_headers_deep, privacy_compliance, concurrency_patterns, cloud_native, error_recovery, system_design, dependency_injection, api_versioning, serialization_perf, memory_allocation, build_pipeline, error_messages, logging_discipline, config_as_code, component_interface, token_hygiene, query_antipatterns, websocket_lifecycle, graphql_perf, deprecation_tracking, code_splitting_audit, css_arch_deep, sec_dep_audit, webhook_signature, oauth_security, email_infra, health_check_depth, cors_security, feature_rollout, secret_lifecycle, rate_limit_strategy, container_security_scan, grpc_security, data_residency, deployment_progressive, obs_exemplar, data_pipeline_quality, service_mesh, plugin_architecture, mobile_app_security, data_masking, core_web_vitals, infra_cost, api_gateway_config, css_in_js_perf, crdt_state_sync, resource_quota, browser_compat_audit, floating_point, snapshot_testing, event_schema, form_validation, retry_idempotency, a11y_semantics, race_condition, cache_invalidation, data_loader_opt, event_versioning, connection_lifecycle, csp_nonce, struct_error_ctx, stream_backpressure, identifier_collision, graphql_query_depth, auth_token_rotation, mq_dead_letter, file_upload_sec, query_plan, encryption_at_rest, ws_connection_state, rate_limit_policy, payment_idempotency, cron_reliability, immutable_data, data_residency_compliance, response_envelope, compression_negotiation, dns_health, graceful_degradation, api_deprecation_strategy, db_safety, log_sampling, slo_tracking, api_key_mgmt, data_lineage, infra_drift, schema_evolution`)
+ctx.tools.register(defineTool({
+  name: 'wasm_interop',
+  description: 'Analyze WebAssembly interop: memory synchronization, type marshalling, GC lifecycle, instantiation caching.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeWasmInterop(args.code)
+    return formatWasmInteropReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'data_partition',
+  description: 'Analyze data partitioning: shard key design, cross-partition queries, rebalancing, hot partition mitigation.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeDataPartition(args.code)
+    return formatDataPartitionReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'plugin_lifecycle',
+  description: 'Analyze plugin lifecycle: isolation, teardown/cleanup, dependency conflict, hot reload graceful drain.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzePluginLifecycle(args.code)
+    return formatPluginLifecycleReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'time_sync',
+  description: 'Analyze time synchronization: clock sync, logical clocks, monotonic timeout, clock skew tolerance.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeTimeSync(args.code)
+    return formatTimeSyncReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'feature_store',
+  description: 'Analyze feature store: point-in-time correctness, online serving latency, offline backfill, schema enforcement.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeFeatureStore(args.code)
+    return formatFeatureStoreReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'vector_db',
+  description: 'Analyze vector database: ANN index type, reranking, dimension compression, batch insert optimization.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeVectorDB(args.code)
+    return formatVectorDBReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'api_composition',
+  description: 'Analyze API composition: DataLoader batching, N+1 prevention, cache invalidation, partial failure degradation.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeAPIComposition(args.code)
+    return formatAPICompositionReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'audit_trail',
+  description: 'Analyze audit trail: tamper-proof storage, append-only, retention auto-purge, actor context capture.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeAuditTrail(args.code)
+    return formatAuditTrailReport(result)
+  }
+}))
+
+console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design, container_security, ml_pipeline, api_deprecation, design_system, pwa_compliance, type_system, green_computing, realtime_collab, a11y_deep, i18n_deep, css_architecture, state_machine, web_components, resilience, module_federation, review_automation, observability, migration_safety, edge_computing, api_versioning, wasm_advanced, feature_toggles, email_deliverability, seo_analysis, monorepo_boundaries, ddd_patterns, mf_runtime, realtime_protocols, data_pipeline, gateway_deep, test_rigor, quality_gate, graphql_schema, event_sourcing_integrity, rate_limiting, migration_safety, auth_hardening, distributed_tracing, infrastructure_as_code, review_automation, contract_testing, sec_headers_deep, privacy_compliance, concurrency_patterns, cloud_native, error_recovery, system_design, dependency_injection, api_versioning, serialization_perf, memory_allocation, build_pipeline, error_messages, logging_discipline, config_as_code, component_interface, token_hygiene, query_antipatterns, websocket_lifecycle, graphql_perf, deprecation_tracking, code_splitting_audit, css_arch_deep, sec_dep_audit, webhook_signature, oauth_security, email_infra, health_check_depth, cors_security, feature_rollout, secret_lifecycle, rate_limit_strategy, container_security_scan, grpc_security, data_residency, deployment_progressive, obs_exemplar, data_pipeline_quality, service_mesh, plugin_architecture, mobile_app_security, data_masking, core_web_vitals, infra_cost, api_gateway_config, css_in_js_perf, crdt_state_sync, resource_quota, browser_compat_audit, floating_point, snapshot_testing, event_schema, form_validation, retry_idempotency, a11y_semantics, race_condition, cache_invalidation, data_loader_opt, event_versioning, connection_lifecycle, csp_nonce, struct_error_ctx, stream_backpressure, identifier_collision, graphql_query_depth, auth_token_rotation, mq_dead_letter, file_upload_sec, query_plan, encryption_at_rest, ws_connection_state, rate_limit_policy, payment_idempotency, cron_reliability, immutable_data, data_residency_compliance, response_envelope, compression_negotiation, dns_health, graceful_degradation, api_deprecation_strategy, db_safety, log_sampling, slo_tracking, api_key_mgmt, data_lineage, infra_drift, schema_evolution, wasm_interop, data_partition, plugin_lifecycle, time_sync, feature_store, vector_db, api_composition, audit_trail`)
 }
