@@ -72,7 +72,7 @@
  * - API gateway (BFF pattern, service routing)
  * 
  * @module dsh-tool-codereview
- * @version 0.26.0
+ * @version 0.27.0
  * @license MIT
  */
 
@@ -82,7 +82,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 export const name = 'dsh-tool-codereview'
 export const inject = ['tools']
 
-const VERSION = '0.26.0'
+const VERSION = '0.27.0'
 
 // ==================== TYPES ====================
 
@@ -16967,6 +16967,461 @@ function formatSecDepReport(r: SecDepAuditResult): string {
   return lines.join('\n')
 }
 
+// ==================== V0.27.0: WEBHOOK SIGNATURE ====================
+
+interface WebhookSignatureResult {
+  totalIssues: number
+  severity: Severity
+  signature: { line: number; issue: string; suggestion: string }[]
+  retry: { line: number; issue: string; suggestion: string }[]
+  webhookScore: number
+  summary: string
+}
+
+function analyzeWebhookSignature(code: string): WebhookSignatureResult {
+  const lines = code.split('\n')
+  const signature: WebhookSignatureResult['signature'] = []
+  const retry: WebhookSignatureResult['retry'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/webhook|web_hook|hook.*endpoint|callback.*url/i) && !line.match(/sign|HMAC|SHA256|verify|secret|auth/i)) {
+      signature.push({ line: i + 1, issue: 'Webhook endpoint without signature verification', suggestion: 'Verify webhook payload using HMAC-SHA256 signature header (e.g., X-Webhook-Signature)' })
+    }
+
+    if (line.match(/stripe|github.*hook|slack.*hook|paypal.*ipn/i) && !line.match(/sign|verify|construct.*event|webhook.*construct/i)) {
+      signature.push({ line: i + 1, issue: 'Third-party webhook without SDK-based signature verification', suggestion: 'Use vendor SDK (stripe.webhooks.constructEvent) for signature verification' })
+    }
+
+    if (line.match(/retry|resend|retry.*hook|hook.*fail/i) && !line.match(/exponential|backoff|jitter|max.*attempt|dead.?letter/i)) {
+      retry.push({ line: i + 1, issue: 'Webhook retry without exponential backoff', suggestion: 'Implement exponential backoff with jitter (1s, 2s, 4s, 8s...) and dead-letter queue after max retries' })
+    }
+
+    if (line.match(/idempoten|idempotency.?key|deduplicate/i) && !line.match(/header|key.*header|Idempotency-Key/i)) {
+      retry.push({ line: i + 1, issue: 'Idempotency without header-based key propagation', suggestion: 'Use Idempotency-Key header to deduplicate webhook deliveries server-side' })
+    }
+  })
+
+  const totalIssues = signature.length + retry.length
+  const webhookScore = Math.max(0, 100 - signature.length * 12 - retry.length * 10)
+  const severity: Severity = signature.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, signature, retry, webhookScore,
+    summary: signature.length + ' signature gap(s), ' + retry.length + ' retry policy gap(s)' }
+}
+
+function formatWebhookSignatureReport(r: WebhookSignatureResult): string {
+  const lines: string[] = []
+  lines.push('# Webhook Signature Analysis')
+  lines.push('')
+  lines.push('**Webhook Score:** ' + r.webhookScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.signature.length > 0) {
+    lines.push('## Signature Verification (' + r.signature.length + ')')
+    r.signature.forEach(s => lines.push('- Line ' + s.line + ': ' + s.suggestion))
+    lines.push('')
+  }
+  if (r.retry.length > 0) {
+    lines.push('## Retry Policy (' + r.retry.length + ')')
+    r.retry.forEach(r => lines.push('- Line ' + r.line + ': ' + r.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.27.0: OAUTH2 SECURITY ====================
+
+interface OauthSecurityResult {
+  totalIssues: number
+  severity: Severity
+  flow: { line: number; issue: string; suggestion: string }[]
+  token: { line: number; issue: string; suggestion: string }[]
+  oauthScore: number
+  summary: string
+}
+
+function analyzeOauthSecurity(code: string): OauthSecurityResult {
+  const lines = code.split('\n')
+  const flow: OauthSecurityResult['flow'] = []
+  const token: OauthSecurityResult['token'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/oauth|OAuth|OIDC|openid/i) && line.match(/authorize|auth.*url|authorization.*endpoint/i) && !line.match(/PKCE|code_challenge|S256|state|nonce/i)) {
+      flow.push({ line: i + 1, issue: 'OAuth2 authorization without PKCE or state parameter', suggestion: 'Enforce PKCE (code_challenge S256) and state parameter for CSRF protection' })
+    }
+
+    if (line.match(/redirect_uri|callback.*uri|redirect.*callback/i) && !line.match(/allowlist|whitelist|exact.*match|pre.?registered/i)) {
+      flow.push({ line: i + 1, issue: 'Redirect URI without exact-match allowlist', suggestion: 'Validate redirect_uri against pre-registered exact-match allowlist to prevent open redirect' })
+    }
+
+    if (line.match(/token.*exchange|exchange.*code|code.*token/i) && !line.match(/code_verifier|PKCE|verif/i)) {
+      token.push({ line: i + 1, issue: 'Token exchange without PKCE code_verifier', suggestion: 'Submit code_verifier during token exchange for PKCE flow completion' })
+    }
+
+    if (line.match(/refresh.*refresh|refreshToken.*expir|long.?lived.*token/i) && !line.match(/rotation|reuse.*detect|absolute.*expir|expir.*window/i)) {
+      token.push({ line: i + 1, issue: 'Refresh token without rotation or reuse detection', suggestion: 'Rotate refresh tokens per use and detect reuse for token binding revocation' })
+    }
+  })
+
+  const totalIssues = flow.length + token.length
+  const oauthScore = Math.max(0, 100 - flow.length * 12 - token.length * 10)
+  const severity: Severity = flow.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, flow, token, oauthScore,
+    summary: flow.length + ' authorization gap(s), ' + token.length + ' token gap(s)' }
+}
+
+function formatOauthSecurityReport(r: OauthSecurityResult): string {
+  const lines: string[] = []
+  lines.push('# OAuth2/OIDC Security Analysis')
+  lines.push('')
+  lines.push('**OAuth Score:** ' + r.oauthScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.flow.length > 0) {
+    lines.push('## Authorization Flow (' + r.flow.length + ')')
+    r.flow.forEach(f => lines.push('- Line ' + f.line + ': ' + f.suggestion))
+    lines.push('')
+  }
+  if (r.token.length > 0) {
+    lines.push('## Token Management (' + r.token.length + ')')
+    r.token.forEach(t => lines.push('- Line ' + t.line + ': ' + t.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.27.0: EMAIL INFRASTRUCTURE ====================
+
+interface EmailInfraResult {
+  totalIssues: number
+  severity: Severity
+  auth: { line: number; issue: string; suggestion: string }[]
+  deliverability: { line: number; issue: string; suggestion: string }[]
+  emailInfraScore: number
+  summary: string
+}
+
+function analyzeEmailInfrastructure(code: string): EmailInfraResult {
+  const lines = code.split('\n')
+  const auth: EmailInfraResult['auth'] = []
+  const deliverability: EmailInfraResult['deliverability'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/SPF|DKIM|DMARC|dns.*txt|domain.*record/i) && !line.match(/spf.*pass|dkim.*sign|dmarc.*policy|p=reject|alignment/i)) {
+      auth.push({ line: i + 1, issue: 'Email DNS record mention without strict policy', suggestion: 'Configure DMARC p=reject with SPF/DKIM alignment to prevent domain spoofing' })
+    }
+
+    if (line.match(/send.*email|email.*send|mail.*send|dispatch.*email/i) && !line.match(/spf|dkim|dmarc|auth|verify|sign/i)) {
+      deliverability.push({ line: i + 1, issue: 'Email send without deliverability authentication', suggestion: 'Implement DKIM signing and SPF records for outbound email domains' })
+    }
+
+    if (line.match(/bounce|bounced|hard.*bounce|soft.*bounce/i) && !line.match(/suppress|remove|list.*unsub|feedback.*loop|complaint/i)) {
+      deliverability.push({ line: i + 1, issue: 'Bounce handling without suppression list update', suggestion: 'Add hard-bounced addresses to suppression list immediately (permanent failure)' })
+    }
+
+    if (line.match(/unsubscribe|opt.?out|list-unsubscribe/i) && !line.match(/one.?click|RFC|8058|header|post/i)) {
+      deliverability.push({ line: i + 1, issue: 'Unsubscribe mechanism without one-click (RFC 8058) compliance', suggestion: 'Implement one-click unsubscribe via List-Unsubscribe header (RFC 8058)' })
+    }
+  })
+
+  const totalIssues = auth.length + deliverability.length
+  const emailInfraScore = Math.max(0, 100 - auth.length * 12 - deliverability.length * 8)
+  const severity: Severity = auth.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, auth, deliverability, emailInfraScore,
+    summary: auth.length + ' authentication gap(s), ' + deliverability.length + ' deliverability gap(s)' }
+}
+
+function formatEmailInfraReport(r: EmailInfraResult): string {
+  const lines: string[] = []
+  lines.push('# Email Infrastructure Analysis')
+  lines.push('')
+  lines.push('**Email Infra Score:** ' + r.emailInfraScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.auth.length > 0) {
+    lines.push('## DNS Authentication (' + r.auth.length + ')')
+    r.auth.forEach(a => lines.push('- Line ' + a.line + ': ' + a.suggestion))
+    lines.push('')
+  }
+  if (r.deliverability.length > 0) {
+    lines.push('## Deliverability (' + r.deliverability.length + ')')
+    r.deliverability.forEach(d => lines.push('- Line ' + d.line + ': ' + d.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.27.0: HEALTH CHECK DEPTH ====================
+
+interface HealthCheckDepthResult {
+  totalIssues: number
+  severity: Severity
+  readiness: { line: number; issue: string; suggestion: string }[]
+  liveness: { line: number; issue: string; suggestion: string }[]
+  healthScore: number
+  summary: string
+}
+
+function analyzeHealthCheckDepth(code: string): HealthCheckDepthResult {
+  const lines = code.split('\n')
+  const readiness: HealthCheckDepthResult['readiness'] = []
+  const liveness: HealthCheckDepthResult['liveness'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/readiness|ready.*check|readinessProbe/i) && !line.match(/db.*connect|cache.*connect|depend|external|service.*check/i)) {
+      readiness.push({ line: i + 1, issue: 'Readiness probe without dependency health verification', suggestion: 'Check DB/cache/dependency connectivity in readiness probe, not just server status' })
+    }
+
+    if (line.match(/liveness|live.*check|livenessProbe/i) && line.match(/db.*connect|cache.*connect|external.*service/i)) {
+      liveness.push({ line: i + 1, issue: 'Liveness probe includes external dependency check', suggestion: 'Liveness should only verify internal state; move dependency checks to readiness probe' })
+    }
+
+    if (line.match(/startup.*probe|startupProbe|initialDelay/i) && !line.match(/slow.*start|warmup|heavy.*init|long.*boot/i)) {
+      readiness.push({ line: i + 1, issue: 'Startup probe without slow-start consideration', suggestion: 'Use startup probe with high failureThreshold for slow-initializing containers' })
+    }
+
+    if (line.match(/health.*endpoint|\/health|\/status/i) && !line.match(/deep|detail|verbose|full|check.*all/i)) {
+      liveness.push({ line: i + 1, issue: 'Health endpoint only returns shallow status', suggestion: 'Add /health/deep or ?verbose=true for comprehensive dependency health checks' })
+    }
+  })
+
+  const totalIssues = readiness.length + liveness.length
+  const healthScore = Math.max(0, 100 - readiness.length * 10 - liveness.length * 12)
+  const severity: Severity = liveness.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, readiness, liveness, healthScore,
+    summary: readiness.length + ' readiness gap(s), ' + liveness.length + ' liveness gap(s)' }
+}
+
+function formatHealthCheckDepthReport(r: HealthCheckDepthResult): string {
+  const lines: string[] = []
+  lines.push('# Health Check Depth Analysis')
+  lines.push('')
+  lines.push('**Health Score:** ' + r.healthScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.readiness.length > 0) {
+    lines.push('## Readiness (' + r.readiness.length + ')')
+    lines.push('- Line ' + r.readiness[0].line + ': ' + r.readiness[0].suggestion)
+    lines.push('')
+  }
+  if (r.liveness.length > 0) {
+    lines.push('## Liveness (' + r.liveness.length + ')')
+    lines.push('- Line ' + r.liveness[0].line + ': ' + r.liveness[0].suggestion)
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.27.0: CORS SECURITY ====================
+
+interface CorsSecurityResult {
+  totalIssues: number
+  severity: Severity
+  origin: { line: number; issue: string; suggestion: string }[]
+  headers: { line: number; issue: string; suggestion: string }[]
+  corsScore: number
+  summary: string
+}
+
+function analyzeCorsSecurity(code: string): CorsSecurityResult {
+  const lines = code.split('\n')
+  const origin: CorsSecurityResult['origin'] = []
+  const headers: CorsSecurityResult['headers'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/Access-Control-Allow-Origin\s*[:=]\s*['"]?\*/i) || line.match(/origin.*\*|allow.*origin.*\*/i)) {
+      origin.push({ line: i + 1, issue: 'Wildcard Access-Control-Allow-Origin — allows any domain', suggestion: 'Use explicit origin allowlist; reflect request Origin only if in allowlist' })
+    }
+
+    if (line.match(/Access-Control-Allow-Credentials\s*[:=]\s*true/i) && line.match(/origin.*\*/i)) {
+      headers.push({ line: i + 1, issue: 'Credentials with wildcard origin — credential theft risk', suggestion: 'Never use Access-Control-Allow-Credentials: true with wildcard origin' })
+    }
+
+    if (line.match(/Access-Control-Allow-Methods|Allow-Methods/i) && !line.match(/GET|POST|PUT|DELETE|specific|limit/i)) {
+      headers.push({ line: i + 1, issue: 'Allow-Methods without method restriction', suggestion: 'Explicitly list only required HTTP methods (GET, POST) in Allow-Methods' })
+    }
+
+    if (line.match(/preflight|OPTIONS|Access-Control-Max-Age/i) && !line.match(/cache|max.?age|200|300|600|second/i)) {
+      headers.push({ line: i + 1, issue: 'Preflight without caching (Max-Age)', suggestion: 'Set Access-Control-Max-Age to cache preflight (e.g., 600 seconds) to reduce OPTIONS requests' })
+    }
+  })
+
+  const totalIssues = origin.length + headers.length
+  const corsScore = Math.max(0, 100 - origin.length * 12 - headers.length * 8)
+  const severity: Severity = origin.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, origin, headers, corsScore,
+    summary: origin.length + ' origin risk(s), ' + headers.length + ' header misconfiguration(s)' }
+}
+
+function formatCorsSecurityReport(r: CorsSecurityResult): string {
+  const lines: string[] = []
+  lines.push('# CORS Security Analysis')
+  lines.push('')
+  lines.push('**CORS Score:** ' + r.corsScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.origin.length > 0) {
+    lines.push('## Origin (' + r.origin.length + ')')
+    r.origin.forEach(o => lines.push('- Line ' + o.line + ': ' + o.suggestion))
+    lines.push('')
+  }
+  if (r.headers.length > 0) {
+    lines.push('## Headers (' + r.headers.length + ')')
+    lines.push('- Line ' + r.headers[0].line + ': ' + r.headers[0].suggestion)
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.27.0: FEATURE ROLLOUT ====================
+
+interface FeatureRolloutResult {
+  totalIssues: number
+  severity: Severity
+  rollout: { line: number; issue: string; suggestion: string }[]
+  killswitch: { line: number; issue: string; suggestion: string }[]
+  rolloutScore: number
+  summary: string
+}
+
+function analyzeFeatureRollout(code: string): FeatureRolloutResult {
+  const lines = code.split('\n')
+  const rollout: FeatureRolloutResult['rollout'] = []
+  const killswitch: FeatureRolloutResult['killswitch'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/feature.*flag|feature.*toggle|experiment|AB.*test/i) && !line.match(/percentage|rollout|gradual|target|cohort|segment/i)) {
+      rollout.push({ line: i + 1, issue: 'Feature flag without gradual rollout percentage', suggestion: 'Implement gradual rollout (1% -> 10% -> 50% -> 100%) with target segment criteria' })
+    }
+
+    if (line.match(/isFeatureEnabled|isFlagOn|checkFlag|flag.*on/i) && !line.match(/default|fallback|kill|emergency|off.*switch/i)) {
+      killswitch.push({ line: i + 1, issue: 'Feature flag read without emergency kill switch', suggestion: 'Implement global kill switch for instant feature disable without deployment' })
+    }
+
+    if (line.match(/canary|blue.*green|deploy.*percent|weighted.*route/i) && !line.match(/metric|monitor|rollback|auto.*rollback|error.*rate|latency/i)) {
+      rollout.push({ line: i + 1, issue: 'Canary deployment without automated rollback trigger', suggestion: 'Define error rate/latency thresholds for automated canary rollback' })
+    }
+
+    if (line.match(/experiment.*end|experiment.*cleanup|flag.*cleanup|remove.*flag/i) && !line.match(/stale|dead|code.*cleanup|deprecat|sunset/i)) {
+      killswitch.push({ line: i + 1, issue: 'Experiments accumulate without stale flag cleanup', suggestion: 'Set TTL for flags; remove or codify decisions within 30 days' })
+    }
+  })
+
+  const totalIssues = rollout.length + killswitch.length
+  const rolloutScore = Math.max(0, 100 - rollout.length * 10 - killswitch.length * 12)
+  const severity: Severity = killswitch.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, rollout, killswitch, rolloutScore,
+    summary: rollout.length + ' rollout gap(s), ' + killswitch.length + ' killswitch gap(s)' }
+}
+
+function formatFeatureRolloutReport(r: FeatureRolloutResult): string {
+  const lines: string[] = []
+  lines.push('# Feature Rollout Analysis')
+  lines.push('')
+  lines.push('**Rollout Score:** ' + r.rolloutScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.rollout.length > 0) {
+    lines.push('## Gradual Rollout (' + r.rollout.length + ')')
+    r.rollout.forEach(r => lines.push('- Line ' + r.line + ': ' + r.suggestion))
+    lines.push('')
+  }
+  if (r.killswitch.length > 0) {
+    lines.push('## Kill Switch (' + r.killswitch.length + ')')
+    lines.push('- Line ' + r.killswitch[0].line + ': ' + r.killswitch[0].suggestion)
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.27.0: SECRET LIFECYCLE ====================
+
+interface SecretLifecycleResult {
+  totalIssues: number
+  severity: Severity
+  hardcoded: { line: number; issue: string; suggestion: string }[]
+  rotation: { line: number; issue: string; suggestion: string }[]
+  secretScore: number
+  summary: string
+}
+
+function analyzeSecretLifecycle(code: string): SecretLifecycleResult {
+  const lines = code.split('\n')
+  const hardcoded: SecretLifecycleResult['hardcoded'] = []
+  const rotation: SecretLifecycleResult['rotation'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/['"][A-Za-z0-9+/=]{32,}['"]/) && !line.match(/example|placeholder|dummy|test|mock|fake/i)) {
+      hardcoded.push({ line: i + 1, issue: 'Potential hardcoded secret (long base64/hex string)', suggestion: 'Use vault reference (vault:secret/data/myapp) or environment variable substitution' })
+    }
+
+    if (line.match(/password|secret|apikey|api_key|token/i) && line.match(/=\s*['"][^'"]+['"]/) && !line.match(/env|process|config|vault|getSecret/i)) {
+      hardcoded.push({ line: i + 1, issue: 'Hardcoded credential in source code', suggestion: 'Reference secrets via process.env or vault service — never commit plaintext secrets' })
+    }
+
+    if (line.match(/rotate|rotation|expir.*key|key.*expir/i) && !line.match(/schedule|cron|auto|30.*day|90.*day|durat|TTL/i)) {
+      rotation.push({ line: i + 1, issue: 'Key rotation without scheduled interval', suggestion: 'Set automatic rotation schedule (e.g., 90 days) and versioned key overlap window' })
+    }
+
+    if (line.match(/AWS_ACCESS|AKIA[0-9A-Z]{16}|aws.*secret/i) && !line.match(/role|IRSA|instance.*profile|assume.*role|vault/i)) {
+      hardcoded.push({ line: i + 1, issue: 'AWS static credentials detected', suggestion: 'Use IAM roles (IRSA for EKS) or instance profiles instead of static access keys' })
+    }
+  })
+
+  const totalIssues = hardcoded.length + rotation.length
+  const secretScore = Math.max(0, 100 - hardcoded.length * 12 - rotation.length * 10)
+  const severity: Severity = hardcoded.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, hardcoded, rotation, secretScore,
+    summary: hardcoded.length + ' hardcoded secret(s), ' + rotation.length + ' rotation gap(s)' }
+}
+
+function formatSecretLifecycleReport(r: SecretLifecycleResult): string {
+  const lines: string[] = []
+  lines.push('# Secret Lifecycle Analysis')
+  lines.push('')
+  lines.push('**Secret Score:** ' + r.secretScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.hardcoded.length > 0) {
+    lines.push('## Hardcoded Secrets (' + r.hardcoded.length + ')')
+    r.hardcoded.forEach(h => lines.push('- Line ' + h.line + ': ' + h.suggestion))
+    lines.push('')
+  }
+  if (r.rotation.length > 0) {
+    lines.push('## Key Rotation (' + r.rotation.length + ')')
+    lines.push('- Line ' + r.rotation[0].line + ': ' + r.rotation[0].suggestion)
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
 // ==================== PLUGIN REGISTRATION ====================
 
 export function apply(ctx: Context) {
@@ -19569,5 +20024,117 @@ ctx.tools.register(defineTool({
   }
 }))
 
-console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design, container_security, ml_pipeline, api_deprecation, design_system, pwa_compliance, type_system, green_computing, realtime_collab, a11y_deep, i18n_deep, css_architecture, state_machine, web_components, resilience, module_federation, review_automation, observability, migration_safety, edge_computing, api_versioning, wasm_advanced, feature_toggles, email_deliverability, seo_analysis, monorepo_boundaries, ddd_patterns, mf_runtime, realtime_protocols, data_pipeline, gateway_deep, test_rigor, quality_gate, graphql_schema, event_sourcing_integrity, rate_limiting, migration_safety, auth_hardening, distributed_tracing, infrastructure_as_code, review_automation, contract_testing, sec_headers_deep, privacy_compliance, concurrency_patterns, cloud_native, error_recovery, system_design, dependency_injection, api_versioning, serialization_perf, memory_allocation, build_pipeline, error_messages, logging_discipline, config_as_code, component_interface, token_hygiene, query_antipatterns, websocket_lifecycle, graphql_perf, deprecation_tracking, code_splitting_audit, css_arch_deep, sec_dep_audit`)
+// Tool 178: Webhook Signature Verification
+ctx.tools.register(defineTool({
+  name: 'webhook_signature',
+  description: 'Analyze webhook signature verification: HMAC-SHA256, exponential backoff retry, idempotency keys, dead-letter queue.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The webhook code to analyze' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeWebhookSignature(args.code)
+    return formatWebhookSignatureReport(result)
+  }
+}))
+
+// Tool 179: OAuth2/OIDC Security
+ctx.tools.register(defineTool({
+  name: 'oauth_security',
+  description: 'Analyze OAuth2/OIDC security: PKCE, state/nonce, redirect URI allowlist, refresh token rotation.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The OAuth code to analyze' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeOauthSecurity(args.code)
+    return formatOauthSecurityReport(result)
+  }
+}))
+
+// Tool 180: Email Infrastructure
+ctx.tools.register(defineTool({
+  name: 'email_infra',
+  description: 'Analyze email infrastructure: SPF/DKIM/DMARC, bounce suppression, list-unsubscribe (RFC 8058).',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The email sending code to analyze' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeEmailInfrastructure(args.code)
+    return formatEmailInfraReport(result)
+  }
+}))
+
+// Tool 181: Health Check Depth
+ctx.tools.register(defineTool({
+  name: 'health_check_depth',
+  description: 'Analyze health check depth: readiness vs liveness, startup probes, deep health endpoints.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The health check code to analyze' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeHealthCheckDepth(args.code)
+    return formatHealthCheckDepthReport(result)
+  }
+}))
+
+// Tool 182: CORS Security
+ctx.tools.register(defineTool({
+  name: 'cors_security',
+  description: 'Analyze CORS security: wildcard origin, credentials restriction, preflight caching, method allowlist.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The CORS configuration code to analyze' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeCorsSecurity(args.code)
+    return formatCorsSecurityReport(result)
+  }
+}))
+
+// Tool 183: Feature Rollout
+ctx.tools.register(defineTool({
+  name: 'feature_rollout',
+  description: 'Analyze feature rollout: gradual percentage, kill switch, canary auto-rollback, stale flag cleanup.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The feature flag code to analyze' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeFeatureRollout(args.code)
+    return formatFeatureRolloutReport(result)
+  }
+}))
+
+// Tool 184: Secret Lifecycle
+ctx.tools.register(defineTool({
+  name: 'secret_lifecycle',
+  description: 'Analyze secret lifecycle: hardcoded detection, AWS AKIA detection, key rotation schedule, vault references.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The secret configuration code to analyze' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeSecretLifecycle(args.code)
+    return formatSecretLifecycleReport(result)
+  }
+}))
+
+// Tool 185: Rate Limiting Strategy
+ctx.tools.register(defineTool({
+  name: 'rate_limit_strategy',
+  description: 'Analyze rate limiting strategy: sliding window, token bucket, per-user limits, 429 Retry-After.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The rate limiting code to analyze' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeRateLimitPatterns(args.code)
+    return formatRateLimitPatternReport(result)
+  }
+}))
+
+console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design, container_security, ml_pipeline, api_deprecation, design_system, pwa_compliance, type_system, green_computing, realtime_collab, a11y_deep, i18n_deep, css_architecture, state_machine, web_components, resilience, module_federation, review_automation, observability, migration_safety, edge_computing, api_versioning, wasm_advanced, feature_toggles, email_deliverability, seo_analysis, monorepo_boundaries, ddd_patterns, mf_runtime, realtime_protocols, data_pipeline, gateway_deep, test_rigor, quality_gate, graphql_schema, event_sourcing_integrity, rate_limiting, migration_safety, auth_hardening, distributed_tracing, infrastructure_as_code, review_automation, contract_testing, sec_headers_deep, privacy_compliance, concurrency_patterns, cloud_native, error_recovery, system_design, dependency_injection, api_versioning, serialization_perf, memory_allocation, build_pipeline, error_messages, logging_discipline, config_as_code, component_interface, token_hygiene, query_antipatterns, websocket_lifecycle, graphql_perf, deprecation_tracking, code_splitting_audit, css_arch_deep, sec_dep_audit, webhook_signature, oauth_security, email_infra, health_check_depth, cors_security, feature_rollout, secret_lifecycle, rate_limit_strategy`)
 }
