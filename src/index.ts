@@ -72,7 +72,7 @@
  * - API gateway (BFF pattern, service routing)
  * 
  * @module dsh-tool-codereview
- * @version 0.17.0
+ * @version 0.18.0
  * @license MIT
  */
 
@@ -82,7 +82,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 export const name = 'dsh-tool-codereview'
 export const inject = ['tools']
 
-const VERSION = '0.17.0'
+const VERSION = '0.18.0'
 
 // ==================== TYPES ====================
 
@@ -11642,6 +11642,649 @@ function formatGatewayReport(r: GatewayResult): string {
   return lines.join('\n')
 }
 
+// ==================== V0.18.0: AI PROMPT INJECTION DETECTION ====================
+
+interface AiPromptResult {
+  totalIssues: number
+  severity: Severity
+  injectionRisks: { line: number; issue: string; suggestion: string }[]
+  jailbreakPatterns: { line: number; pattern: string; suggestion: string }[]
+  dataLeakage: { line: number; issue: string; suggestion: string }[]
+  aiScore: number
+  summary: string
+}
+
+function analyzeAiPromptSecurity(code: string): AiPromptResult {
+  const lines = code.split('\n')
+  const injectionRisks: AiPromptResult['injectionRisks'] = []
+  const jailbreakPatterns: AiPromptResult['jailbreakPatterns'] = []
+  const dataLeakage: AiPromptResult['dataLeakage'] = []
+
+  const jailbreakRegexes = [
+    new RegExp('ignore.*(?:previous|above|prior)', 'i'),
+    new RegExp('you are now', 'i'),
+    new RegExp('DAN|do anything now', 'i'),
+    new RegExp('jailbreak', 'i'),
+    new RegExp('without.*restrictions', 'i'),
+    new RegExp('bypass.*filter', 'i'),
+    new RegExp('pretend.*(?:you are|to be)', 'i')
+  ]
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/(?:prompt|systemPrompt|userMessage|instructions)\s*[+=]/) ||
+        line.match(/\$\{.*(?:user|input|query|message)/)) {
+      if (!line.match(/sanitize|escape|validate|filter/)) {
+        injectionRisks.push({ line: i + 1, issue: 'User input interpolated into AI prompt without sanitization', suggestion: 'Sanitize or isolate user input to prevent prompt injection attacks' })
+      }
+    }
+
+    if (line.match(/system.*prompt|systemPrompt/) && line.match(/log|console|debug|print/)) {
+      dataLeakage.push({ line: i + 1, issue: 'System prompt may be logged/exposed', suggestion: 'Never log system prompts — they contain privileged instructions and API keys' })
+    }
+
+    jailbreakRegexes.forEach(jp => {
+      if (line.match(jp)) {
+        jailbreakPatterns.push({ line: i + 1, pattern: line.trim().substring(0, 50), suggestion: 'Detect potential jailbreak patterns in user input before sending to LLM' })
+      }
+    })
+
+    if (line.match(/function.*call|tool.*call|execute.*function/) && !line.match(/auth|permission|allowlist|whitelist/)) {
+      injectionRisks.push({ line: i + 1, issue: 'LLM tool calling without authorization checks', suggestion: 'Implement allowlist for tool calls and validate parameters before execution' })
+    }
+  })
+
+  const totalIssues = injectionRisks.length + jailbreakPatterns.length + dataLeakage.length
+  const aiScore = Math.max(0, 100 - injectionRisks.length * 12 - jailbreakPatterns.length * 10)
+  const severity: Severity = injectionRisks.length > 0 ? 'warning' : totalIssues >= 2 ? 'info' : 'info'
+
+  return { totalIssues, severity, injectionRisks, jailbreakPatterns, dataLeakage, aiScore,
+    summary: injectionRisks.length + ' injection risk(s), ' + jailbreakPatterns.length + ' jailbreak pattern(s), ' + dataLeakage.length + ' data leakage risk(s)' }
+}
+
+function formatAiPromptReport(r: AiPromptResult): string {
+  const lines: string[] = []
+  lines.push('# AI Prompt Security Analysis')
+  lines.push('')
+  lines.push('**AI Security Score:** ' + r.aiScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.injectionRisks.length > 0) {
+    lines.push('## Prompt Injection Risks (' + r.injectionRisks.length + ')')
+    r.injectionRisks.forEach(ri => lines.push('- Line ' + ri.line + ': ' + ri.suggestion))
+    lines.push('')
+  }
+  if (r.jailbreakPatterns.length > 0) {
+    lines.push('## Jailbreak Patterns (' + r.jailbreakPatterns.length + ')')
+    r.jailbreakPatterns.forEach(j => lines.push('- Line ' + j.line + ': ' + j.pattern))
+    lines.push('')
+  }
+  if (r.dataLeakage.length > 0) {
+    lines.push('## Data Leakage Risks (' + r.dataLeakage.length + ')')
+    r.dataLeakage.forEach(d => lines.push('- Line ' + d.line + ': ' + d.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.18.0: MICRO-FRONTEND ARCHITECTURE ====================
+
+interface MicroFrontendResult {
+  totalIssues: number
+  severity: Severity
+  modules: { name: string; issues: string[]; suggestions: string[] }[]
+  sharedDeps: { dep: string; usedBy: string[]; issue: string }[]
+  routingIssues: { line: number; issue: string; suggestion: string }[]
+  mfScore: number
+  summary: string
+}
+
+function analyzeMicroFrontends(code: string): MicroFrontendResult {
+  const lines = code.split('\n')
+  const routingIssues: MicroFrontendResult['routingIssues'] = []
+  const modules: MicroFrontendResult['modules'] = []
+  const sharedDeps: MicroFrontendResult['sharedDeps'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/(?:route|path)\s*[=:].*(?:\*|wildcard)/)) {
+      routingIssues.push({ line: i + 1, issue: 'Wildcard route may conflict with other micro-frontends', suggestion: 'Use prefix-based routing to avoid collisions between MFE modules' })
+    }
+    if (line.match(/import\s+.*from\s+['"](?!micro|shell|host)/) && line.match(/remote|entry|expose/)) {
+      routingIssues.push({ line: i + 1, issue: 'Direct remote module import may cause version conflicts', suggestion: 'Use Module Federation shared dependencies with singleton: true' })
+    }
+    if (line.match(/window\.__MF|window\.micro|globalThis\.app/)) {
+      routingIssues.push({ line: i + 1, issue: 'Global namespace pollution between micro-frontends', suggestion: 'Encapsulate shared state via custom events or message bus' })
+    }
+  })
+
+  const depMatches = code.match(/"(?:react|vue|angular|lodash|moment)":\s*"[^"]+"/g) || []
+  const depUsage = new Map<string, string[]>()
+  depMatches.forEach(d => {
+    const name = d.match(/"([^"]+)":/)?.[1] || ''
+    if (name) depUsage.set(name, ['host', 'remote'])
+  })
+  depUsage.forEach((usedBy, dep) => {
+    if (usedBy.length > 1) sharedDeps.push({ dep, usedBy, issue: 'Shared dependency may cause version mismatch' })
+  })
+
+  const totalIssues = routingIssues.length + sharedDeps.length
+  const mfScore = Math.max(0, 100 - routingIssues.length * 10 - sharedDeps.length * 8)
+  const severity: Severity = routingIssues.length > 2 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, modules, sharedDeps, routingIssues, mfScore,
+    summary: routingIssues.length + ' routing/integration issue(s), ' + sharedDeps.length + ' shared dependency concern(s)' }
+}
+
+function formatMfReport(r: MicroFrontendResult): string {
+  const lines: string[] = []
+  lines.push('# Micro-Frontend Architecture Analysis')
+  lines.push('')
+  lines.push('**MF Architecture Score:** ' + r.mfScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.routingIssues.length > 0) {
+    lines.push('## Integration Issues (' + r.routingIssues.length + ')')
+    r.routingIssues.forEach(ri => lines.push('- Line ' + ri.line + ': ' + ri.suggestion))
+    lines.push('')
+  }
+  if (r.sharedDeps.length > 0) {
+    lines.push('## Shared Dependencies (' + r.sharedDeps.length + ')')
+    r.sharedDeps.forEach(d => lines.push('- ' + d.dep + ': ' + d.issue))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.18.0: DATABASE INDEXING ADVISOR ====================
+
+interface IndexResult {
+  totalIssues: number
+  severity: Severity
+  missingIndexes: { line: number; table: string; column: string; suggestion: string }[]
+  unusedIndexes: { line: number; index: string; suggestion: string }[]
+  cardinalityIssues: { line: number; issue: string; suggestion: string }[]
+  indexScore: number
+  summary: string
+}
+
+function analyzeDatabaseIndexes(code: string): IndexResult {
+  const lines = code.split('\n')
+  const missingIndexes: IndexResult['missingIndexes'] = []
+  const unusedIndexes: IndexResult['unusedIndexes'] = []
+  const cardinalityIssues: IndexResult['cardinalityIssues'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    const whereMatch = line.match(/WHERE\s+(\w+)\.(\w+)\s*[=<>]/i)
+    if (whereMatch && !line.match(/INDEX|PRIMARY|UNIQUE/i)) {
+      missingIndexes.push({ line: i + 1, table: whereMatch[1], column: whereMatch[2], suggestion: 'Consider adding index on ' + whereMatch[1] + '.' + whereMatch[2] + ' for WHERE clause optimization' })
+    }
+
+    if (line.match(/ORDER BY\s+(\w+)/i) && !line.match(/INDEX|PRIMARY|UNIQUE/i)) {
+      const col = line.match(/ORDER BY\s+(\w+)/i)?.[1] || ''
+      missingIndexes.push({ line: i + 1, table: 'query', column: col, suggestion: 'ORDER BY on ' + col + ' may benefit from index for sorting optimization' })
+    }
+
+    if (line.match(/CREATE\s+(?:INDEX|UNIQUE)/i)) {
+      const idxMatch = line.match(/ON\s+(\w+)\s*\((\w+)\)/i)
+      if (idxMatch && idxMatch[2] && idxMatch[2].match(/^(?:description|content|text|body|note)$/i)) {
+        cardinalityIssues.push({ line: i + 1, issue: 'Low-cardinality index on text column ' + idxMatch[2], suggestion: 'Consider FULLTEXT or prefix index for text columns' })
+      }
+    }
+
+    if (line.match(/SELECT\s+\*/i) && !line.match(/EXPLAIN|COUNT/i)) {
+      unusedIndexes.push({ line: i + 1, index: 'SELECT *', suggestion: 'Avoid SELECT * — it bypasses covering indexes and fetches unnecessary columns' })
+    }
+  })
+
+  const totalIssues = missingIndexes.length + unusedIndexes.length + cardinalityIssues.length
+  const indexScore = Math.max(0, 100 - missingIndexes.length * 10 - unusedIndexes.length * 8)
+  const severity: Severity = missingIndexes.length > 2 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, missingIndexes, unusedIndexes, cardinalityIssues, indexScore,
+    summary: missingIndexes.length + ' missing index(es), ' + unusedIndexes.length + ' inefficiency, ' + cardinalityIssues.length + ' cardinality issue(s)' }
+}
+
+function formatIndexReport(r: IndexResult): string {
+  const lines: string[] = []
+  lines.push('# Database Indexing Analysis')
+  lines.push('')
+  lines.push('**Index Score:** ' + r.indexScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.missingIndexes.length > 0) {
+    lines.push('## Missing Indexes (' + r.missingIndexes.length + ')')
+    r.missingIndexes.forEach(m => lines.push('- Line ' + m.line + ': ' + m.suggestion))
+    lines.push('')
+  }
+  if (r.unusedIndexes.length > 0) {
+    lines.push('## Index Inefficiencies (' + r.unusedIndexes.length + ')')
+    r.unusedIndexes.forEach(u => lines.push('- Line ' + u.line + ': ' + u.suggestion))
+    lines.push('')
+  }
+  if (r.cardinalityIssues.length > 0) {
+    lines.push('## Cardinality Issues (' + r.cardinalityIssues.length + ')')
+    r.cardinalityIssues.forEach(c => lines.push('- Line ' + c.line + ': ' + c.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.18.0: ADVANCED CONCURRENCY PATTERNS ====================
+
+interface AdvConcurrencyResult {
+  totalIssues: number
+  severity: Severity
+  raceConditions: { line: number; issue: string; suggestion: string }[]
+  deadlocks: { line: number; issue: string; suggestion: string }[]
+  atomicityViolations: { line: number; issue: string; suggestion: string }[]
+  lockIssues: { line: number; issue: string; suggestion: string }[]
+  concurrencyScore: number
+  summary: string
+}
+
+function analyzeAdvConcurrency(code: string): AdvConcurrencyResult {
+  const lines = code.split('\n')
+  const raceConditions: AdvConcurrencyResult['raceConditions'] = []
+  const deadlocks: AdvConcurrencyResult['deadlocks'] = []
+  const atomicityViolations: AdvConcurrencyResult['atomicityViolations'] = []
+  const lockIssues: AdvConcurrencyResult['lockIssues'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/(?:read|get|fetch).*(?:then|after).*(?:write|set|update)/) ||
+        line.match(/await.*await.*(?:mutate|set|write)/i)) {
+      raceConditions.push({ line: i + 1, issue: 'Potential read-then-write race condition', suggestion: 'Use atomic operations or mutex locks for read-modify-write patterns' })
+    }
+
+    if (line.match(/lock.*lock|acquire.*acquire|mutex.*mutex/i) || line.match(/(?:lock1.*lock2|lock2.*lock1)/i)) {
+      deadlocks.push({ line: i + 1, issue: 'Potential deadlock from nested lock acquisition', suggestion: 'Acquire locks in consistent order or use tryLock with timeout' })
+    }
+
+    if (line.match(/check.*then.*act|if.*then.*set|validate.*then·*save/i)) {
+      atomicityViolations.push({ line: i + 1, issue: 'Check-then-act pattern is not thread-safe', suggestion: 'Replace with atomic compare-and-swap or database-level constraint' })
+    }
+
+    if (line.match(/(?:lock|acquire|mutex)/) && !line.match(/unlock|release|finally/)) {
+      lockIssues.push({ line: i + 1, issue: 'Lock acquisition without guaranteed release', suggestion: 'Always use try/finally or using pattern to ensure lock release' })
+    }
+
+    if (line.match(/Promise\.all\s*\(\s*\[/) && line.match(/catch|error/i) && !line.match(/allSettled/)) {
+      raceConditions.push({ line: i + 1, issue: 'Promise.all rejects on first failure — partial state may persist', suggestion: 'Use Promise.allSettled if partial completion is acceptable, or implement rollback' })
+    }
+  })
+
+  const totalIssues = raceConditions.length + deadlocks.length + atomicityViolations.length + lockIssues.length
+  const concurrencyScore = Math.max(0, 100 - raceConditions.length * 12 - deadlocks.length * 15 - atomicityViolations.length * 10)
+  const severity: Severity = deadlocks.length > 0 ? 'error' : raceConditions.length > 1 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, raceConditions, deadlocks, atomicityViolations, lockIssues, concurrencyScore,
+    summary: raceConditions.length + ' race condition(s), ' + deadlocks.length + ' deadlock risk(s), ' + atomicityViolations.length + ' atomicity violation(s)' }
+}
+
+function formatAdvConcurrencyReport(r: AdvConcurrencyResult): string {
+  const lines: string[] = []
+  lines.push('# Advanced Concurrency Analysis')
+  lines.push('')
+  lines.push('**Concurrency Score:** ' + r.concurrencyScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.raceConditions.length > 0) {
+    lines.push('## Race Conditions (' + r.raceConditions.length + ')')
+    r.raceConditions.forEach(rc => lines.push('- Line ' + rc.line + ': ' + rc.suggestion))
+    lines.push('')
+  }
+  if (r.deadlocks.length > 0) {
+    lines.push('## Deadlock Risks (' + r.deadlocks.length + ')')
+    r.deadlocks.forEach(d => lines.push('- Line ' + d.line + ': ' + d.suggestion))
+    lines.push('')
+  }
+  if (r.atomicityViolations.length > 0) {
+    lines.push('## Atomicity Violations (' + r.atomicityViolations.length + ')')
+    r.atomicityViolations.forEach(a => lines.push('- Line ' + a.line + ': ' + a.suggestion))
+    lines.push('')
+  }
+  if (r.lockIssues.length > 0) {
+    lines.push('## Lock Management (' + r.lockIssues.length + ')')
+    r.lockIssues.forEach(l => lines.push('- Line ' + l.line + ': ' + l.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.18.0: PERFORMANCE PROFILING PATTERNS ====================
+
+interface PerfProfileResult {
+  totalIssues: number
+  severity: Severity
+  hotspots: { line: number; issue: string; suggestion: string }[]
+  memoryLeaks: { line: number; issue: string; suggestion: string }[]
+  blockingOps: { line: number; issue: string; suggestion: string }[]
+  perfScore: number
+  summary: string
+}
+
+function analyzePerfProfiling(code: string): PerfProfileResult {
+  const lines = code.split('\n')
+  const hotspots: PerfProfileResult['hotspots'] = []
+  const memoryLeaks: PerfProfileResult['memoryLeaks'] = []
+  const blockingOps: PerfProfileResult['blockingOps'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/for\s*\(.*for\s*\(/)) {
+      hotspots.push({ line: i + 1, issue: 'Nested loop — O(n²) or worse complexity', suggestion: 'Use hash maps, pre-computation, or divide-and-conquer to reduce complexity' })
+    }
+
+    if (line.match(/addEventListener|setInterval|setTimeout|observer/i) && !line.match(/removeEventListener|clearInterval|clearTimeout|disconnect/)) {
+      memoryLeaks.push({ line: i + 1, issue: 'Event listener/timer registered without cleanup', suggestion: 'Remove listeners in cleanup/dispose to prevent memory leaks in SPAs' })
+    }
+
+    if (line.match(/JSON\.parse\(.*JSON\.stringify|structuredClone/i) && line.match(/for|while|map|reduce/)) {
+      hotspots.push({ line: i + 1, issue: 'Deep clone inside iteration — expensive operation', suggestion: 'Immutable updates or shallow clone with spread preferred over structuredClone' })
+    }
+
+    if (line.match(/sync|readFileSync|writeFileSync|execSync/i)) {
+      blockingOps.push({ line: i + 1, issue: 'Synchronous I/O blocks the event loop', suggestion: 'Use async alternatives (readFile, writeFile, exec) for non-blocking I/O' })
+    }
+
+    if (line.match(/\.filter\(.*\.map\(|\.map\(.*\.filter\(/)) {
+      hotspots.push({ line: i + 1, issue: 'Chained filter+map creates intermediate arrays', suggestion: 'Use reduce or single loop to combine transformations' })
+    }
+
+    if (line.match(/new\s+(?:Array|Object|Map|Set)\(\)/) && line.match(/while|for/i)) {
+      hotspots.push({ line: i + 1, issue: 'Repeated allocation inside loop', suggestion: 'Hoist allocations outside loops or use object pooling' })
+    }
+  })
+
+  const totalIssues = hotspots.length + memoryLeaks.length + blockingOps.length
+  const perfScore = Math.max(0, 100 - hotspots.length * 8 - memoryLeaks.length * 12 - blockingOps.length * 10)
+  const severity: Severity = hotspots.length > 2 || memoryLeaks.length > 1 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, hotspots, memoryLeaks, blockingOps, perfScore,
+    summary: hotspots.length + ' performance hotspot(s), ' + memoryLeaks.length + ' memory leak risk(s), ' + blockingOps.length + ' blocking operation(s)' }
+}
+
+function formatPerfProfileReport(r: PerfProfileResult): string {
+  const lines: string[] = []
+  lines.push('# Performance Profiling Analysis')
+  lines.push('')
+  lines.push('**Performance Score:** ' + r.perfScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.hotspots.length > 0) {
+    lines.push('## Performance Hotspots (' + r.hotspots.length + ')')
+    r.hotspots.forEach(h => lines.push('- Line ' + h.line + ': ' + h.suggestion))
+    lines.push('')
+  }
+  if (r.memoryLeaks.length > 0) {
+    lines.push('## Memory Leak Risks (' + r.memoryLeaks.length + ')')
+    r.memoryLeaks.forEach(m => lines.push('- Line ' + m.line + ': ' + m.suggestion))
+    lines.push('')
+  }
+  if (r.blockingOps.length > 0) {
+    lines.push('## Blocking Operations (' + r.blockingOps.length + ')')
+    r.blockingOps.forEach(b => lines.push('- Line ' + b.line + ': ' + b.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.18.0: DOCUMENTATION QUALITY ====================
+
+interface DocQualityResult {
+  totalIssues: number
+  severity: Severity
+  undocumented: { line: number; name: string; type: string; suggestion: string }[]
+  outdated: { line: number; issue: string; suggestion: string }[]
+  examples: { line: number; function: string; suggestion: string }[]
+  docScore: number
+  summary: string
+}
+
+function analyzeDocQuality(code: string): DocQualityResult {
+  const lines = code.split('\n')
+  const undocumented: DocQualityResult['undocumented'] = []
+  const outdated: DocQualityResult['outdated'] = []
+  const examples: DocQualityResult['examples'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    const funcMatch = line.match(/(?:export\s+)?(?:function|const|class)\s+(\w+)/)
+    if (funcMatch) {
+      const lineAbove = i > 0 ? lines[i - 1] : ''
+      const twoAbove = i > 1 ? lines[i - 2] : ''
+      if (!lineAbove.match(/\/\*\*/) && !twoAbove.match(/\*\//)) {
+        undocumented.push({ line: i + 1, name: funcMatch[1], type: line.match(/class/) ? 'class' : 'function', suggestion: 'Add JSDoc with @param, @returns, @throws for public API' })
+      } else if (lineAbove.match(/\/\*\*/) && !lineAbove.match(/@param|@returns|@throws/)) {
+        examples.push({ line: i + 1, function: funcMatch[1], suggestion: 'Add @example usage and document edge cases in JSDoc' })
+      }
+    }
+
+    if (line.match(/\/\*\*| \*\//) && line.match(/TODO|FIXME|HACK/i)) {
+      outdated.push({ line: i + 1, issue: 'Comment contains unresolved TODO/FIXME', suggestion: 'Resolve or create issue tracking — stale comments degrade documentation trust' })
+    }
+
+    if (line.match(/@param.*any|@returns.*any|@type.*any/i)) {
+      outdated.push({ line: i + 1, issue: 'Documentation uses generic "any" type', suggestion: 'Replace with specific types for accurate IntelliSense and type safety' })
+    }
+  })
+
+  const totalIssues = undocumented.length + outdated.length + examples.length
+  const docScore = Math.max(0, 100 - undocumented.length * 10 - outdated.length * 8)
+  const severity: Severity = undocumented.length > 3 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, undocumented, outdated, examples, docScore,
+    summary: undocumented.length + ' undocumented public API(s), ' + outdated.length + ' stale/outdated doc(s), ' + examples.length + ' missing example(s)' }
+}
+
+function formatDocQualityReport(r: DocQualityResult): string {
+  const lines: string[] = []
+  lines.push('# Documentation Quality Analysis')
+  lines.push('')
+  lines.push('**Documentation Score:** ' + r.docScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.undocumented.length > 0) {
+    lines.push('## Undocumented Public APIs (' + r.undocumented.length + ')')
+    r.undocumented.forEach(u => lines.push('- Line ' + u.line + ': ' + u.name + ' (' + u.type + ') — ' + u.suggestion))
+    lines.push('')
+  }
+  if (r.outdated.length > 0) {
+    lines.push('## Stale Documentation (' + r.outdated.length + ')')
+    r.outdated.forEach(o => lines.push('- Line ' + o.line + ': ' + o.suggestion))
+    lines.push('')
+  }
+  if (r.examples.length > 0) {
+    lines.push('## Missing Examples (' + r.examples.length + ')')
+    r.examples.forEach(e => lines.push('- Line ' + e.line + ': ' + e.function + ' — ' + e.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.18.0: SUPPLY CHAIN SECURITY ====================
+
+interface SupplyChainResult {
+  totalIssues: number
+  severity: Severity
+  unpinnedDeps: { line: number; dep: string; suggestion: string }[]
+  suspiciousSources: { line: number; source: string; suggestion: string }[]
+  checksumIssues: { line: number; issue: string; suggestion: string }[]
+  supplyScore: number
+  summary: string
+}
+
+function analyzeSupplyChain(code: string): SupplyChainResult {
+  const lines = code.split('\n')
+  const unpinnedDeps: SupplyChainResult['unpinnedDeps'] = []
+  const suspiciousSources: SupplyChainResult['suspiciousSources'] = []
+  const checksumIssues: SupplyChainResult['checksumIssues'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/install.*--no-save|npm\s+install\s+--no-package-lock|yarn\s+add\s+--no-lockfile/i) ||
+        line.match(/ignore.*lockfile|skip.*integrity|--force/i)) {
+      checksumIssues.push({ line: i + 1, issue: 'Lockfile bypass or integrity check disabled', suggestion: 'Always commit lockfiles and enable integrity checks for reproducible builds' })
+    }
+
+    if (line.match(/(?:http:\/\/|ftp:\/\/)/) && line.match(/cdn|unpkg|jsdelivr|script/i)) {
+      suspiciousSources.push({ line: i + 1, source: line.trim().substring(0, 50), suggestion: 'Use HTTPS for all CDN/script sources to prevent MITM supply chain attacks' })
+    }
+
+    if (line.match(/"[^"]+":\s*"[\^~]?\d/) && !line.match(/lock|resolved|integrity/)) {
+      const depMatch = line.match(/"([^"]+)":\s*"([^"]+)"/)
+      if (depMatch) {
+        const version = depMatch[2]
+        if (version.match(/[\^~]/) || version === 'latest' || version === '*') {
+          unpinnedDeps.push({ line: i + 1, dep: depMatch[1], suggestion: 'Pin exact version "' + depMatch[1] + '": "' + version.replace('^', '').replace('~', '') + '" to prevent unexpected updates' })
+        }
+      }
+    }
+
+    if (line.match(/postinstall|preinstall|install.*script/i) && !line.match(/husky|simple-git-hooks/)) {
+      checksumIssues.push({ line: i + 1, issue: 'Install lifecycle script detected — potential dependency confusion vector', suggestion: 'Audit all lifecycle scripts; use --ignore-scripts in CI to prevent arbitrary code execution' })
+    }
+
+    if (line.match(/curl.*\|.*sh|wget.*\|.*bash|eval.*curl/i)) {
+      suspiciousSources.push({ line: i + 1, source: line.trim().substring(0, 50), suggestion: 'Pipe-from-internet pattern risks supply chain attack — verify checksums before execution' })
+    }
+  })
+
+  const totalIssues = unpinnedDeps.length + suspiciousSources.length + checksumIssues.length
+  const supplyScore = Math.max(0, 100 - unpinnedDeps.length * 8 - suspiciousSources.length * 12 - checksumIssues.length * 15)
+  const severity: Severity = checksumIssues.length > 0 ? 'warning' : suspiciousSources.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, unpinnedDeps, suspiciousSources, checksumIssues, supplyScore,
+    summary: unpinnedDeps.length + ' unpinned dep(s), ' + suspiciousSources.length + ' suspicious source(s), ' + checksumIssues.length + ' integrity issue(s)' }
+}
+
+function formatSupplyChainReport(r: SupplyChainResult): string {
+  const lines: string[] = []
+  lines.push('# Supply Chain Security Analysis')
+  lines.push('')
+  lines.push('**Supply Chain Score:** ' + r.supplyScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.unpinnedDeps.length > 0) {
+    lines.push('## Unpinned Dependencies (' + r.unpinnedDeps.length + ')')
+    r.unpinnedDeps.forEach(d => lines.push('- Line ' + d.line + ': ' + d.dep + ' — ' + d.suggestion))
+    lines.push('')
+  }
+  if (r.suspiciousSources.length > 0) {
+    lines.push('## Suspicious Sources (' + r.suspiciousSources.length + ')')
+    r.suspiciousSources.forEach(s => lines.push('- Line ' + s.line + ': ' + s.suggestion))
+    lines.push('')
+  }
+  if (r.checksumIssues.length > 0) {
+    lines.push('## Integrity Issues (' + r.checksumIssues.length + ')')
+    r.checksumIssues.forEach(c => lines.push('- Line ' + c.line + ': ' + c.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.18.0: SDK DESIGN QUALITY ====================
+
+interface SdkResult {
+  totalIssues: number
+  severity: Severity
+  apiDesign: { line: number; issue: string; suggestion: string }[]
+  versioning: { line: number; issue: string; suggestion: string }[]
+  extensibility: { line: number; issue: string; suggestion: string }[]
+  sdkScore: number
+  summary: string
+}
+
+function analyzeSdkDesign(code: string): SdkResult {
+  const lines = code.split('\n')
+  const apiDesign: SdkResult['apiDesign'] = []
+  const versioning: SdkResult['versioning'] = []
+  const extensibility: SdkResult['extensibility'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/function\s+\w+\s*\([^)]*,[^)]*,[^)]*,[^)]*,[^)]*,[^)]*\)/) && !line.match(/options|config/i)) {
+      apiDesign.push({ line: i + 1, issue: 'Function has 5+ positional parameters — poor discoverability', suggestion: 'Use options object pattern for functions with more than 3 parameters' })
+    }
+
+    if (line.match(/class\s+\w+\s*\{/) && !line.match(/implements|extends|interface/)) {
+      const next5 = lines.slice(i + 1, i + 6).join('\n')
+      if (next5.match(/private|protected/)) {
+        extensibility.push({ line: i + 1, issue: 'Internal methods marked private — prevents legitimate extension', suggestion: 'Use protected or sealed pattern for SDK classes meant to be subclassed' })
+      }
+    }
+
+    if (line.match(/console\.(log|debug|info)/) && !line.match(/verbose|debug.*mode|logger/)) {
+      apiDesign.push({ line: i + 1, issue: 'Direct console.log in SDK code leaks implementation details', suggestion: 'Use configurable logger with silent/debug modes' })
+    }
+
+    if (line.match(/export\s+(?:default\s+)?class/) || line.match(/export\s+function/)) {
+      const prevLine = i > 0 ? lines[i - 1] : ''
+      if (!prevLine.match(/@public|@alpha|@beta|@deprecated|/)) {
+        versioning.push({ line: i + 1, issue: 'Public API without stability annotation', suggestion: 'Add @public, @alpha, @beta, or @deprecated to communicate stability' })
+      }
+    }
+
+    if (line.match(/throw\s+new\s+(?:Error|TypeError|RangeError)/) && !line.match(/@throws|@exception/)) {
+      apiDesign.push({ line: i + 1, issue: 'Throws without documented error contract', suggestion: 'Document error types with @throws and use custom error classes for SDK errors' })
+    }
+
+    if (line.match(/callback/) && line.match(/Promise|async/)) {
+      apiDesign.push({ line: i + 1, issue: 'Mixing callback and Promise patterns in same API', suggestion: 'Standardize on Promise/async; provide promisify helper for legacy callbacks' })
+    }
+  })
+
+  const totalIssues = apiDesign.length + versioning.length + extensibility.length
+  const sdkScore = Math.max(0, 100 - apiDesign.length * 8 - versioning.length * 10 - extensibility.length * 12)
+  const severity: Severity = apiDesign.length > 3 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, apiDesign, versioning, extensibility, sdkScore,
+    summary: apiDesign.length + ' API design issue(s), ' + versioning.length + ' versioning concern(s), ' + extensibility.length + ' extensibility issue(s)' }
+}
+
+function formatSdkReport(r: SdkResult): string {
+  const lines: string[] = []
+  lines.push('# SDK Design Quality Analysis')
+  lines.push('')
+  lines.push('**SDK Quality Score:** ' + r.sdkScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.apiDesign.length > 0) {
+    lines.push('## API Design Issues (' + r.apiDesign.length + ')')
+    r.apiDesign.forEach(a => lines.push('- Line ' + a.line + ': ' + a.suggestion))
+    lines.push('')
+  }
+  if (r.versioning.length > 0) {
+    lines.push('## Versioning Concerns (' + r.versioning.length + ')')
+    r.versioning.forEach(v => lines.push('- Line ' + v.line + ': ' + v.suggestion))
+    lines.push('')
+  }
+  if (r.extensibility.length > 0) {
+    lines.push('## Extensibility (' + r.extensibility.length + ')')
+    r.extensibility.forEach(e => lines.push('- Line ' + e.line + ': ' + e.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
 // ==================== PLUGIN REGISTRATION ====================
 
 export function apply(ctx: Context) {
@@ -13228,5 +13871,117 @@ export function apply(ctx: Context) {
     }
   }))
 
-  console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway`)
+  // Tool 106: AI Prompt Injection Detection (v0.18.0)
+  ctx.tools.register(defineTool({
+    name: 'ai_prompt_security',
+    description: 'Detect AI prompt injection risks: unsanitized input, jailbreak patterns, data leakage in LLM prompts.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The AI/LLM integration code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeAiPromptSecurity(args.code)
+      return formatAiPromptReport(result)
+    }
+  }))
+
+  // Tool 107: Micro-Frontend Architecture (v0.18.0)
+  ctx.tools.register(defineTool({
+    name: 'micro_frontend',
+    description: 'Analyze micro-frontend architecture: routing conflicts, shared deps, namespace pollution.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The micro-frontend code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeMicroFrontends(args.code)
+      return formatMfReport(result)
+    }
+  }))
+
+  // Tool 108: Database Indexing Advisor (v0.18.0)
+  ctx.tools.register(defineTool({
+    name: 'database_indexing',
+    description: 'Analyze database indexing: missing indexes, unused indexes, cardinality issues in SQL.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The SQL/ORM code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeDatabaseIndexes(args.code)
+      return formatIndexReport(result)
+    }
+  }))
+
+  // Tool 109: Advanced Concurrency Patterns (v0.18.0)
+  ctx.tools.register(defineTool({
+    name: 'adv_concurrency',
+    description: 'Analyze concurrency: race conditions, deadlocks, atomicity violations, lock management.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The concurrent code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeAdvConcurrency(args.code)
+      return formatAdvConcurrencyReport(result)
+    }
+  }))
+
+  // Tool 110: Performance Profiling Patterns (v0.18.0)
+  ctx.tools.register(defineTool({
+    name: 'perf_profiling',
+    description: 'Profile performance: hotspots, memory leaks, blocking ops, allocation patterns.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The code to profile for performance' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzePerfProfiling(args.code)
+      return formatPerfProfileReport(result)
+    }
+  }))
+
+  // Tool 111: Documentation Quality (v0.18.0)
+  ctx.tools.register(defineTool({
+    name: 'doc_quality',
+    description: 'Analyze documentation quality: undocumented APIs, stale docs, missing examples.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The code to analyze for documentation' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeDocQuality(args.code)
+      return formatDocQualityReport(result)
+    }
+  }))
+
+  // Tool 112: Supply Chain Security (v0.18.0)
+  ctx.tools.register(defineTool({
+    name: 'supply_chain',
+    description: 'Analyze supply chain security: unpinned deps, suspicious sources, integrity checks.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The dependency/config code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeSupplyChain(args.code)
+      return formatSupplyChainReport(result)
+    }
+  }))
+
+  // Tool 113: SDK Design Quality (v0.18.0)
+  ctx.tools.register(defineTool({
+    name: 'sdk_design',
+    description: 'Analyze SDK design: API ergonomics, versioning, extensibility, error contracts.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The SDK code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeSdkDesign(args.code)
+      return formatSdkReport(result)
+    }
+  }))
+
+  console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design`)
 }
