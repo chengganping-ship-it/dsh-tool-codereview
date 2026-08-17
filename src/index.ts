@@ -72,7 +72,7 @@
  * - API gateway (BFF pattern, service routing)
  * 
  * @module dsh-tool-codereview
- * @version 0.29.0
+ * @version 0.30.0
  * @license MIT
  */
 
@@ -82,7 +82,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 export const name = 'dsh-tool-codereview'
 export const inject = ['tools']
 
-const VERSION = '0.29.0'
+const VERSION = '0.30.0'
 
 // ==================== TYPES ====================
 
@@ -18462,6 +18462,526 @@ function formatResourceQuotaReport(r: ResourceQuotaResult): string {
   return lines.join('\n')
 }
 
+// ==================== V0.30.0: BROWSER COMPAT AUDIT ====================
+
+interface BrowserCompatResult {
+  totalIssues: number
+  severity: Severity
+  prefix: { line: number; issue: string; suggestion: string }[]
+  feature: { line: number; issue: string; suggestion: string }[]
+  compatScore: number
+  summary: string
+}
+
+function analyzeBrowserCompatAudit(code: string): BrowserCompatResult {
+  const lines = code.split('\n')
+  const prefix: BrowserCompatResult['prefix'] = []
+  const feature: BrowserCompatResult['feature'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/webkit|moz|ms-/i) && line.match(/transform|animation|flex|grid|scroll/i) && !line.match(/autoprefixer|prefixer|postcss/i)) {
+      prefix.push({ line: i + 1, issue: 'Manual vendor prefix without autoprefixer', suggestion: 'Use autoprefixer/postcss to auto-generate vendor prefixes from browserslist' })
+    }
+
+    if (line.match(/IntersectionObserver|ResizeObserver|WebWorker|ServiceWorker|IndexedDB/i) && !line.match(/polyfill|fallback|typeof|detect|support|if\s*\(/)) {
+      feature.push({ line: i + 1, issue: 'Modern browser API without feature detection', suggestion: 'Add feature detection (if (window.IntersectionObserver)) or polyfill for older browsers' })
+    }
+
+    if (line.match(/grid.*template|display:\s*grid|display:\s*flex/i) && !line.match(/@supports|fallback|float.*fallback|inline.?block.*fallback/i)) {
+      feature.push({ line: i + 1, issue: 'CSS Grid/Flexbox without fallback layout', suggestion: 'Use @supports (display: grid) with float/inline-block fallback for older browsers' })
+    }
+
+    if (line.match(/Safari|WebKit|webkit/i) && !line.match(/100vh|dvh|lvh|svh|viewport.*unit|safe.*area/i)) {
+      prefix.push({ line: i + 1, issue: 'Safari viewport unit issue — 100vh covers under nav bar', suggestion: 'Use dvh (dynamic viewport height) or -webkit-fill-available for Safari' })
+    }
+  })
+
+  const totalIssues = prefix.length + feature.length
+  const compatScore = Math.max(0, 100 - prefix.length * 8 - feature.length * 10)
+  const severity: Severity = feature.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, prefix, feature, compatScore,
+    summary: prefix.length + ' prefix gap(s), ' + feature.length + ' feature gap(s)' }
+}
+
+function formatBrowserCompatAuditReport(r: BrowserCompatResult): string {
+  const lines: string[] = []
+  lines.push('# Browser Compatibility Analysis')
+  lines.push('')
+  lines.push('**Compat Score:** ' + r.compatScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.prefix.length > 0) {
+    lines.push('## Prefix (' + r.prefix.length + ')')
+    r.prefix.forEach(p => lines.push('- Line ' + p.line + ': ' + p.suggestion))
+    lines.push('')
+  }
+  if (r.feature.length > 0) {
+    lines.push('## Feature Detection (' + r.feature.length + ')')
+    r.feature.forEach(f => lines.push('- Line ' + f.line + ': ' + f.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.30.0: FLOATING POINT ====================
+
+interface FloatingPointResult {
+  totalIssues: number
+  severity: Severity
+  precision: { line: number; issue: string; suggestion: string }[]
+  comparison: { line: number; issue: string; suggestion: string }[]
+  floatScore: number
+  summary: string
+}
+
+function analyzeFloatingPoint(code: string): FloatingPointResult {
+  const lines = code.split('\n')
+  const precision: FloatingPointResult['precision'] = []
+  const comparison: FloatingPointResult['comparison'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/price|amount|cost|total|balance|money|currency/i) && line.match(/\+\s*[0-9]+\.[0-9]|parseFloat|Number\(/i) && !line.match(/decimal|bigint|cents|integer.*math|toFixed|dinero|money.*lib/i)) {
+      precision.push({ line: i + 1, issue: 'Currency calculation with floating-point — rounding error risk', suggestion: 'Use integer cents (BigInt) or decimal.js for monetary calculations' })
+    }
+
+    if (line.match(/===?\s*[0-9]+\.[0-9]+|[0-9]+\.[0-9]+\s===?/i) && !line.match(/epsilon|tolerance|closeTo|approx/i)) {
+      comparison.push({ line: i + 1, issue: 'Exact equality comparison of float value', suggestion: 'Use epsilon comparison (Math.abs(a - b) < 0.0001) for floating-point values' })
+    }
+
+    if (line.match(/toFixed\(|toPrecision\(|Math\.round.*\d|parseFloat/i) && !line.match(/decimal|bigint|bankers|round.*half|Money/i)) {
+      precision.push({ line: i + 1, issue: 'Float rounding without banker\'s/decimal rounding mode', suggestion: 'Use decimal.js for half-even (banker) rounding to avoid cumulative bias' })
+    }
+
+    if (line.match(/0\.1\s*\+\s*0\.2|float.*error|precision.*loss|IEEE.?754/i) && !line.match(/decimal|bigint|cents|solution|fix/i)) {
+      comparison.push({ line: i + 1, issue: 'Known floating-point error pattern detected', suggestion: 'Convert to integer math (cents) or use decimal library for exact arithmetic' })
+    }
+  })
+
+  const totalIssues = precision.length + comparison.length
+  const floatScore = Math.max(0, 100 - precision.length * 12 - comparison.length * 8)
+  const severity: Severity = precision.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, precision, comparison, floatScore,
+    summary: precision.length + ' precision gap(s), ' + comparison.length + ' comparison gap(s)' }
+}
+
+function formatFloatingPointReport(r: FloatingPointResult): string {
+  const lines: string[] = []
+  lines.push('# Floating Point Analysis')
+  lines.push('')
+  lines.push('**Float Score:** ' + r.floatScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.precision.length > 0) {
+    lines.push('## Precision (' + r.precision.length + ')')
+    r.precision.forEach(p => lines.push('- Line ' + p.line + ': ' + p.suggestion))
+    lines.push('')
+  }
+  if (r.comparison.length > 0) {
+    lines.push('## Comparison (' + r.comparison.length + ')')
+    r.comparison.forEach(c => lines.push('- Line ' + c.line + ': ' + c.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.30.0: SNAPSHOT TESTING ====================
+
+interface SnapshotTestResult {
+  totalIssues: number
+  severity: Severity
+  stale: { line: number; issue: string; suggestion: string }[]
+  strategy: { line: number; issue: string; suggestion: string }[]
+  snapshotScore: number
+  summary: string
+}
+
+function analyzeSnapshotTesting(code: string): SnapshotTestResult {
+  const lines = code.split('\n')
+  const stale: SnapshotTestResult['stale'] = []
+  const strategy: SnapshotTestResult['strategy'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/toMatchSnapshot|toMatchInlineSnapshot|snapshot.*test/i) && !line.match(/update.*snapshot|remove.*stale|clean.*stale|threshold/i)) {
+      stale.push({ line: i + 1, issue: 'Snapshot test without stale detection', suggestion: 'Implement CI check for stale snapshots and auto-cleanup for removed components' })
+    }
+
+    if (line.match(/toMatchInlineSnapshot|inline.*snapshot/i) && !line.match(/compact|denser|remove.*props|filter.*props/i)) {
+      strategy.push({ line: i + 1, issue: 'Inline snapshot large and difficult to review', suggestion: 'Prefer toMatchSnapshot (file-based) for visual diff review in pull requests' })
+    }
+
+    if (line.match(/visual.*regression|visual.*test|screenshot.*test|visual.*diff/i) && !line.match(/baseline|threshold|pixel.*tolerance|percy|chromatic/i)) {
+      stale.push({ line: i + 1, issue: 'Visual regression without baseline management', suggestion: 'Use Percy or Chromatic for baseline management and pixel-level diff tolerance' })
+    }
+
+    if (line.match(/serializ|serializer.*test|pretty.*format.*test/i) && !line.match(/deterministic|stable.*order|sort.*key|behaviour.*test/i)) {
+      strategy.push({ line: i + 1, issue: 'Serializer test without deterministic ordering', suggestion: 'Sort object keys in serializer output for stable snapshot comparison' })
+    }
+  })
+
+  const totalIssues = stale.length + strategy.length
+  const snapshotScore = Math.max(0, 100 - stale.length * 10 - strategy.length * 8)
+  const severity: Severity = stale.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, stale, strategy, snapshotScore,
+    summary: stale.length + ' stale gap(s), ' + strategy.length + ' strategy gap(s)' }
+}
+
+function formatSnapshotTestReport(r: SnapshotTestResult): string {
+  const lines: string[] = []
+  lines.push('# Snapshot Testing Analysis')
+  lines.push('')
+  lines.push('**Snapshot Score:** ' + r.snapshotScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.stale.length > 0) {
+    lines.push('## Stale Detection (' + r.stale.length + ')')
+    r.stale.forEach(s => lines.push('- Line ' + s.line + ': ' + s.suggestion))
+    lines.push('')
+  }
+  if (r.strategy.length > 0) {
+    lines.push('## Strategy (' + r.strategy.length + ')')
+    r.strategy.forEach(s => lines.push('- Line ' + s.line + ': ' + s.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.30.0: EVENT SCHEMA ====================
+
+interface EventSchemaResult {
+  totalIssues: number
+  severity: Severity
+  schema: { line: number; issue: string; suggestion: string }[]
+  envelope: { line: number; issue: string; suggestion: string }[]
+  eventSchemaScore: number
+  summary: string
+}
+
+function analyzeEventSchema(code: string): EventSchemaResult {
+  const lines = code.split('\n')
+  const schema: EventSchemaResult['schema'] = []
+  const envelope: EventSchemaResult['envelope'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/publish|emit|dispatch|send.*event|produce/i) && !line.match(/schema|contract|version|Avro|Protobuf|CloudEvent/i)) {
+      schema.push({ line: i + 1, issue: 'Event publish without schema or contract', suggestion: 'Define event schema (Avro/Protobuf/JSON Schema) and version for consumer compatibility' })
+    }
+
+    if (line.match(/event.*type|eventType|event_name|topic.*name/i) && !line.match(/namespace|domain|prefix|v[0-9]+|version/i)) {
+      schema.push({ line: i + 1, issue: 'Event type without versioning or namespace', suggestion: 'Add version (v1, v2) and namespace (order.created.v1) for event evolution' })
+    }
+
+    if (line.match(/CloudEvent|cloud.*event|event.*envelope|metadata.*event/i) && !line.match(/source|time|specversion|datacontenttype/i)) {
+      envelope.push({ line: i + 1, issue: 'CloudEvent without required attributes', suggestion: 'Include required CloudEvent fields: specversion, source, type, time' })
+    }
+
+    if (line.match(/event.*body|event.*payload|event.*data/i) && !line.match(/encryption|sensitive|PII|mask|classif/i)) {
+      envelope.push({ line: i + 1, issue: 'Event payload without data classification', suggestion: 'Classify event data (public/internal/confidential) and mask sensitive fields' })
+    }
+  })
+
+  const totalIssues = schema.length + envelope.length
+  const eventSchemaScore = Math.max(0, 100 - schema.length * 12 - envelope.length * 8)
+  const severity: Severity = schema.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, schema, envelope, eventSchemaScore,
+    summary: schema.length + ' schema gap(s), ' + envelope.length + ' envelope gap(s)' }
+}
+
+function formatEventSchemaReport(r: EventSchemaResult): string {
+  const lines: string[] = []
+  lines.push('# Event Schema Analysis')
+  lines.push('')
+  lines.push('**Event Schema Score:** ' + r.eventSchemaScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.schema.length > 0) {
+    lines.push('## Schema (' + r.schema.length + ')')
+    r.schema.forEach(s => lines.push('- Line ' + s.line + ': ' + s.suggestion))
+    lines.push('')
+  }
+  if (r.envelope.length > 0) {
+    lines.push('## Envelope (' + r.envelope.length + ')')
+    r.envelope.forEach(e => lines.push('- Line ' + e.line + ': ' + e.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.30.0: FORM VALIDATION ====================
+
+interface FormValidationResult {
+  totalIssues: number
+  severity: Severity
+  client: { line: number; issue: string; suggestion: string }[]
+  server: { line: number; issue: string; suggestion: string }[]
+  formScore: number
+  summary: string
+}
+
+function analyzeFormValidation(code: string): FormValidationResult {
+  const lines = code.split('\n')
+  const client: FormValidationResult['client'] = []
+  const server: FormValidationResult['server'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/required|minLength|maxLength|pattern.*input|type.*email/i) && !line.match(/zod|yup|joi|schema|validate.*API|server.*valid/i)) {
+      client.push({ line: i + 1, issue: 'Client-side validation without server-side parity', suggestion: 'Mirror validation rules server-side using shared schema (zod/yup) for security' })
+    }
+
+    if (line.match(/sanitize|strip.*html|escape.*html|DOMPurify|XSS.*input/i) && !line.match(/server.*sanitize|content.*security|CSP|output.*encod/i)) {
+      server.push({ line: i + 1, issue: 'Client-side sanitize without server-side enforcement', suggestion: 'Sanitize on server as well (client can be bypassed); add CSP headers' })
+    }
+
+    if (line.match(/onChange.*valid|onBlur.*valid|realtime.*valid|while.*type.*valid/i) && !line.match(/debounce|throttle|onSubmit.*valid|blur.*valid/i)) {
+      client.push({ line: i + 1, issue: 'Real-time validation without debounce', suggestion: 'Debounce async validation (e.g., username availability) to reduce API calls' })
+    }
+
+    if (line.match(/submit.*form|form.*submit|onSubmit/i) && !line.match(/preventDefault|validate.*before|schema.*parse|check.*valid/i)) {
+      server.push({ line: i + 1, issue: 'Form submission without validation gate', suggestion: 'Validate form with schema (zod.parse) before API call to prevent invalid data' })
+    }
+  })
+
+  const totalIssues = client.length + server.length
+  const formScore = Math.max(0, 100 - client.length * 8 - server.length * 12)
+  const severity: Severity = server.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, client, server, formScore,
+    summary: client.length + ' client gap(s), ' + server.length + ' server gap(s)' }
+}
+
+function formatFormValidationReport(r: FormValidationResult): string {
+  const lines: string[] = []
+  lines.push('# Form Validation Analysis')
+  lines.push('')
+  lines.push('**Form Score:** ' + r.formScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.client.length > 0) {
+    lines.push('## Client Validation (' + r.client.length + ')')
+    r.client.forEach(c => lines.push('- Line ' + c.line + ': ' + c.suggestion))
+    lines.push('')
+  }
+  if (r.server.length > 0) {
+    lines.push('## Server Validation (' + r.server.length + ')')
+    r.server.forEach(s => lines.push('- Line ' + s.line + ': ' + s.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.30.0: RETRY IDEMPOTENCY ====================
+
+interface RetryIdempotencyResult {
+  totalIssues: number
+  severity: Severity
+  retryPolicy: { line: number; issue: string; suggestion: string }[]
+  idempotency: { line: number; issue: string; suggestion: string }[]
+  retryScore: number
+  summary: string
+}
+
+function analyzeRetryIdempotency(code: string): RetryIdempotencyResult {
+  const lines = code.split('\n')
+  const retryPolicy: RetryIdempotencyResult['retryPolicy'] = []
+  const idempotency: RetryIdempotencyResult['idempotency'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/retry|retries|retryCount|maxAttempts/i) && !line.match(/idempoten|idempotency.?key|Idempotency-Key|dedup/i)) {
+      retryPolicy.push({ line: i + 1, issue: 'Retry without idempotency key for non-idempotent operation', suggestion: 'Add Idempotency-Key header for POST/PATCH retries to prevent duplicate side effects' })
+    }
+
+    if (line.match(/catch.*retry|onError.*retry|failed.*retry/i) && !line.match(/status.*code|5[0-9][0-9]|idempoten.*safe|GET.*retry/i)) {
+      retryPolicy.push({ line: i + 1, issue: 'Retry on all errors including non-retryable', suggestion: 'Only retry on idempotent-safe operations or 429/5xx status codes (not 4xx client errors)' })
+    }
+
+    if (line.match(/Idempotency-Key|idempotency.*key|idempotencyKey/i) && !line.match(/generate|uuid|random|unique|hash|request.*id/i)) {
+      idempotency.push({ line: i + 1, issue: 'Idempotency key without unique value generation', suggestion: 'Generate idempotency key from UUID or hash of request payload per operation' })
+    }
+
+    if (line.match(/dedup|deduplicate|already.*processed|duplicate.*detect/i) && !line.match(/ttl|expire|window|cookie.*ttl|24.*hour/i)) {
+      idempotency.push({ line: i + 1, issue: 'Deduplication without TTL expiration window', suggestion: 'Set TTL on dedup store (e.g., 24h) to bound storage and handle replay after window' })
+    }
+  })
+
+  const totalIssues = retryPolicy.length + idempotency.length
+  const retryScore = Math.max(0, 100 - retryPolicy.length * 10 - idempotency.length * 10)
+  const severity: Severity = idempotency.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, retryPolicy, idempotency, retryScore,
+    summary: retryPolicy.length + ' retry gap(s), ' + idempotency.length + ' idempotency gap(s)' }
+}
+
+function formatRetryIdempotencyReport(r: RetryIdempotencyResult): string {
+  const lines: string[] = []
+  lines.push('# Retry Idempotency Analysis')
+  lines.push('')
+  lines.push('**Retry Score:** ' + r.retryScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.retryPolicy.length > 0) {
+    lines.push('## Retry Policy (' + r.retryPolicy.length + ')')
+    r.retryPolicy.forEach(r => lines.push('- Line ' + r.line + ': ' + r.suggestion))
+    lines.push('')
+  }
+  if (r.idempotency.length > 0) {
+    lines.push('## Idempotency (' + r.idempotency.length + ')')
+    r.idempotency.forEach(id => lines.push('- Line ' + id.line + ': ' + id.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.30.0: ACCESSIBILITY SEMANTICS ====================
+
+interface A11ySemanticsResult {
+  totalIssues: number
+  severity: Severity
+  aria: { line: number; issue: string; suggestion: string }[]
+  keyboard: { line: number; issue: string; suggestion: string }[]
+  a11yScore: number
+  summary: string
+}
+
+function analyzeA11ySemantics(code: string): A11ySemanticsResult {
+  const lines = code.split('\n')
+  const aria: A11ySemanticsResult['aria'] = []
+  const keyboard: A11ySemanticsResult['keyboard'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/onClick|onMouseDown|onMouseUp/i) && !line.match(/onKeyDown|onKeyPress|button|role|tabIndex/i)) {
+      keyboard.push({ line: i + 1, issue: 'Click handler without keyboard equivalent', suggestion: 'Add onKeyDown (Enter/Space) handler or use <button> for keyboard accessibility' })
+    }
+
+    if (line.match(/div|span|section|article/i) && line.match(/role=|aria-|tabIndex/i) && !line.match(/button|link|heading|checkbox|radio|tab/i)) {
+      aria.push({ line: i + 1, issue: 'Custom role without equivalent semantic HTML', suggestion: 'Prefer native semantic elements (<button>, <a>) over ARIA roles on generic elements' })
+    }
+
+    if (line.match(/aria-label|aria-labelledby/i) && !line.match(/alt=|label|visible.*text|aria.*hidden/i)) {
+      aria.push({ line: i + 1, issue: 'ARIA label without visible text alternative', suggestion: 'Ensure aria-label matches visible text (if any) for screen reader consistency' })
+    }
+
+    if (line.match(/focus|outline|focus.*visible/i) && !line.match(/focus.*visible|outline.*focus|not.*focus|what.*input/i)) {
+      keyboard.push({ line: i + 1, issue: 'Focus indicator removal without replacement', suggestion: 'Use :focus-visible with custom outline; never remove focus indicator entirely' })
+    }
+  })
+
+  const totalIssues = aria.length + keyboard.length
+  const a11yScore = Math.max(0, 100 - aria.length * 8 - keyboard.length * 10)
+  const severity: Severity = keyboard.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, aria, keyboard, a11yScore,
+    summary: aria.length + ' ARIA gap(s), ' + keyboard.length + ' keyboard gap(s)' }
+}
+
+function formatA11ySemanticsReport(r: A11ySemanticsResult): string {
+  const lines: string[] = []
+  lines.push('# Accessibility Semantics Analysis')
+  lines.push('')
+  lines.push('**A11y Score:** ' + r.a11yScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.aria.length > 0) {
+    lines.push('## ARIA (' + r.aria.length + ')')
+    r.aria.forEach(a => lines.push('- Line ' + a.line + ': ' + a.suggestion))
+    lines.push('')
+  }
+  if (r.keyboard.length > 0) {
+    lines.push('## Keyboard (' + r.keyboard.length + ')')
+    r.keyboard.forEach(k => lines.push('- Line ' + k.line + ': ' + k.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.30.0: RACE CONDITION ====================
+
+interface RaceConditionResult {
+  totalIssues: number
+  severity: Severity
+  atomic: { line: number; issue: string; suggestion: string }[]
+  ordering: { line: number; issue: string; suggestion: string }[]
+  raceScore: number
+  summary: string
+}
+
+function analyzeRaceCondition(code: string): RaceConditionResult {
+  const lines = code.split('\n')
+  const atomic: RaceConditionResult['atomic'] = []
+  const ordering: RaceConditionResult['ordering'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/if.*exist|check.*then.*write|read.*then.*write|findOrCreate/i) && !line.match(/atomic|transaction|lock|mutex|compareAndSwap|upsert/i)) {
+      atomic.push({ line: i + 1, issue: 'Check-then-act without atomic operation', suggestion: 'Use atomic compareAndSwap, transaction, or database upsert to prevent race condition' })
+    }
+
+    if (line.match(/increment|decrement|count.*\+\+|counter.*\+|balance.*\+|balance.*-/i) && line.match(/fetch|request|GET|getBalance/i) && !line.match(/atomic|decrement.*atomic|CAS|optimistic.*lock|version/i)) {
+      ordering.push({ line: i + 1, issue: 'Read-modify-write without atomic increment', suggestion: 'Use atomic increment (UPDATE SET count = count + 1) or optimistic locking with version' })
+    }
+
+    if (line.match(/lock|mutex|acquireLock|withLock|distributedLock/i) && !line.match(/timeout|ttl|deadlock|tryLock|lease/i)) {
+      atomic.push({ line: i + 1, issue: 'Lock without timeout or deadlock prevention', suggestion: 'Set lock TTL/lease duration; use tryLock with timeout to prevent indefinite blocking' })
+    }
+
+    if (line.match(/setTimeout.*state|setInterval.*state|async.*then.*setState|promise.*then.*setState/i) && !line.match(/mounted|cleanup|abort|cancel|cleanup.*return/i)) {
+      ordering.push({ line: i + 1, issue: 'Async state update without cleanup — unmount race', suggestion: 'Add cleanup (AbortController, mounted flag) to cancel async updates on unmount' })
+    }
+  })
+
+  const totalIssues = atomic.length + ordering.length
+  const raceScore = Math.max(0, 100 - atomic.length * 10 - ordering.length * 10)
+  const severity: Severity = atomic.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, atomic, ordering, raceScore,
+    summary: atomic.length + ' atomicity gap(s), ' + ordering.length + ' ordering gap(s)' }
+}
+
+function formatRaceConditionReport(r: RaceConditionResult): string {
+  const lines: string[] = []
+  lines.push('# Race Condition Analysis')
+  lines.push('')
+  lines.push('**Race Score:** ' + r.raceScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.atomic.length > 0) {
+    lines.push('## Atomicity (' + r.atomic.length + ')')
+    r.atomic.forEach(a => lines.push('- Line ' + a.line + ': ' + a.suggestion))
+    lines.push('')
+  }
+  if (r.ordering.length > 0) {
+    lines.push('## Ordering (' + r.ordering.length + ')')
+    r.ordering.forEach(o => lines.push('- Line ' + o.line + ': ' + o.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
 // ==================== PLUGIN REGISTRATION ====================
 
 export function apply(ctx: Context) {
@@ -21400,5 +21920,111 @@ ctx.tools.register(defineTool({
   }
 }))
 
-console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design, container_security, ml_pipeline, api_deprecation, design_system, pwa_compliance, type_system, green_computing, realtime_collab, a11y_deep, i18n_deep, css_architecture, state_machine, web_components, resilience, module_federation, review_automation, observability, migration_safety, edge_computing, api_versioning, wasm_advanced, feature_toggles, email_deliverability, seo_analysis, monorepo_boundaries, ddd_patterns, mf_runtime, realtime_protocols, data_pipeline, gateway_deep, test_rigor, quality_gate, graphql_schema, event_sourcing_integrity, rate_limiting, migration_safety, auth_hardening, distributed_tracing, infrastructure_as_code, review_automation, contract_testing, sec_headers_deep, privacy_compliance, concurrency_patterns, cloud_native, error_recovery, system_design, dependency_injection, api_versioning, serialization_perf, memory_allocation, build_pipeline, error_messages, logging_discipline, config_as_code, component_interface, token_hygiene, query_antipatterns, websocket_lifecycle, graphql_perf, deprecation_tracking, code_splitting_audit, css_arch_deep, sec_dep_audit, webhook_signature, oauth_security, email_infra, health_check_depth, cors_security, feature_rollout, secret_lifecycle, rate_limit_strategy, container_security_scan, grpc_security, data_residency, deployment_progressive, obs_exemplar, data_pipeline_quality, service_mesh, plugin_architecture, mobile_app_security, data_masking, core_web_vitals, infra_cost, api_gateway_config, css_in_js_perf, crdt_state_sync, resource_quota`)
+// ==================== V0.30.0 REGISTRATIONS ====================
+
+ctx.tools.register(defineTool({
+  name: 'browser_compat_audit',
+  description: 'Analyze browser compatibility: vendor prefixes, feature detection, CSS fallback, Safari viewport.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The code to analyze for browser compatibility' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeBrowserCompatAudit(args.code)
+    return formatBrowserCompatAuditReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'floating_point',
+  description: 'Analyze floating-point precision: currency calculation, rounding modes, equality comparison.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The code to analyze for floating-point issues' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeFloatingPoint(args.code)
+    return formatFloatingPointReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'snapshot_testing',
+  description: 'Analyze snapshot testing: stale detection, visual regression baseline, serializer determinism.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The test code to analyze for snapshot quality' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeSnapshotTesting(args.code)
+    return formatSnapshotTestReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'event_schema',
+  description: 'Analyze event schema: versioning, CloudEvent envelope, data classification, contract definition.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The event code to analyze for schema quality' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeEventSchema(args.code)
+    return formatEventSchemaReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'form_validation',
+  description: 'Analyze form validation: client-server parity, sanitization enforcement, submission gating.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The form code to analyze for validation quality' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeFormValidation(args.code)
+    return formatFormValidationReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'retry_idempotency',
+  description: 'Analyze retry and idempotency: Idempotency-Key usage, retry-safe operations, dedup TTL.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The retry/idempotency code to analyze' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeRetryIdempotency(args.code)
+    return formatRetryIdempotencyReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'a11y_semantics',
+  description: 'Analyze accessibility semantics: keyboard nav, ARIA roles, focus management, semantic HTML.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The code to analyze for accessibility semantics' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeA11ySemantics(args.code)
+    return formatA11ySemanticsReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'race_condition',
+  description: 'Analyze race conditions: check-then-act, read-modify-write, lock timeout, async state cleanup.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The code to analyze for race conditions' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeRaceCondition(args.code)
+    return formatRaceConditionReport(result)
+  }
+}))
+
+console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design, container_security, ml_pipeline, api_deprecation, design_system, pwa_compliance, type_system, green_computing, realtime_collab, a11y_deep, i18n_deep, css_architecture, state_machine, web_components, resilience, module_federation, review_automation, observability, migration_safety, edge_computing, api_versioning, wasm_advanced, feature_toggles, email_deliverability, seo_analysis, monorepo_boundaries, ddd_patterns, mf_runtime, realtime_protocols, data_pipeline, gateway_deep, test_rigor, quality_gate, graphql_schema, event_sourcing_integrity, rate_limiting, migration_safety, auth_hardening, distributed_tracing, infrastructure_as_code, review_automation, contract_testing, sec_headers_deep, privacy_compliance, concurrency_patterns, cloud_native, error_recovery, system_design, dependency_injection, api_versioning, serialization_perf, memory_allocation, build_pipeline, error_messages, logging_discipline, config_as_code, component_interface, token_hygiene, query_antipatterns, websocket_lifecycle, graphql_perf, deprecation_tracking, code_splitting_audit, css_arch_deep, sec_dep_audit, webhook_signature, oauth_security, email_infra, health_check_depth, cors_security, feature_rollout, secret_lifecycle, rate_limit_strategy, container_security_scan, grpc_security, data_residency, deployment_progressive, obs_exemplar, data_pipeline_quality, service_mesh, plugin_architecture, mobile_app_security, data_masking, core_web_vitals, infra_cost, api_gateway_config, css_in_js_perf, crdt_state_sync, resource_quota, browser_compat_audit, floating_point, snapshot_testing, event_schema, form_validation, retry_idempotency, a11y_semantics, race_condition`)
 }
