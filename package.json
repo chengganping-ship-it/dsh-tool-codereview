@@ -1,7 +1,7 @@
 {
   "name": "dsh-tool-codereview",
-  "version": "0.19.0",
-  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 121 tools, Container Security, ML Pipeline, Design System, PWA, Green Computing",
+  "version": "0.20.0",
+  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 129 tools, A11y Deep, i18n, CSS Arch, State Machines, Web Components, Resilience",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",

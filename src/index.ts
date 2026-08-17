@@ -72,7 +72,7 @@
  * - API gateway (BFF pattern, service routing)
  * 
  * @module dsh-tool-codereview
- * @version 0.19.0
+ * @version 0.20.0
  * @license MIT
  */
 
@@ -82,7 +82,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 export const name = 'dsh-tool-codereview'
 export const inject = ['tools']
 
-const VERSION = '0.19.0'
+const VERSION = '0.20.0'
 
 // ==================== TYPES ====================
 
@@ -12973,6 +12973,708 @@ function formatCollabReport(r: CollabResult): string {
   return lines.join('\n')
 }
 
+// ==================== V0.20.0: ACCESSIBILITY DEEP AUDIT ====================
+
+interface A11yDeepResult {
+  totalIssues: number
+  severity: Severity
+  focusIssues: { line: number; issue: string; suggestion: string }[]
+  ariaIssues: { line: number; issue: string; suggestion: string }[]
+  semanticIssues: { line: number; issue: string; suggestion: string }[]
+  motionIssues: { line: number; issue: string; suggestion: string }[]
+  a11yScore: number
+  summary: string
+}
+
+function analyzeA11yDeep(code: string): A11yDeepResult {
+  const lines = code.split('\n')
+  const focusIssues: A11yDeepResult['focusIssues'] = []
+  const ariaIssues: A11yDeepResult['ariaIssues'] = []
+  const semanticIssues: A11yDeepResult['semanticIssues'] = []
+  const motionIssues: A11yDeepResult['motionIssues'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/tabindex\s*[=:]\s*['"]?-['"]?|tabindex\s*[=:]\s*['"]?-1['"]?/) && !line.match(/focusable|aria/)) {
+      focusIssues.push({ line: i + 1, issue: 'Negative tabindex removes element from tab order', suggestion: 'Use tabindex=0 for focusable elements; avoid negative values unless managing focus manually' })
+    }
+
+    if (line.match(/onClick|onMouseDown|onMouseUp/) && !line.match(/onKeyDown|onKeyUp|role=|tabindex|button/i)) {
+      semanticIssues.push({ line: i + 1, issue: 'Click handler on non-interactive element — keyboard inaccessible', suggestion: 'Add role=button, tabindex=0, and onKeyDown handler for keyboard accessibility' })
+    }
+
+    if (line.match(/aria-(\w+)/) && !line.match(/aria-label|aria-labelledby|aria-describedby|aria-live|aria-atomic|aria-busy/)) {
+      const ariaAttr = line.match(/aria-(\w+)/)?.[1] || ''
+      if (ariaAttr.match(/hidden|expanded|pressed|checked|selected/) && !line.match(/aria-live/)) {
+        ariaIssues.push({ line: i + 1, issue: 'ARIA state attribute without live region announcement', suggestion: 'Add aria-live=polite or aria-live=assertive for dynamic state changes' })
+      }
+    }
+
+    if (line.match(/(?:<div|<span)\s+role=['"]button['"]/) && !line.match(/aria-pressed|aria-expanded|aria-haspopup/)) {
+      ariaIssues.push({ line: i + 1, issue: 'Custom button role missing state information', suggestion: 'Add aria-pressed/aria-expanded for toggle/menu buttons to communicate state' })
+    }
+
+    if (line.match(/<img|<svg|<canvas/) && !line.match(/alt=|aria-label|role=['"]img['"]|aria-hidden/)) {
+      semanticIssues.push({ line: i + 1, issue: 'Image without alt text or aria-label', suggestion: 'Add descriptive alt text or aria-label; use alt="" for decorative images' })
+    }
+
+    if (line.match(/animate|transition|transform.*scale|transform.*rotate/) && !line.match(/prefers-reduced-motion|@media.*reduce/)) {
+      motionIssues.push({ line: i + 1, issue: 'Animation without prefers-reduced-motion support', suggestion: 'Wrap animations in @media (prefers-reduced-motion: no-preference) for vestibular safety' })
+    }
+
+    if (line.match(/modal|dialog|drawer|popup/) && !line.match(/aria-modal|role=['"]dialog['"]|aria-label|focus.*trap/i)) {
+      focusIssues.push({ line: i + 1, issue: 'Modal/dialog without focus trap and aria-modal', suggestion: 'Implement focus trap, aria-modal=true, and Esc key to close for accessible modal' })
+    }
+
+    if (line.match(/<table/) && !line.match(/<th|scope=|aria-rowindex|aria-colindex/)) {
+      semanticIssues.push({ line: i + 1, issue: 'Table without header cells or scope', suggestion: 'Add <th scope=col> or <th scope=row> for screen reader navigation' })
+    }
+  })
+
+  const totalIssues = focusIssues.length + ariaIssues.length + semanticIssues.length + motionIssues.length
+  const a11yScore = Math.max(0, 100 - focusIssues.length * 10 - ariaIssues.length * 8 - semanticIssues.length * 12 - motionIssues.length * 6)
+  const severity: Severity = semanticIssues.length > 2 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, focusIssues, ariaIssues, semanticIssues, motionIssues, a11yScore,
+    summary: focusIssues.length + ' focus issue(s), ' + ariaIssues.length + ' ARIA issue(s), ' + semanticIssues.length + ' semantic issue(s), ' + motionIssues.length + ' motion issue(s)' }
+}
+
+function formatA11yDeepReport(r: A11yDeepResult): string {
+  const lines: string[] = []
+  lines.push('# Accessibility Deep Audit (WCAG 2.2)')
+  lines.push('')
+  lines.push('**A11y Score:** ' + r.a11yScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.focusIssues.length > 0) {
+    lines.push('## Focus Management (' + r.focusIssues.length + ')')
+    r.focusIssues.forEach(f => lines.push('- Line ' + f.line + ': ' + f.suggestion))
+    lines.push('')
+  }
+  if (r.ariaIssues.length > 0) {
+    lines.push('## ARIA Usage (' + r.ariaIssues.length + ')')
+    r.ariaIssues.forEach(a => lines.push('- Line ' + a.line + ': ' + a.suggestion))
+    lines.push('')
+  }
+  if (r.semanticIssues.length > 0) {
+    lines.push('## Semantic HTML (' + r.semanticIssues.length + ')')
+    r.semanticIssues.forEach(s => lines.push('- Line ' + s.line + ': ' + s.suggestion))
+    lines.push('')
+  }
+  if (r.motionIssues.length > 0) {
+    lines.push('## Motion Safety (' + r.motionIssues.length + ')')
+    r.motionIssues.forEach(m => lines.push('- Line ' + m.line + ': ' + m.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.20.0: INTERNATIONALIZATION DEEP ====================
+
+interface I11nDeepResult {
+  totalIssues: number
+  severity: Severity
+  rtlIssues: { line: number; issue: string; suggestion: string }[]
+  pluralIssues: { line: number; issue: string; suggestion: string }[]
+  formatIssues: { line: number; issue: string; suggestion: string }[]
+  i18nScore: number
+  summary: string
+}
+
+function analyzeI18nDeep(code: string): I11nDeepResult {
+  const lines = code.split('\n')
+  const rtlIssues: I11nDeepResult['rtlIssues'] = []
+  const pluralIssues: I11nDeepResult['pluralIssues'] = []
+  const formatIssues: I11nDeepResult['formatIssues'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/(?:margin|padding)-left|text-align:\s*left|float:\s*left/i) && !line.match(/logical|inline-start|inline-end/)) {
+      rtlIssues.push({ line: i + 1, issue: 'Physical property instead of logical property', suggestion: 'Use margin-inline-start/padding-inline-end for RTL-compatible layouts' })
+    }
+
+    if (line.match(/if\s*\(.*count\s*===?\s*1|count\s*!==?\s*1|count\s*>\s*1|count\s*<\s*1|plural/i)) {
+      pluralIssues.push({ line: i + 1, issue: 'Manual pluralization logic — does not handle all locales', suggestion: 'Use Intl.PluralRules for locale-aware pluralization (Arabic has 6 forms!)' })
+    }
+
+    if (line.match(/new\s+Date\(\)|\.toLocaleDateString|Date\.now|timestamp/i) && !line.match(/Intl\.DateTimeFormat|timeZone|locale/i)) {
+      formatIssues.push({ line: i + 1, issue: 'Date/time without locale-aware formatting', suggestion: 'Use Intl.DateTimeFormat with locale param for locale-specific dates' })
+    }
+
+    if (line.match(/\.toLocaleString|\.toLocaleUpperCase|\.toLocaleLowerCase|\.localeCompare/) && !line.match(/Intl\.Collator|Intl\.DateTimeFormat|locale/i)) {
+      formatIssues.push({ line: i + 1, issue: 'Locale-sensitive operation without explicit locale', suggestion: 'Specify locale param for consistent sorting/formatting across regions' })
+    }
+
+    if (line.match(/(?:currency|price|money|salary)/i) && !line.match(/Intl\.NumberFormat.*currency|style:\s*['"]currency['"]/)) {
+      formatIssues.push({ line: i + 1, issue: 'Currency value without Intl.NumberFormat', suggestion: 'Use Intl.NumberFormat with style=currency for locale-aware currency display' })
+    }
+
+    if (line.match(/dir=['"]ltr['"]|dir=['"]rtl['"]/) && !line.match(/auto|document\.dir|computed/i)) {
+      rtlIssues.push({ line: i + 1, issue: 'Hardcoded text direction', suggestion: 'Use dir=auto or CSS direction property for dynamic direction detection' })
+    }
+
+    if (line.match(/translate=Y|data-translate|i18nKey|useTranslation/) && !line.match(/fallback|default|missing/)) {
+      pluralIssues.push({ line: i + 1, issue: 'i18n key without fallback for missing translations', suggestion: 'Add fallback text for missing translations to avoid key leakage' })
+    }
+  })
+
+  const totalIssues = rtlIssues.length + pluralIssues.length + formatIssues.length
+  const i18nScore = Math.max(0, 100 - rtlIssues.length * 10 - pluralIssues.length * 12 - formatIssues.length * 8)
+  const severity: Severity = pluralIssues.length > 1 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, rtlIssues, pluralIssues, formatIssues, i18nScore,
+    summary: rtlIssues.length + ' RTL issue(s), ' + pluralIssues.length + ' pluralization issue(s), ' + formatIssues.length + ' formatting issue(s)' }
+}
+
+function formatI18nDeepReport(r: I11nDeepResult): string {
+  const lines: string[] = []
+  lines.push('# Internationalization Deep Analysis')
+  lines.push('')
+  lines.push('**i18n Score:** ' + r.i18nScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.rtlIssues.length > 0) {
+    lines.push('## RTL / Bidirectional (' + r.rtlIssues.length + ')')
+    r.rtlIssues.forEach(r => lines.push('- Line ' + r.line + ': ' + r.suggestion))
+    lines.push('')
+  }
+  if (r.pluralIssues.length > 0) {
+    lines.push('## Pluralization (' + r.pluralIssues.length + ')')
+    r.pluralIssues.forEach(p => lines.push('- Line ' + p.line + ': ' + p.suggestion))
+    lines.push('')
+  }
+  if (r.formatIssues.length > 0) {
+    lines.push('## Locale Formatting (' + r.formatIssues.length + ')')
+    r.formatIssues.forEach(f => lines.push('- Line ' + f.line + ': ' + f.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.20.0: CSS ARCHITECTURE ====================
+
+interface CssArchResult {
+  totalIssues: number
+  severity: Severity
+  specificity: { line: number; issue: string; suggestion: string }[]
+  methodology: { line: number; issue: string; suggestion: string }[]
+  deadStyles: { line: number; issue: string; suggestion: string }[]
+  cssScore: number
+  summary: string
+}
+
+function analyzeCssArchitecture(code: string): CssArchResult {
+  const lines = code.split('\n')
+  const specificity: CssArchResult['specificity'] = []
+  const methodology: CssArchResult['methodology'] = []
+  const deadStyles: CssArchResult['deadStyles'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/!important/)) {
+      specificity.push({ line: i + 1, issue: '!important overrides all specificity — maintenance nightmare', suggestion: 'Increase specificity naturally or refactor cascade instead of !important' })
+    }
+
+    if (line.match(/#[a-zA-Z].*\s+#[a-zA-Z]|^[^:]*#[a-zA-Z].*#[a-zA-Z]/) && !line.match(/\/\/|variable/)) {
+      specificity.push({ line: i + 1, issue: 'ID selector with high specificity — hard to override', suggestion: 'Use class selectors for components; reserve IDs for unique anchors' })
+    }
+
+    if (line.match(/^[.#][a-z]+[^{]*\{[^}]*width:|height:|margin:|padding:/) && !line.match(/media|container|-\*-/)) {
+      methodology.push({ line: i + 1, issue: 'Fixed dimensions prevent responsive layout', suggestion: 'Use min/max-width, clamp() or container queries for fluid layouts' })
+    }
+
+    if (line.match(/style\.\w+|styled\.|css=|className.*style/i) && !line.match(/theme|token|designToken/)) {
+      methodology.push({ line: i + 1, issue: 'Inline/managed styles bypass CSS architecture', suggestion: 'Use CSS custom properties or design tokens for maintainable styling' })
+    }
+
+    if (line.match(/display:\s*flex|display:\s*grid/) && !line.match(/gap/i)) {
+      methodology.push({ line: i + 1, issue: 'Modern layout without gap property', suggestion: 'Use gap instead of margins for consistent spacing in flex/grid' })
+    }
+
+    if (line.match(/nth-child|first-child|last-child/) && line.match(/margin|padding|border/)) {
+      specificity.push({ line: i + 1, issue: 'Child selector with spacing creates edge cases', suggestion: 'Use gap on parent or :not(:last-child) for consistent spacing' })
+    }
+
+    if (line.match(/width:\s*\d+px|height:\s*\d+px/) && !line.match(/media|container|aspect-ratio/)) {
+      deadStyles.push({ line: i + 1, issue: 'Pixel-perfect dimensions — breaks on different viewports', suggestion: 'Use relative units (%, vw, rem) or container queries' })
+    }
+
+    if (line.match(/@[a-z]+-/) && line.match(/webkit|moz|ms|o-/)) {
+      methodology.push({ line: i + 1, issue: 'Vendor prefix without autoprefixer', suggestion: 'Use PostCSS/autoprefixer — manual prefixes are outdated' })
+    }
+  })
+
+  const totalIssues = specificity.length + methodology.length + deadStyles.length
+  const cssScore = Math.max(0, 100 - specificity.length * 10 - methodology.length * 8 - deadStyles.length * 6)
+  const severity: Severity = specificity.length > 2 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, specificity, methodology, deadStyles, cssScore,
+    summary: specificity.length + ' specificity issue(s), ' + methodology.length + ' methodology issue(s), ' + deadStyles.length + ' dead/unresponsive style(s)' }
+}
+
+function formatCssArchReport(r: CssArchResult): string {
+  const lines: string[] = []
+  lines.push('# CSS Architecture Analysis')
+  lines.push('')
+  lines.push('**CSS Score:** ' + r.cssScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.specificity.length > 0) {
+    lines.push('## Specificity Issues (' + r.specificity.length + ')')
+    r.specificity.forEach(s => lines.push('- Line ' + s.line + ': ' + s.suggestion))
+    lines.push('')
+  }
+  if (r.methodology.length > 0) {
+    lines.push('## Methodology (' + r.methodology.length + ')')
+    r.methodology.forEach(m => lines.push('- Line ' + m.line + ': ' + m.suggestion))
+    lines.push('')
+  }
+  if (r.deadStyles.length > 0) {
+    lines.push('## Unresponsive Styles (' + r.deadStyles.length + ')')
+    r.deadStyles.forEach(d => lines.push('- Line ' + d.line + ': ' + d.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.20.0: STATE MACHINE PATTERNS ====================
+
+interface StateMachineResult {
+  totalIssues: number
+  severity: Severity
+  invalidStates: { line: number; issue: string; suggestion: string }[]
+  transitionIssues: { line: number; issue: string; suggestion: string }[]
+  guardIssues: { line: number; issue: string; suggestion: string }[]
+  smScore: number
+  summary: string
+}
+
+function analyzeStateMachine(code: string): StateMachineResult {
+  const lines = code.split('\n')
+  const invalidStates: StateMachineResult['invalidStates'] = []
+  const transitionIssues: StateMachineResult['transitionIssues'] = []
+  const guardIssues: StateMachineResult['guardIssues'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/state\s*[=:]\s*['"]\w+['"]|status\s*[=:]\s*['"]\w+['"]|phase\s*[=:]\s*['"]\w+['"]/)) {
+      const stateVal = line.match(/['"]([^'"]+)['"]/)?.[1] || ''
+      if (stateVal && !line.match(/const|enum|type|union/i)) {
+        invalidStates.push({ line: i + 1, issue: 'State represented as string literal — error-prone', suggestion: 'Use TypeScript union type or XState for type-safe state machines' })
+      }
+    }
+
+    if (line.match(/if.*state.*===|switch.*state|state.*\?\s*|case\s+['"]\w+['"]/)) {
+      if (!line.match(/default|else|invalid|unknown/)) {
+        transitionIssues.push({ line: i + 1, issue: 'State transition without default/unreachable handling', suggestion: 'Add default case to handle impossible states (make illegal states unrepresentable)' })
+      }
+    }
+
+    if (line.match(/dispatch|send|emit|fire/) && !line.match(/guard|can|allow|validate|permission/)) {
+      guardIssues.push({ line: i + 1, issue: 'State transition without guard condition', suggestion: 'Add guard function to validate transition is allowed from current state' })
+    }
+
+    if (line.match(/state\s*===\s*['"]loading['"]|state\s*===\s*['"]error['"]/) && !line.match(/retry|timeout|fallback|reset/)) {
+      transitionIssues.push({ line: i + 1, issue: 'Terminal state (loading/error) without recovery path', suggestion: 'Define reset/retry transitions for error and loading states' })
+    }
+
+    if (line.match(/Promise.*state|async.*setState|fetch.*setState/) && !line.match(/stale|cancel|abort|cleanup/)) {
+      invalidStates.push({ line: i + 1, issue: 'Async state update without stale check', suggestion: 'Track request ID or use AbortController to prevent stale state overwrites' })
+    }
+
+    if (line.match(/XState|createMachine|xstate/i) && !line.match(/assign|invoke|entry|exit/)) {
+      transitionIssues.push({ line: i + 1, issue: 'XState machine without side effects', suggestion: 'Use assign() for context updates and invoke() for async work in XState' })
+    }
+  })
+
+  const totalIssues = invalidStates.length + transitionIssues.length + guardIssues.length
+  const smScore = Math.max(0, 100 - invalidStates.length * 12 - transitionIssues.length * 10 - guardIssues.length * 8)
+  const severity: Severity = invalidStates.length > 1 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, invalidStates, transitionIssues, guardIssues, smScore,
+    summary: invalidStates.length + ' invalid state risk(s), ' + transitionIssues.length + ' transition issue(s), ' + guardIssues.length + ' missing guard(s)' }
+}
+
+function formatStateMachineReport(r: StateMachineResult): string {
+  const lines: string[] = []
+  lines.push('# State Machine Pattern Analysis')
+  lines.push('')
+  lines.push('**State Machine Score:** ' + r.smScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.invalidStates.length > 0) {
+    lines.push('## Invalid State Risks (' + r.invalidStates.length + ')')
+    r.invalidStates.forEach(s => lines.push('- Line ' + s.line + ': ' + s.suggestion))
+    lines.push('')
+  }
+  if (r.transitionIssues.length > 0) {
+    lines.push('## Transition Issues (' + r.transitionIssues.length + ')')
+    r.transitionIssues.forEach(t => lines.push('- Line ' + t.line + ': ' + t.suggestion))
+    lines.push('')
+  }
+  if (r.guardIssues.length > 0) {
+    lines.push('## Missing Guards (' + r.guardIssues.length + ')')
+    r.guardIssues.forEach(g => lines.push('- Line ' + g.line + ': ' + g.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.20.0: WEB COMPONENTS ====================
+
+interface WebComponentResult {
+  totalIssues: number
+  severity: Severity
+  shadowDom: { line: number; issue: string; suggestion: string }[]
+  lifecycle: { line: number; issue: string; suggestion: string }[]
+  slotIssues: { line: number; issue: string; suggestion: string }[]
+  wcScore: number
+  summary: string
+}
+
+function analyzeWebComponents(code: string): WebComponentResult {
+  const lines = code.split('\n')
+  const shadowDom: WebComponentResult['shadowDom'] = []
+  const lifecycle: WebComponentResult['lifecycle'] = []
+  const slotIssues: WebComponentResult['slotIssues'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/customElements\.define|HTMLElement|extends\s+HTMLElement/)) {
+      if (!line.match(/connectedCallback|disconnectedCallback|attributeChangedCallback/)) {
+        lifecycle.push({ line: i + 1, issue: 'Custom element without lifecycle callbacks', suggestion: 'Implement connectedCallback/disconnectedCallback for mount/unmount behavior' })
+      }
+    }
+
+    if (line.match(/connectedCallback|disconnectedCallback/) && !line.match(/removeEventListener|disconnectObserver|cleanup/)) {
+      lifecycle.push({ line: i + 1, issue: 'Lifecycle callback without cleanup — memory leak risk', suggestion: 'Remove event listeners and disconnect observers in disconnectedCallback' })
+    }
+
+    if (line.match(/attachShadow|shadowRoot/) && !line.match(/mode:|delegatesFocus|slot/)) {
+      shadowDom.push({ line: i + 1, issue: 'Shadow DOM without explicit mode', suggestion: 'Specify { mode: "open" } for accessible shadow root; consider closed for encapsulation' })
+    }
+
+    if (line.match(/<slot/) && !line.match(/name=|::slotted|slotchange/)) {
+      slotIssues.push({ line: i + 1, issue: 'Unnamed slot without slotchange handler', suggestion: 'Handle slotchange event to react to slotted content changes' })
+    }
+
+    if (line.match(/attributeChangedCallback/) && !line.match(/observedAttributes|get observedAttributes/)) {
+      lifecycle.push({ line: i + 1, issue: 'attributeChangedCallback without observedAttributes', suggestion: 'Define static get observedAttributes() to specify which attributes to observe' })
+    }
+
+    if (line.match(/customElements\.define/) && !line.match(/extends|customElements\.whenDefined|upgrade/)) {
+      shadowDom.push({ line: i + 1, issue: 'Custom element registered without upgrade strategy', suggestion: 'Handle undefined state with customElements.whenDefined()' })
+    }
+
+    if (line.match(/::part|::theme|::slotted/) && !line.match(/exportparts|part=/)) {
+      shadowDom.push({ line: i + 1, issue: 'CSS ::part() used without part attribute', suggestion: 'Add part="name" to elements; use exportParts for nested shadow boundaries' })
+    }
+  })
+
+  const totalIssues = shadowDom.length + lifecycle.length + slotIssues.length
+  const wcScore = Math.max(0, 100 - shadowDom.length * 8 - lifecycle.length * 12 - slotIssues.length * 6)
+  const severity: Severity = lifecycle.length > 1 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, shadowDom, lifecycle, slotIssues, wcScore,
+    summary: shadowDom.length + ' Shadow DOM issue(s), ' + lifecycle.length + ' lifecycle issue(s), ' + slotIssues.length + ' slot issue(s)' }
+}
+
+function formatWcReport(r: WebComponentResult): string {
+  const lines: string[] = []
+  lines.push('# Web Components Analysis')
+  lines.push('')
+  lines.push('**Web Components Score:** ' + r.wcScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.shadowDom.length > 0) {
+    lines.push('## Shadow DOM (' + r.shadowDom.length + ')')
+    r.shadowDom.forEach(s => lines.push('- Line ' + s.line + ': ' + s.suggestion))
+    lines.push('')
+  }
+  if (r.lifecycle.length > 0) {
+    lines.push('## Lifecycle (' + r.lifecycle.length + ')')
+    r.lifecycle.forEach(l => lines.push('- Line ' + l.line + ': ' + l.suggestion))
+    lines.push('')
+  }
+  if (r.slotIssues.length > 0) {
+    lines.push('## Slots (' + r.slotIssues.length + ')')
+    r.slotIssues.forEach(s => lines.push('- Line ' + s.line + ': ' + s.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.20.0: RESILIENCE PATTERNS ====================
+
+interface ResilienceResult {
+  totalIssues: number
+  severity: Severity
+  circuitBreaker: { line: number; issue: string; suggestion: string }[]
+  retryIssues: { line: number; issue: string; suggestion: string }[]
+  fallbackIssues: { line: number; issue: string; suggestion: string }[]
+  resilienceScore: number
+  summary: string
+}
+
+function analyzeResiliencePatterns(code: string): ResilienceResult {
+  const lines = code.split('\n')
+  const circuitBreaker: ResilienceResult['circuitBreaker'] = []
+  const retryIssues: ResilienceResult['retryIssues'] = []
+  const fallbackIssues: ResilienceResult['fallbackIssues'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/fetch\(|axios|http\.request|request\(/i) && !line.match(/timeout|retry|circuit|fallback|catch|error/i)) {
+      retryIssues.push({ line: i + 1, issue: 'Network call without timeout or retry policy', suggestion: 'Add timeout, exponential backoff retry, and circuit breaker' })
+    }
+
+    if (line.match(/catch\s*\(/)) {
+      const next2 = lines.slice(i, i + 2).join('\n')
+      if (!next2.match(/log|metric|alert|fallback|throw|rethrow/) && !line.match(/finally/)) {
+        fallbackIssues.push({ line: i + 1, issue: 'Empty catch block swallows errors silently', suggestion: 'Log error, emit metric, or provide fallback — never silently swallow' })
+      }
+    }
+
+    if (line.match(/retry|retries|attempt/i) && !line.match(/exponential|backoff|maxRetries|jitter/i)) {
+      retryIssues.push({ line: i + 1, issue: 'Retry without exponential backoff — thundering herd risk', suggestion: 'Add exponential backoff with jitter: delay = base * 2^attempt + random' })
+    }
+
+    if (line.match(/circuit|breaker|openState|halfOpen/) && !line.match(/failureThreshold|resetTimeout|halfOpenRequests/)) {
+      circuitBreaker.push({ line: i + 1, issue: 'Circuit breaker without configuration', suggestion: 'Set failureThreshold, resetTimeout, and halfOpen max requests' })
+    }
+
+    if (line.match(/rateThrottle|throttle|debounce.*limit/) && !line.match(/queue|overflow|reject|fallback/)) {
+      circuitBreaker.push({ line: i + 1, issue: 'Rate limiter without overflow policy', suggestion: 'Define behavior when limit exceeded: queue, reject, or fallback' })
+    }
+
+    if (line.match(/(?:cache|fallback|backup).*=.*(?:cache|fallback|backup)/) && line.match(/\|\||\?\?/) && !line.match(/stale|ttl|fresh/)) {
+      fallbackIssues.push({ line: i + 1, issue: 'Fallback value without freshness check', suggestion: 'Add TTL/staleness check to fallback data to prevent stale reads' })
+    }
+
+    if (line.match(/Promise\.race/) && !line.match(/AbortController|cancel|timeout/)) {
+      retryIssues.push({ line: i + 1, issue: 'Promise.race without cancellation — rejected promises linger', suggestion: 'Combine with AbortController to cancel losing promises' })
+    }
+  })
+
+  const totalIssues = circuitBreaker.length + retryIssues.length + fallbackIssues.length
+  const resilienceScore = Math.max(0, 100 - circuitBreaker.length * 10 - retryIssues.length * 8 - fallbackIssues.length * 12)
+  const severity: Severity = fallbackIssues.length > 1 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, circuitBreaker, retryIssues, fallbackIssues, resilienceScore,
+    summary: circuitBreaker.length + ' circuit breaker gap(s), ' + retryIssues.length + ' retry issue(s), ' + fallbackIssues.length + ' fallback issue(s)' }
+}
+
+function formatResilienceReport(r: ResilienceResult): string {
+  const lines: string[] = []
+  lines.push('# Resilience Pattern Analysis')
+  lines.push('')
+  lines.push('**Resilience Score:** ' + r.resilienceScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.circuitBreaker.length > 0) {
+    lines.push('## Circuit Breaker (' + r.circuitBreaker.length + ')')
+    r.circuitBreaker.forEach(c => lines.push('- Line ' + c.line + ': ' + c.suggestion))
+    lines.push('')
+  }
+  if (r.retryIssues.length > 0) {
+    lines.push('## Retry Policy (' + r.retryIssues.length + ')')
+    r.retryIssues.forEach(r => lines.push('- Line ' + r.line + ': ' + r.suggestion))
+    lines.push('')
+  }
+  if (r.fallbackIssues.length > 0) {
+    lines.push('## Fallback Gaps (' + r.fallbackIssues.length + ')')
+    r.fallbackIssues.forEach(f => lines.push('- Line ' + f.line + ': ' + f.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.20.0: MODULE FEDERATION DEEP ====================
+
+interface ModuleFedResult {
+  totalIssues: number
+  severity: Severity
+  sharedIssues: { line: number; issue: string; suggestion: string }[]
+  remoteIssues: { line: number; issue: string; suggestion: string }[]
+  versionIssues: { line: number; issue: string; suggestion: string }[]
+  mfScore: number
+  summary: string
+}
+
+function analyzeModuleFederation(code: string): ModuleFedResult {
+  const lines = code.split('\n')
+  const sharedIssues: ModuleFedResult['sharedIssues'] = []
+  const remoteIssues: ModuleFedResult['remoteIssues'] = []
+  const versionIssues: ModuleFedResult['versionIssues'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/shared:\s*\{|sharedModules|shared\s*\{/i)) {
+      if (!line.match(/singleton|requiredVersion|strictVersion/)) {
+        sharedIssues.push({ line: i + 1, issue: 'Shared dependency without singleton flag', suggestion: 'Add singleton: true for React/Vue to prevent duplicate instances' })
+      }
+      if (line.match(/react|vue|angular/) && !line.match(/strictVersion|requiredVersion/)) {
+        versionIssues.push({ line: i + 1, issue: 'Shared framework without version constraint', suggestion: 'Add requiredVersion to detect mismatches at runtime' })
+      }
+    }
+
+    if (line.match(/remotes\s*[=:]|remoteEntries|Remote/i) && !line.match(/timeout|retry|fallback|errorComponent/)) {
+      remoteIssues.push({ line: i + 1, issue: 'Remote module without load failure handling', suggestion: 'Add try/catch with error boundary and retry for remote loading' })
+    }
+
+    if (line.match(/exposes\s*[=:]|exposes\s*\{/i) && !line.match(/async|lazy|Suspense|loading/)) {
+      remoteIssues.push({ line: i + 1, issue: 'Exposed module without lazy loading', suggestion: 'Wrap exposed component in React.lazy + Suspense for code splitting' })
+    }
+
+    if (line.match(/ModuleFederationPlugin|@module-federation/i) && !line.match(/runtime|chunkLoading|global/)) {
+      sharedIssues.push({ line: i + 1, issue: 'Module Federation without runtime configuration', suggestion: 'Configure runtime chunk loading for independent deployments' })
+    }
+
+    if (line.match(/loadRemote|importRemote|loadComponent/) && !line.match(/error|fallback|timeout|retry/)) {
+      remoteIssues.push({ line: i + 1, issue: 'Dynamic remote load without error boundary', suggestion: 'Wrap remote component in ErrorBoundary with retry and fallback UI' })
+    }
+
+    if (line.match(/version|semver/) && line.match(/mismatch|conflict|incompatible/) && !line.match(/fallback|warning|compat/)) {
+      versionIssues.push({ line: i + 1, issue: 'Version mismatch without graceful degradation', suggestion: 'Log warning and use compatible fallback when versions mismatch' })
+    }
+  })
+
+  const totalIssues = sharedIssues.length + remoteIssues.length + versionIssues.length
+  const mfScore = Math.max(0, 100 - sharedIssues.length * 10 - remoteIssues.length * 12 - versionIssues.length * 8)
+  const severity: Severity = remoteIssues.length > 1 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, sharedIssues, remoteIssues, versionIssues, mfScore,
+    summary: sharedIssues.length + ' shared config issue(s), ' + remoteIssues.length + ' remote loading issue(s), ' + versionIssues.length + ' version issue(s)' }
+}
+
+function formatModuleFedReport(r: ModuleFedResult): string {
+  const lines: string[] = []
+  lines.push('# Module Federation Deep Analysis')
+  lines.push('')
+  lines.push('**Module Fed Score:** ' + r.mfScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.sharedIssues.length > 0) {
+    lines.push('## Shared Config (' + r.sharedIssues.length + ')')
+    r.sharedIssues.forEach(s => lines.push('- Line ' + s.line + ': ' + s.suggestion))
+    lines.push('')
+  }
+  if (r.remoteIssues.length > 0) {
+    lines.push('## Remote Loading (' + r.remoteIssues.length + ')')
+    r.remoteIssues.forEach(r => lines.push('- Line ' + r.line + ': ' + r.suggestion))
+    lines.push('')
+  }
+  if (r.versionIssues.length > 0) {
+    lines.push('## Version Compatibility (' + r.versionIssues.length + ')')
+    r.versionIssues.forEach(v => lines.push('- Line ' + v.line + ': ' + v.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.20.0: CODE REVIEW AUTOMATION ====================
+
+interface ReviewAutoResult {
+  totalIssues: number
+  severity: Severity
+  sizeIssues: { line: number; issue: string; suggestion: string }[]
+  coverageGap: { line: number; issue: string; suggestion: string }[]
+  slaIssues: { line: number; issue: string; suggestion: string }[]
+  reviewScore: number
+  summary: string
+}
+
+function analyzeReviewAutomation(code: string): ReviewAutoResult {
+  const lines = code.split('\n')
+  const sizeIssues: ReviewAutoResult['sizeIssues'] = []
+  const coverageGap: ReviewAutoResult['coverageGap'] = []
+  const slaIssues: ReviewAutoResult['slaIssues'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/TODO|FIXME|HACK|XXX|TEMP/i)) {
+      const ageMatch = line.match(/(\d{4}-\d{2}-\d{2})/)
+      if (ageMatch) {
+        const date = new Date(ageMatch[1])
+        const daysSince = Math.floor((Date.now() - date.getTime()) / (1000 * 60 * 60 * 24))
+        if (daysSince > 30) {
+          slaIssues.push({ line: i + 1, issue: 'Stale TODO from ' + ageMatch[1] + ' (' + daysSince + ' days old)', suggestion: 'Resolve or create tracked issue — stale TODOs reduce code trust' })
+        }
+      } else {
+        slaIssues.push({ line: i + 1, issue: 'TODO without tracking date', suggestion: 'Add date to TODO (TODO(yyyy-mm-dd): ...) for freshness tracking' })
+      }
+    }
+
+    if (line.match(/review|pull.?request|merge.?request/i) && line.match(/assign|reviewer/i) && !line.match(/auto|bot|ci|hook/)) {
+      slaIssues.push({ line: i + 1, issue: 'Manual reviewer assignment — bottleneck risk', suggestion: 'Use CODEOWNERS or auto-assign for faster review SLA' })
+    }
+
+    if (line.match(/skip.*test|test.*skip|xit\(|xdescribe\(/) && !line.match(/reason|cause|issue/)) {
+      coverageGap.push({ line: i + 1, issue: 'Skipped test without documented reason', suggestion: 'Add comment linking to issue/reason for test skip' })
+    }
+
+    if (line.match(/eslint-disable|ts-ignore|ts-nocheck|prettier-ignore/) && !line.match(/reason|TODO|issue/)) {
+      coverageGap.push({ line: i + 1, issue: 'Lint/type suppression without justification', suggestion: 'Add comment explaining why suppression is needed (// eslint-disable-next-line reason)' })
+    }
+
+    if (line.match(/console\.(log|debug|info)\s*\(/) && !line.match(/verbose|debug.*mode|logger\./)) {
+      sizeIssues.push({ line: i + 1, issue: 'Debug console.log left in production code', suggestion: 'Remove or use configurable logger — console.log leaks to production' })
+    }
+
+    if (line.match(/deprecated.*not.*used|unused.*import|unused.*var|dead.*code/i)) {
+      sizeIssues.push({ line: i + 1, issue: 'Referenced dead code — candidates for removal', suggestion: 'Run knip or ts-prune to detect unused exports for removal' })
+    }
+  })
+
+  const totalIssues = sizeIssues.length + coverageGap.length + slaIssues.length
+  const reviewScore = Math.max(0, 100 - sizeIssues.length * 10 - coverageGap.length * 8 - slaIssues.length * 12)
+  const severity: Severity = slaIssues.length > 2 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, sizeIssues, coverageGap, slaIssues, reviewScore,
+    summary: sizeIssues.length + ' code hygiene issue(s), ' + coverageGap.length + ' coverage gap(s), ' + slaIssues.length + ' SLA issue(s)' }
+}
+
+function formatReviewAutoReport(r: ReviewAutoResult): string {
+  const lines: string[] = []
+  lines.push('# Code Review Automation Analysis')
+  lines.push('')
+  lines.push('**Review Score:** ' + r.reviewScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.sizeIssues.length > 0) {
+    lines.push('## Code Hygiene (' + r.sizeIssues.length + ')')
+    r.sizeIssues.forEach(s => lines.push('- Line ' + s.line + ': ' + s.suggestion))
+    lines.push('')
+  }
+  if (r.coverageGap.length > 0) {
+    lines.push('## Coverage Gaps (' + r.coverageGap.length + ')')
+    r.coverageGap.forEach(c => lines.push('- Line ' + c.line + ': ' + c.suggestion))
+    lines.push('')
+  }
+  if (r.slaIssues.length > 0) {
+    lines.push('## Review SLA (' + r.slaIssues.length + ')')
+    r.slaIssues.forEach(s => lines.push('- Line ' + s.line + ': ' + s.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
 // ==================== PLUGIN REGISTRATION ====================
 
 export function apply(ctx: Context) {
@@ -14783,5 +15485,117 @@ export function apply(ctx: Context) {
     }
   }))
 
-  console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design, container_security, ml_pipeline, api_deprecation, design_system, pwa_compliance, type_system, green_computing, realtime_collab`)
+  // Tool 122: Accessibility Deep Audit (v0.20.0)
+  ctx.tools.register(defineTool({
+    name: 'a11y_deep',
+    description: 'Deep accessibility audit: focus management, ARIA, semantic HTML, motion safety.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The UI code to analyze for accessibility' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeA11yDeep(args.code)
+      return formatA11yDeepReport(result)
+    }
+  }))
+
+  // Tool 123: Internationalization Deep (v0.20.0)
+  ctx.tools.register(defineTool({
+    name: 'i18n_deep',
+    description: 'Deep i18n analysis: RTL layout, pluralization, locale formatting, currencies.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The code to analyze for internationalization' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeI18nDeep(args.code)
+      return formatI18nDeepReport(result)
+    }
+  }))
+
+  // Tool 124: CSS Architecture (v0.20.0)
+  ctx.tools.register(defineTool({
+    name: 'css_architecture',
+    description: 'Analyze CSS architecture: specificity, responsive design, methodology, dead styles.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The CSS/styling code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeCssArchitecture(args.code)
+      return formatCssArchReport(result)
+    }
+  }))
+
+  // Tool 125: State Machine Patterns (v0.20.0)
+  ctx.tools.register(defineTool({
+    name: 'state_machine',
+    description: 'Analyze state machines: invalid states, transitions, guards, XState patterns.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The state machine code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeStateMachine(args.code)
+      return formatStateMachineReport(result)
+    }
+  }))
+
+  // Tool 126: Web Components (v0.20.0)
+  ctx.tools.register(defineTool({
+    name: 'web_components',
+    description: 'Analyze web components: Shadow DOM, lifecycle, slots, custom elements.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The web component code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeWebComponents(args.code)
+      return formatWcReport(result)
+    }
+  }))
+
+  // Tool 127: Resilience Patterns (v0.20.0)
+  ctx.tools.register(defineTool({
+    name: 'resilience',
+    description: 'Analyze resilience: circuit breakers, retry policies, fallbacks, error boundaries.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The code to analyze for resilience patterns' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeResiliencePatterns(args.code)
+      return formatResilienceReport(result)
+    }
+  }))
+
+  // Tool 128: Module Federation Deep (v0.20.0)
+  ctx.tools.register(defineTool({
+    name: 'module_federation',
+    description: 'Deep module federation: shared config, remote loading, version compatibility.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The Module Federation config to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeModuleFederation(args.code)
+      return formatModuleFedReport(result)
+    }
+  }))
+
+  // Tool 129: Code Review Automation (v0.20.0)
+  ctx.tools.register(defineTool({
+    name: 'review_automation',
+    description: 'Analyze review automation: stale TODOs, coverage gaps, review SLA, hygiene.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The code to analyze for review hygiene' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeReviewAutomation(args.code)
+      return formatReviewAutoReport(result)
+    }
+  }))
+
+  console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design, container_security, ml_pipeline, api_deprecation, design_system, pwa_compliance, type_system, green_computing, realtime_collab, a11y_deep, i18n_deep, css_architecture, state_machine, web_components, resilience, module_federation, review_automation`)
 }
