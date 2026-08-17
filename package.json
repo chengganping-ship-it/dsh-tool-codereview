@@ -1,7 +1,7 @@
 {
   "name": "dsh-tool-codereview",
-  "version": "0.32.0",
-  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 225 tools, GraphQL Depth, Auth Token Rotation, MQ Dead Letter, File Upload Sec, Query Plan, Encryption at Rest, WS Connection, Rate Limit Policy",
+  "version": "0.33.0",
+  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 233 tools, Payment Idempotency, Cron Reliability, Immutable Data, Data Residency, Response Envelope, Compression, DNS Health, Graceful Degradation",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",

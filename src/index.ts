@@ -72,7 +72,7 @@
  * - API gateway (BFF pattern, service routing)
  * 
  * @module dsh-tool-codereview
- * @version 0.32.0
+ * @version 0.33.0
  * @license MIT
  */
 
@@ -82,7 +82,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 export const name = 'dsh-tool-codereview'
 export const inject = ['tools']
 
-const VERSION = '0.32.0'
+const VERSION = '0.33.0'
 
 // ==================== TYPES ====================
 
@@ -20022,6 +20022,526 @@ function formatRateLimitPolicyReport(r: RateLimitPolicyResult): string {
   return lines.join('\n')
 }
 
+// ==================== V0.33.0: PAYMENT IDEMPOTENCY ====================
+
+interface PaymentIdempotencyResult {
+  totalIssues: number
+  severity: Severity
+  idempotency: { line: number; issue: string; suggestion: string }[]
+  reconciliation: { line: number; issue: string; suggestion: string }[]
+  paymentScore: number
+  summary: string
+}
+
+function analyzePaymentIdempotency(code: string): PaymentIdempotencyResult {
+  const lines = code.split('\n')
+  const idempotency: PaymentIdempotencyResult['idempotency'] = []
+  const reconciliation: PaymentIdempotencyResult['reconciliation'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/payment.*charge|charge.*payment|processPayment|executePayment/i) && !line.match(/idempoten|idempotency| idempotency.?key|dedup|duplicate.*check/i)) {
+      idempotency.push({ line: i + 1, issue: 'Payment charge without idempotency key', suggestion: 'Accept Idempotency-Key header from client; store key with payment result to prevent duplicate charges' })
+    }
+
+    if (line.match(/reconcil|settlement|daily.*recon|batch.*recon/i) && !line.match(/diff|mismatch|discrepancy|auto.*resolve|exception.*report/i)) {
+      reconciliation.push({ line: i + 1, issue: 'Reconciliation without mismatch detection', suggestion: 'Add automated diff between internal payments and gateway settlement reports; alert on discrepancies' })
+    }
+
+    if (line.match(/refund.*payment|processRefund|executeRefund/i) && !line.match(/original.*payment|originalTransaction|parent.*payment|linked/i)) {
+      idempotency.push({ line: i + 1, issue: 'Refund without linking to original payment', suggestion: 'Link refund to original payment transaction; prevent refund exceeding original amount' })
+    }
+
+    if (line.match(/payment.*status|check.*payment|payment.*result/i) && !line.match(/webhook.*confir|async.*confirm|pending.*review|manual.*review/i)) {
+      reconciliation.push({ line: i + 1, issue: 'Payment status check without async confirmation', suggestion: 'Use webhook for async payment confirmation; do not rely solely on synchronous response' })
+    }
+  })
+
+  const totalIssues = idempotency.length + reconciliation.length
+  const paymentScore = Math.max(0, 100 - idempotency.length * 10 - reconciliation.length * 8)
+  const severity: Severity = idempotency.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, idempotency, reconciliation, paymentScore,
+    summary: idempotency.length + ' idempotency gap(s), ' + reconciliation.length + ' reconciliation gap(s)' }
+}
+
+function formatPaymentIdempotencyReport(r: PaymentIdempotencyResult): string {
+  const lines: string[] = []
+  lines.push('# Payment Idempotency Analysis')
+  lines.push('')
+  lines.push('**Payment Score:** ' + r.paymentScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.idempotency.length > 0) {
+    lines.push('## Idempotency (' + r.idempotency.length + ')')
+    r.idempotency.forEach(id => lines.push('- Line ' + id.line + ': ' + id.suggestion))
+    lines.push('')
+  }
+  if (r.reconciliation.length > 0) {
+    lines.push('## Reconciliation (' + r.reconciliation.length + ')')
+    r.reconciliation.forEach(r => lines.push('- Line ' + r.line + ': ' + r.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.33.0: CRON RELIABILITY ====================
+
+interface CronReliabilityResult {
+  totalIssues: number
+  severity: Severity
+  overlap: { line: number; issue: string; suggestion: string }[]
+  monitor: { line: number; issue: string; suggestion: string }[]
+  cronScore: number
+  summary: string
+}
+
+function analyzeCronReliability(code: string): CronReliabilityResult {
+  const lines = code.split('\n')
+  const overlap: CronReliabilityResult['overlap'] = []
+  const monitor: CronReliabilityResult['monitor'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/cron|schedule\(|setInterval.*\d{4,}|recurring.*task|periodic.*job/i) && !line.match(/lock|mutex|overlap|concurrent|single.*instance|distributed.*lock/i)) {
+      overlap.push({ line: i + 1, issue: 'Cron job without overlap prevention', suggestion: 'Use distributed lock (Redis SETNX) to prevent concurrent execution of same cron job' })
+    }
+
+    if (line.match(/cron.*fail|cron.*error|scheduled.*fail|job.*error/i) && !line.match(/alert|notify|dead.*letter|retry.*job|fallback/i)) {
+      monitor.push({ line: i + 1, issue: 'Cron failure without alerting', suggestion: 'Add cron failure alert (PagerDuty/Slack); implement retry with exponential backoff for transient failures' })
+    }
+
+    if (line.match(/cron.*long|cron.*slow|scheduled.*long|job.*timeout/i) && !line.match(/timeout|kill|interrupt|max.*duration|SIGTERM/i)) {
+      overlap.push({ line: i + 1, issue: 'Long-running cron without timeout', suggestion: 'Set maximum execution timeout (e.g., 30min); kill job if it exceeds to prevent next overlap' })
+    }
+
+    if (line.match(/cron.*skip|cron.*miss|missed.*execution|skip.*cron/i) && !line.match(/catchup|catch.*up|backfill|makeup|compensation/i)) {
+      monitor.push({ line: i + 1, issue: 'Missed cron execution without catchup strategy', suggestion: 'Implement catchup logic (backfill) when cron resumes after downtime; detect missed windows' })
+    }
+  })
+
+  const totalIssues = overlap.length + monitor.length
+  const cronScore = Math.max(0, 100 - overlap.length * 10 - monitor.length * 8)
+  const severity: Severity = overlap.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, overlap, monitor, cronScore,
+    summary: overlap.length + ' overlap gap(s), ' + monitor.length + ' monitor gap(s)' }
+}
+
+function formatCronReliabilityReport(r: CronReliabilityResult): string {
+  const lines: string[] = []
+  lines.push('# Cron Reliability Analysis')
+  lines.push('')
+  lines.push('**Cron Score:** ' + r.cronScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.overlap.length > 0) {
+    lines.push('## Overlap Prevention (' + r.overlap.length + ')')
+    r.overlap.forEach(o => lines.push('- Line ' + o.line + ': ' + o.suggestion))
+    lines.push('')
+  }
+  if (r.monitor.length > 0) {
+    lines.push('## Monitoring (' + r.monitor.length + ')')
+    r.monitor.forEach(m => lines.push('- Line ' + m.line + ': ' + m.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.33.0: IMMUTABLE DATA PATTERN ====================
+
+interface ImmutableDataResult {
+  totalIssues: number
+  severity: Severity
+  appendOnly: { line: number; issue: string; suggestion: string }[]
+  audit: { line: number; issue: string; suggestion: string }[]
+  immScore: number
+  summary: string
+}
+
+function analyzeImmutableData(code: string): ImmutableDataResult {
+  const lines = code.split('\n')
+  const appendOnly: ImmutableDataResult['appendOnly'] = []
+  const audit: ImmutableDataResult['audit'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/UPDATE.*SET|UPDATE.*WHERE|modify.*record|change.*record/i) && line.match(/event.*log|audit.*log|ledger|history/i) && !line.match(/append.*only|insert.*new|version.*chain|hash.*chain/i)) {
+      appendOnly.push({ line: i + 1, issue: 'UPDATE on event/audit table — mutating historical record', suggestion: 'Use append-only INSERT for audit/event logs; never UPDATE historical records to preserve integrity' })
+    }
+
+    if (line.match(/DELETE.*FROM|remove.*record|purge.*data/i) && line.match(/audit|event|history|ledger/i) && !line.match(/soft.*delete|mark.*deleted|retention.*policy|ttl/i)) {
+      audit.push({ line: i + 1, issue: 'Hard DELETE on audit/event data — destroying evidence trail', suggestion: 'Use soft delete (mark deleted) or enforce retention policy; preserve audit trail for compliance' })
+    }
+
+    if (line.match(/hash.*chain|ch.*hash|previous.*hash|link.*hash/i) && !line.match(/verify|validate.*chain|integrity.*check|detect.*tamper/i)) {
+      appendOnly.push({ line: i + 1, issue: 'Hash chain without integrity verification', suggestion: 'Add periodic hash chain verification to detect tampering in append-only data' })
+    }
+
+    if (line.match(/immutable.*record|immutable.*data|append.*only|write.*once/i) && !line.match(/retention|ttl|expir|auto.*archive|cold.*storage/i)) {
+      audit.push({ line: i + 1, issue: 'Append-only data without retention policy', suggestion: 'Define retention period (e.g., 7 years for financial); implement auto-archive to cold storage' })
+    }
+  })
+
+  const totalIssues = appendOnly.length + audit.length
+  const immScore = Math.max(0, 100 - appendOnly.length * 10 - audit.length * 8)
+  const severity: Severity = appendOnly.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, appendOnly, audit, immScore,
+    summary: appendOnly.length + ' append-only gap(s), ' + audit.length + ' audit gap(s)' }
+}
+
+function formatImmutableDataReport(r: ImmutableDataResult): string {
+  const lines: string[] = []
+  lines.push('# Immutable Data Analysis')
+  lines.push('')
+  lines.push('**Imm Score:** ' + r.immScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.appendOnly.length > 0) {
+    lines.push('## Append-Only (' + r.appendOnly.length + ')')
+    r.appendOnly.forEach(a => lines.push('- Line ' + a.line + ': ' + a.suggestion))
+    lines.push('')
+  }
+  if (r.audit.length > 0) {
+    lines.push('## Audit (' + r.audit.length + ')')
+    r.audit.forEach(a => lines.push('- Line ' + a.line + ': ' + a.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.33.0: DATA RESIDENCY COMPLIANCE ====================
+
+interface DataResidencyComplianceResult {
+  totalIssues: number
+  severity: Severity
+  location: { line: number; issue: string; suggestion: string }[]
+  transfer: { line: number; issue: string; suggestion: string }[]
+  residencyScore: number
+  summary: string
+}
+
+function analyzeDataResidencyCompliance(code: string): DataResidencyComplianceResult {
+  const lines = code.split('\n')
+  const location: DataResidencyComplianceResult['location'] = []
+  const transfer: DataResidencyComplianceResult['transfer'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/user.*data|PII|personal.*data|sensitive/i) && line.match(/replicate|replication|cross.*region|global/i) && !line.match(/residency|data.*sovereign|geo.*lock|restricted/i)) {
+      location.push({ line: i + 1, issue: 'Personal data replicated across regions without residency check', suggestion: 'Implement geo-fencing; store PII in user\'s home region; check data sovereignty laws (GDPR, LGPD)' })
+    }
+
+    if (line.match(/cross.*border|international.*transfer|data.*export|foreign.*server/i) && !line.match(/adequacy.*decision|SCC|BCR|standard.*clause|binding.*rule/i)) {
+      transfer.push({ line: i + 1, issue: 'Cross-border data transfer without legal mechanism', suggestion: 'Use Standard Contractual Clauses (SCC) or Binding Corporate Rules for lawful international transfer' })
+    }
+
+    if (line.match(/region.*storage|geo.*storage|data.*center|availability.*zone/i) && !line.match(/compliance|regulatory|GDPR|CCPA|audit.*log/i)) {
+      location.push({ line: i + 1, issue: 'Regional storage without compliance verification', suggestion: 'Verify storage region against user consent; maintain audit log of data location for compliance reporting' })
+    }
+
+    if (line.match(/backup.*region|DR.*region|disaster.*recovery.*region/i) && !line.match(/encrypt.*backup|backup.*encrypt|region.*restrict|same.*jurisdiction/i)) {
+      transfer.push({ line: i + 1, issue: 'DR backup in different legal jurisdiction', suggestion: 'Encrypt backups for cross-jurisdiction DR; ensure backup region has equivalent data protection laws' })
+    }
+  })
+
+  const totalIssues = location.length + transfer.length
+  const residencyScore = Math.max(0, 100 - location.length * 10 - transfer.length * 10)
+  const severity: Severity = transfer.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, location, transfer, residencyScore,
+    summary: location.length + ' location gap(s), ' + transfer.length + ' transfer gap(s)' }
+}
+
+function formatDataResidencyComplianceReport(r: DataResidencyComplianceResult): string {
+  const lines: string[] = []
+  lines.push('# Data Residency Analysis')
+  lines.push('')
+  lines.push('**Residency Score:** ' + r.residencyScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.location.length > 0) {
+    lines.push('## Location (' + r.location.length + ')')
+    r.location.forEach(l => lines.push('- Line ' + l.line + ': ' + l.suggestion))
+    lines.push('')
+  }
+  if (r.transfer.length > 0) {
+    lines.push('## Transfer (' + r.transfer.length + ')')
+    r.transfer.forEach(t => lines.push('- Line ' + t.line + ': ' + t.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.33.0: RESPONSE ENVELOPE ====================
+
+interface ResponseEnvelopeResult {
+  totalIssues: number
+  severity: Severity
+  envelope: { line: number; issue: string; suggestion: string }[]
+  pagination: { line: number; issue: string; suggestion: string }[]
+  envScore: number
+  summary: string
+}
+
+function analyzeResponseEnvelope(code: string): ResponseEnvelopeResult {
+  const lines = code.split('\n')
+  const envelope: ResponseEnvelopeResult['envelope'] = []
+  const pagination: ResponseEnvelopeResult['pagination'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/res\.json\(|res\.send\(|response\.json|ctx\.body/i) && !line.match(/envelope|wrapper|standard.*format|success.*data|error.*code/i)) {
+      envelope.push({ line: i + 1, issue: 'API response without standard envelope format', suggestion: 'Use standard envelope: { success: true, data: {...}, error: null, meta: {...} } for consistent client handling' })
+    }
+
+    if (line.match(/res\.json\(\[|res\.json\(array|list.*response|items.*array/i) && !line.match(/page|limit|total|hasMore|nextCursor|pagination/i)) {
+      pagination.push({ line: i + 1, issue: 'Array response without pagination metadata', suggestion: 'Wrap array responses: { data: [...], pagination: { page, limit, total, hasMore } } for client navigation' })
+    }
+
+    if (line.match(/error.*response|errorRes|sendError|error.*json/i) && !line.match(/error.*code|errorType|machine.*readable|error.*detail|stack.*trace/i)) {
+      envelope.push({ line: i + 1, issue: 'Error response without machine-readable error code', suggestion: 'Include error code (enum/string), human-readable message, and optional detail for programmatic handling' })
+    }
+
+    if (line.match(/null.*response|null.*value|empty.*response|no.*content/i) && !line.match(/204|no.*content.*status|null.*explicit|nullable/i)) {
+      pagination.push({ line: i + 1, issue: 'Null/empty response without explicit handling', suggestion: 'Return 204 No Content for empty body; or { data: null } envelope for explicit null handling' })
+    }
+  })
+
+  const totalIssues = envelope.length + pagination.length
+  const envScore = Math.max(0, 100 - envelope.length * 8 - pagination.length * 8)
+  const severity: Severity = envelope.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, envelope, pagination, envScore,
+    summary: envelope.length + ' envelope gap(s), ' + pagination.length + ' pagination gap(s)' }
+}
+
+function formatResponseEnvelopeReport(r: ResponseEnvelopeResult): string {
+  const lines: string[] = []
+  lines.push('# Response Envelope Analysis')
+  lines.push('')
+  lines.push('**Env Score:** ' + r.envScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.envelope.length > 0) {
+    lines.push('## Envelope (' + r.envelope.length + ')')
+    r.envelope.forEach(e => lines.push('- Line ' + e.line + ': ' + e.suggestion))
+    lines.push('')
+  }
+  if (r.pagination.length > 0) {
+    lines.push('## Pagination (' + r.pagination.length + ')')
+    r.pagination.forEach(p => lines.push('- Line ' + p.line + ': ' + p.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.33.0: COMPRESSION NEGOTIATION ====================
+
+interface CompressionNegotiationResult {
+  totalIssues: number
+  severity: Severity
+  algorithm: { line: number; issue: string; suggestion: string }[]
+  negotiation: { line: number; issue: string; suggestion: string }[]
+  compScore: number
+  summary: string
+}
+
+function analyzeCompressionNegotiation(code: string): CompressionNegotiationResult {
+  const lines = code.split('\n')
+  const algorithm: CompressionNegotiationResult['algorithm'] = []
+  const negotiation: CompressionNegotiationResult['negotiation'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/gzip|deflate|br.*compress|brotli|compression/i) && !line.match(/accept.*encoding|content.*encoding|negotiat|fallback|zstd/i)) {
+      negotiation.push({ line: i + 1, issue: 'Compression without content negotiation', suggestion: 'Check Accept-Encoding header; support gzip, br (brotli), deflate with priority negotiation' })
+    }
+
+    if (line.match(/compress.*response|response.*compress|enable.*compress/i) && !line.match(/threshold|min.*size|1024|content.*type.*filter|image.*exclude/i)) {
+      algorithm.push({ line: i + 1, issue: 'Compression without size threshold or content-type filter', suggestion: 'Compress only above threshold (e.g., 1KB); exclude already-compressed types (image/video/zip)' })
+    }
+
+    if (line.match(/content.*encoding|Content-Encoding|accept.*encoding|Accept-Encoding/i) && !line.match(/Vary.*Accept-Encoding|cache.*key.*encoding|vary.*header/i)) {
+      negotiation.push({ line: i + 1, issue: 'Compression without Vary header for caching', suggestion: 'Add Vary: Accept-Encoding to prevent CDN/cache from serving compressed to non-compressed clients' })
+    }
+
+    if (line.match(/zstd|zstandard|zstd.*compress/i) && !line.match(/fallback|gzip.*fallback|browser.*support|support.*check/i)) {
+      algorithm.push({ line: i + 1, issue: 'zstd without browser compatibility fallback', suggestion: 'zstd lacks universal browser support; provide gzip fallback for browser clients; zstd for server-to-server only' })
+    }
+  })
+
+  const totalIssues = algorithm.length + negotiation.length
+  const compScore = Math.max(0, 100 - algorithm.length * 8 - negotiation.length * 8)
+  const severity: Severity = negotiation.length > 0 ? 'info' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, algorithm, negotiation, compScore,
+    summary: algorithm.length + ' algorithm gap(s), ' + negotiation.length + ' negotiation gap(s)' }
+}
+
+function formatCompressionNegotiationReport(r: CompressionNegotiationResult): string {
+  const lines: string[] = []
+  lines.push('# Compression Negotiation Analysis')
+  lines.push('')
+  lines.push('**Comp Score:** ' + r.compScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.algorithm.length > 0) {
+    lines.push('## Algorithm (' + r.algorithm.length + ')')
+    r.algorithm.forEach(a => lines.push('- Line ' + a.line + ': ' + a.suggestion))
+    lines.push('')
+  }
+  if (r.negotiation.length > 0) {
+    lines.push('## Negotiation (' + r.negotiation.length + ')')
+    r.negotiation.forEach(n => lines.push('- Line ' + n.line + ': ' + n.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.33.0: DNS HEALTH ====================
+
+interface DNSHealthResult {
+  totalIssues: number
+  severity: Severity
+  records: { line: number; issue: string; suggestion: string }[]
+  security: { line: number; issue: string; suggestion: string }[]
+  dnsScore: number
+  summary: string
+}
+
+function analyzeDNSHealth(code: string): DNSHealthResult {
+  const lines = code.split('\n')
+  const records: DNSHealthResult['records'] = []
+  const security: DNSHealthResult['security'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/DNS|dns.*record|A.*record|AAAA.*record|CNAME.*record|MX.*record/i) && !line.match(/TTL|ttl|expir|monitor|health.*check|probe/i)) {
+      records.push({ line: i + 1, issue: 'DNS record without TTL monitoring', suggestion: 'Set appropriate TTL (300-3600s); monitor DNS health with automated failover checks' })
+    }
+
+    if (line.match(/SPF|spf.*record|DKIM|dk.*record|DMARC|dmarc.*record/i) && !line.match(/valid|check.*dns|verify.*dns|monitor.*dns|dnssec/i)) {
+      security.push({ line: i + 1, issue: 'Email auth record without DNS-based verification', suggestion: 'Verify SPF/DKIM/DMARC records via DNS lookup; monitor for unauthorized changes to prevent email spoofing' })
+    }
+
+    if (line.match(/DNSSEC|dnssec|DNS.*SECURE|signed.*zone/i) && !line.match(/chain.*trust|trust.*anchor|DS.*record|key.*rollover|algorithm/i)) {
+      security.push({ line: i + 1, issue: 'DNSSEC without trust chain verification', suggestion: 'Verify DS record in parent zone; plan key rollover schedule; use algorithm 13 (ECDSA P-256)' })
+    }
+
+    if (line.match(/CAA.*record|caa.*record|certificate.*authority.*authorization/i) && !line.match(/issue.*restrict|issuewild|validation.*manager|letsencrypt/i)) {
+      records.push({ line: i + 1, issue: 'CAA record without issuance restriction', suggestion: 'Set CAA record to restrict which CAs can issue certificates; include validationmanager for Let\'s Encrypt' })
+    }
+  })
+
+  const totalIssues = records.length + security.length
+  const dnsScore = Math.max(0, 100 - records.length * 8 - security.length * 8)
+  const severity: Severity = security.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, records, security, dnsScore,
+    summary: records.length + ' record gap(s), ' + security.length + ' security gap(s)' }
+}
+
+function formatDNSHealthReport(r: DNSHealthResult): string {
+  const lines: string[] = []
+  lines.push('# DNS Health Analysis')
+  lines.push('')
+  lines.push('**DNS Score:** ' + r.dnsScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.records.length > 0) {
+    lines.push('## Records (' + r.records.length + ')')
+    r.records.forEach(r => lines.push('- Line ' + r.line + ': ' + r.suggestion))
+    lines.push('')
+  }
+  if (r.security.length > 0) {
+    lines.push('## Security (' + r.security.length + ')')
+    r.security.forEach(s => lines.push('- Line ' + s.line + ': ' + s.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.33.0: GRACEFUL DEGRADATION ====================
+
+interface GracefulDegradationResult {
+  totalIssues: number
+  severity: Severity
+  fallback: { line: number; issue: string; suggestion: string }[]
+  partial: { line: number; issue: string; suggestion: string }[]
+  degScore: number
+  summary: string
+}
+
+function analyzeGracefulDegradation(code: string): GracefulDegradationResult {
+  const lines = code.split('\n')
+  const fallback: GracefulDegradationResult['fallback'] = []
+  const partial: GracefulDegradationResult['partial'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/fetch.*external|call.*api|request.*service|http.*request/i) && !line.match(/fallback|default.*value|cache.*stale|degrade|graceful/i)) {
+      fallback.push({ line: i + 1, issue: 'External API call without fallback', suggestion: 'Implement fallback (cached value, static default, simplified result) when external service is unavailable' })
+    }
+
+    if (line.match(/feature.*toggle|feature.*flag|AB.*test|experiment/i) && !line.match(/default.*variant|control.*group|fallback.*feature|off.*default/i)) {
+      fallback.push({ line: i + 1, issue: 'Feature flag without default variant', suggestion: 'Define default variant (control) when flag service is unavailable; never block user flow on flag resolution' })
+    }
+
+    if (line.match(/partial.*response|partial.*data|partial.*result|incomplete.*response/i) && !line.match(/degraded.*indicator|stale.*marker|partial.*flag|missing.*field/i)) {
+      partial.push({ line: i + 1, issue: 'Partial response without degradation indicator', suggestion: 'Add degraded: true flag in response envelope when returning partial data; mark missing fields' })
+    }
+
+    if (line.match(/timeout.*external|timeout.*service|external.*timeout/i) && !line.match(/circuit.*breaker|fail.*fast|short.*circuit|bulkhead/i)) {
+      partial.push({ line: i + 1, issue: 'External timeout without circuit breaker', suggestion: 'Implement circuit breaker to fail fast after consecutive failures; use bulkhead to isolate slow external calls' })
+    }
+  })
+
+  const totalIssues = fallback.length + partial.length
+  const degScore = Math.max(0, 100 - fallback.length * 8 - partial.length * 8)
+  const severity: Severity = fallback.length > 0 ? 'info' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, fallback, partial, degScore,
+    summary: fallback.length + ' fallback gap(s), ' + partial.length + ' partial gap(s)' }
+}
+
+function formatGracefulDegradationReport(r: GracefulDegradationResult): string {
+  const lines: string[] = []
+  lines.push('# Graceful Degradation Analysis')
+  lines.push('')
+  lines.push('**Deg Score:** ' + r.degScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.fallback.length > 0) {
+    lines.push('## Fallback (' + r.fallback.length + ')')
+    r.fallback.forEach(f => lines.push('- Line ' + f.line + ': ' + f.suggestion))
+    lines.push('')
+  }
+  if (r.partial.length > 0) {
+    lines.push('## Partial (' + r.partial.length + ')')
+    r.partial.forEach(p => lines.push('- Line ' + p.line + ': ' + p.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
 // ==================== PLUGIN REGISTRATION ====================
 
 export function apply(ctx: Context) {
@@ -23278,5 +23798,111 @@ ctx.tools.register(defineTool({
   }
 }))
 
-console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design, container_security, ml_pipeline, api_deprecation, design_system, pwa_compliance, type_system, green_computing, realtime_collab, a11y_deep, i18n_deep, css_architecture, state_machine, web_components, resilience, module_federation, review_automation, observability, migration_safety, edge_computing, api_versioning, wasm_advanced, feature_toggles, email_deliverability, seo_analysis, monorepo_boundaries, ddd_patterns, mf_runtime, realtime_protocols, data_pipeline, gateway_deep, test_rigor, quality_gate, graphql_schema, event_sourcing_integrity, rate_limiting, migration_safety, auth_hardening, distributed_tracing, infrastructure_as_code, review_automation, contract_testing, sec_headers_deep, privacy_compliance, concurrency_patterns, cloud_native, error_recovery, system_design, dependency_injection, api_versioning, serialization_perf, memory_allocation, build_pipeline, error_messages, logging_discipline, config_as_code, component_interface, token_hygiene, query_antipatterns, websocket_lifecycle, graphql_perf, deprecation_tracking, code_splitting_audit, css_arch_deep, sec_dep_audit, webhook_signature, oauth_security, email_infra, health_check_depth, cors_security, feature_rollout, secret_lifecycle, rate_limit_strategy, container_security_scan, grpc_security, data_residency, deployment_progressive, obs_exemplar, data_pipeline_quality, service_mesh, plugin_architecture, mobile_app_security, data_masking, core_web_vitals, infra_cost, api_gateway_config, css_in_js_perf, crdt_state_sync, resource_quota, browser_compat_audit, floating_point, snapshot_testing, event_schema, form_validation, retry_idempotency, a11y_semantics, race_condition, cache_invalidation, data_loader_opt, event_versioning, connection_lifecycle, csp_nonce, struct_error_ctx, stream_backpressure, identifier_collision, graphql_query_depth, auth_token_rotation, mq_dead_letter, file_upload_sec, query_plan, encryption_at_rest, ws_connection_state, rate_limit_policy`)
+// ==================== V0.33.0 REGISTRATIONS ====================
+
+ctx.tools.register(defineTool({
+  name: 'payment_idempotency',
+  description: 'Analyze payment idempotency: charge idempotency key, refund linking, reconciliation mismatch, async confirmation.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The payment code to analyze for idempotency' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzePaymentIdempotency(args.code)
+    return formatPaymentIdempotencyReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'cron_reliability',
+  description: 'Analyze cron reliability: overlap prevention, failure alerting, execution timeout, catchup backfill.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The cron code to analyze for reliability' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeCronReliability(args.code)
+    return formatCronReliabilityReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'immutable_data',
+  description: 'Analyze immutable data patterns: append-only enforcement, hash chain verification, audit retention, soft delete.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The data code to analyze for immutability' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeImmutableData(args.code)
+    return formatImmutableDataReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'data_residency_compliance',
+  description: 'Analyze data residency: geo-fencing, cross-border transfer mechanism, compliance verification, DR jurisdiction.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The data code to analyze for residency compliance' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeDataResidencyCompliance(args.code)
+    return formatDataResidencyComplianceReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'response_envelope',
+  description: 'Analyze response envelope: standard format, pagination metadata, error codes, null handling.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The API response code to analyze for envelope consistency' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeResponseEnvelope(args.code)
+    return formatResponseEnvelopeReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'compression_negotiation',
+  description: 'Analyze compression negotiation: Accept-Encoding, content-type filter, Vary header, zstd fallback.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The compression code to analyze' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeCompressionNegotiation(args.code)
+    return formatCompressionNegotiationReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'dns_health',
+  description: 'Analyze DNS health: TTL monitoring, DNSSEC trust chain, SPF/DKIM/DMARC verification, CAA restriction.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The DNS code to analyze for health and security' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeDNSHealth(args.code)
+    return formatDNSHealthReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'graceful_degradation',
+  description: 'Analyze graceful degradation: external API fallback, feature flag default, partial response indicator, circuit breaker.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The code to analyze for graceful degradation' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeGracefulDegradation(args.code)
+    return formatGracefulDegradationReport(result)
+  }
+}))
+
+console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design, container_security, ml_pipeline, api_deprecation, design_system, pwa_compliance, type_system, green_computing, realtime_collab, a11y_deep, i18n_deep, css_architecture, state_machine, web_components, resilience, module_federation, review_automation, observability, migration_safety, edge_computing, api_versioning, wasm_advanced, feature_toggles, email_deliverability, seo_analysis, monorepo_boundaries, ddd_patterns, mf_runtime, realtime_protocols, data_pipeline, gateway_deep, test_rigor, quality_gate, graphql_schema, event_sourcing_integrity, rate_limiting, migration_safety, auth_hardening, distributed_tracing, infrastructure_as_code, review_automation, contract_testing, sec_headers_deep, privacy_compliance, concurrency_patterns, cloud_native, error_recovery, system_design, dependency_injection, api_versioning, serialization_perf, memory_allocation, build_pipeline, error_messages, logging_discipline, config_as_code, component_interface, token_hygiene, query_antipatterns, websocket_lifecycle, graphql_perf, deprecation_tracking, code_splitting_audit, css_arch_deep, sec_dep_audit, webhook_signature, oauth_security, email_infra, health_check_depth, cors_security, feature_rollout, secret_lifecycle, rate_limit_strategy, container_security_scan, grpc_security, data_residency, deployment_progressive, obs_exemplar, data_pipeline_quality, service_mesh, plugin_architecture, mobile_app_security, data_masking, core_web_vitals, infra_cost, api_gateway_config, css_in_js_perf, crdt_state_sync, resource_quota, browser_compat_audit, floating_point, snapshot_testing, event_schema, form_validation, retry_idempotency, a11y_semantics, race_condition, cache_invalidation, data_loader_opt, event_versioning, connection_lifecycle, csp_nonce, struct_error_ctx, stream_backpressure, identifier_collision, graphql_query_depth, auth_token_rotation, mq_dead_letter, file_upload_sec, query_plan, encryption_at_rest, ws_connection_state, rate_limit_policy, payment_idempotency, cron_reliability, immutable_data, data_residency_compliance, response_envelope, compression_negotiation, dns_health, graceful_degradation`)
 }
