@@ -429,6 +429,127 @@ interface DepEdge {
   type: 'dependency' | 'devDependency' | 'peer'
 }
 
+// ==================== v0.7.0 NEW TYPES ====================
+
+// PRO-010: Multi-language support
+interface MultiLangResult {
+  summary: string
+  language: string
+  confidence: number
+  features: LanguageFeature[]
+  issues: LanguageSpecificIssue[]
+  score: number
+}
+
+interface LanguageFeature {
+  name: string
+  supported: boolean
+  description: string
+}
+
+interface LanguageSpecificIssue {
+  line: number
+  rule: string
+  message: string
+  severity: Severity
+  fix: string
+  docs?: string
+}
+
+// PRO-011: CI/CD integration
+interface CiCdResult {
+  summary: string
+  workflow: string
+  triggers: string[]
+  steps: WorkflowStep[]
+  filename: string
+}
+
+interface WorkflowStep {
+  name: string
+  action?: string
+  with?: Record<string, string>
+  run?: string
+  uses?: string
+}
+
+// PRO-012: Custom rule engine
+interface CustomRuleResult {
+  summary: string
+  rulesLoaded: number
+  matches: RuleMatch[]
+  errors: string[]
+}
+
+interface RuleMatch {
+  ruleId: string
+  line: number
+  message: string
+  severity: Severity
+  context: string
+}
+
+// Code duplication detection
+interface DuplicationResult {
+  summary: string
+  duplications: CodeDuplicate[]
+  score: number
+  linesWasted: number
+}
+
+interface CodeDuplicate {
+  type: 'exact' | 'similar' | 'structural'
+  sourceFile: string
+  sourceLine: number
+  targetFile: string
+  targetLine: number
+  lines: number
+  similarity: number
+  suggestion: string
+}
+
+// Refactoring suggestions
+interface RefactorResult {
+  summary: string
+  refactorings: Refactoring[]
+  score: number
+  potentialImprovement: number
+}
+
+interface Refactoring {
+  type: 'extract-method' | 'extract-class' | 'inline' | 'move-method' | 'rename' | 'split' | 'merge'
+  line: number
+  target: string
+  description: string
+  effort: 'low' | 'medium' | 'high'
+  impact: 'low' | 'medium' | 'high'
+  suggestion: string
+}
+
+// Naming convention check
+interface NamingResult {
+  summary: string
+  score: number
+  conventions: NamingConvention[]
+  violations: NamingViolation[]
+}
+
+interface NamingConvention {
+  type: string
+  pattern: string
+  description: string
+  examples: string[]
+}
+
+interface NamingViolation {
+  line: number
+  symbol: string
+  convention: string
+  message: string
+  suggestion: string
+  severity: Severity
+}
+
 // ==================== CONFIGURATION ====================
 
 interface PluginConfig {
@@ -2470,6 +2591,641 @@ function formatMonorepoReport(result: MonorepoResult): string {
   return lines.join('\n')
 }
 
+// ==================== v0.7.0 NEW FUNCTIONS ====================
+
+// --- PRO-010: Multi-language deep analysis ---
+function analyzeMultiLanguage(code: string, language: string): MultiLangResult {
+  const features: LanguageFeature[] = []
+  const issues: LanguageSpecificIssue[] = []
+  let confidence = 0.9
+
+  switch (language) {
+    case 'python':
+      features.push(
+        { name: 'type-hints', supported: true, description: 'PEP 484 type annotations' },
+        { name: 'f-strings', supported: true, description: 'Python 3.6+ formatted strings' },
+        { name: 'list-comprehensions', supported: true, description: 'Pythonic iteration patterns' },
+        { name: 'decorators', supported: true, description: '@decorator syntax support' },
+        { name: 'context-managers', supported: true, description: 'with statement patterns' },
+        { name: 'async-await', supported: true, description: 'Asynchronous programming' }
+      )
+      // Check for Python-specific issues
+      if (code.includes('except:')) {
+        issues.push({ line: 1, rule: 'bare-except', message: 'Bare except clause - catch specific exceptions', severity: 'warning', fix: 'Use `except Exception as e:` instead', docs: 'https://peps.python.org/pep-0008/' })
+      }
+      if (/print\s+\(/.test(code) && !code.includes('from __future__')) {
+        issues.push({ line: 1, rule: 'print-statement', message: 'Consider using logging instead of print', severity: 'info', fix: 'Use `import logging; logger = logging.getLogger(__name__)`' })
+      }
+      if (/==\s*(True|False|None)/.test(code)) {
+        issues.push({ line: 1, rule: 'comparison-to-singleton', message: 'Use `is` for None/True/False comparisons', severity: 'warning', fix: 'Replace `== None` with `is None`' })
+      }
+      break
+
+    case 'go':
+      features.push(
+        { name: 'goroutines', supported: true, description: 'go func() concurrency' },
+        { name: 'interfaces', supported: true, description: 'Implicit interface satisfaction' },
+        { name: 'defer', supported: true, description: 'Deferred execution' },
+        { name: 'channels', supported: true, description: 'CSP-style communication' },
+        { name: 'struct-tags', supported: true, description: 'Reflection metadata' },
+        { name: 'error-handling', supported: true, description: 'Explicit error returns' }
+      )
+      if (code.includes('panic(')) {
+        issues.push({ line: 1, rule: 'panic-usage', message: 'Avoid panic in production code - return errors instead', severity: 'warning', fix: 'Return error values instead of panicking' })
+      }
+      break
+
+    case 'rust':
+      features.push(
+        { name: 'ownership', supported: true, description: 'Borrow checker system' },
+        { name: 'lifetimes', supported: true, description: 'Explicit lifetime annotations' },
+        { name: 'pattern-matching', supported: true, description: 'match expressions' },
+        { name: 'traits', supported: true, description: 'Type class polymorphism' },
+        { name: 'Option-Result', supported: true, description: 'Error handling types' },
+        { name: 'macros', supported: true, description: 'Macro by example' }
+      )
+      if (code.includes('unwrap()')) {
+        issues.push({ line: 1, rule: 'unwrap-usage', message: 'Avoid unwrap() - handle None/Err cases properly', severity: 'warning', fix: 'Use `?` operator or `match` instead' })
+      }
+      if (/mut\s+/.test(code) && code.match(/mut\s+/g)!.length > 5) {
+        issues.push({ line: 1, rule: 'excessive-mutability', message: 'High mutability - consider restructuring for immutability', severity: 'info', fix: 'Use references or functional patterns' })
+      }
+      break
+
+    case 'java':
+      features.push(
+        { name: 'generics', supported: true, description: 'Type parameterization' },
+        { name: 'streams', supported: true, description: 'Functional stream API' },
+        { name: 'lombok', supported: false, description: 'Boilerplate reduction (requires dependency)' },
+        { name: 'records', supported: true, description: 'Java 14+ immutable data classes' },
+        { name: 'sealed-classes', supported: true, description: 'Java 17+ restricted inheritance' },
+        { name: 'pattern-matching', supported: true, description: 'Java 16+ instanceof patterns' }
+      )
+      if (/catch\s*\(/.test(code) && code.includes('Exception')) {
+        issues.push({ line: 1, rule: 'catch-generic', message: 'Avoid catching generic Exception', severity: 'warning', fix: 'Catch specific exception types' })
+      }
+      break
+
+    default:
+      confidence = 0.7
+      features.push(
+        { name: 'basic-analysis', supported: true, description: 'Generic code analysis' },
+        { name: 'pattern-detection', supported: true, description: 'Common anti-patterns' }
+      )
+  }
+
+  const score = Math.max(0, 100 - issues.filter(i => i.severity === 'warning').length * 15 - issues.filter(i => i.severity === 'info').length * 5)
+
+  return {
+    summary: `${language} analysis: ${features.length} features detected, ${issues.length} language-specific issues`,
+    language,
+    confidence,
+    features,
+    issues,
+    score
+  }
+}
+
+function formatMultiLangReport(result: MultiLangResult): string {
+  const lines: string[] = []
+  lines.push('## Multi-Language Analysis Report')
+  lines.push('')
+  lines.push(`**Language: ${result.language} | Confidence: ${(result.confidence * 100).toFixed(0)}% | Score: ${result.score}/100**`)
+  lines.push('')
+  lines.push('### Summary')
+  lines.push(result.summary)
+  lines.push('')
+  if (result.features.length > 0) {
+    lines.push('### Language Features')
+    result.features.forEach(f => {
+      const icon = f.supported ? '✅' : '❌'
+      lines.push(`- ${icon} **${f.name}**: ${f.description}`)
+    })
+    lines.push('')
+  }
+  if (result.issues.length > 0) {
+    lines.push('### Language-Specific Issues')
+    result.issues.forEach(issue => {
+      const icon = issue.severity === 'warning' ? '⚠️' : 'ℹ️'
+      lines.push(`- ${icon} [${issue.rule}]: ${issue.message}`)
+      lines.push(`  - 💡 ${issue.fix}`)
+    })
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// --- PRO-011: CI/CD integration ---
+function generateCiCdWorkflow(language: string): CiCdResult {
+  const steps: WorkflowStep[] = []
+
+  steps.push({ name: 'Checkout', action: 'actions/checkout@v4' })
+
+  switch (language) {
+    case 'typescript':
+    case 'javascript':
+      steps.push({ name: 'Setup Node', action: 'actions/setup-node@v4', with: { 'node-version': '20' } })
+      steps.push({ name: 'Install', run: 'npm ci' })
+      steps.push({ name: 'Review', run: 'npx dsh review --ci' })
+      break
+    case 'python':
+      steps.push({ name: 'Setup Python', action: 'actions/setup-python@v5', with: { 'python-version': '3.11' } })
+      steps.push({ name: 'Install', run: 'pip install -r requirements.txt' })
+      steps.push({ name: 'Review', run: 'dsh review --ci' })
+      break
+    case 'go':
+      steps.push({ name: 'Setup Go', action: 'actions/setup-go@v5', with: { 'go-version': '1.21' } })
+      steps.push({ name: 'Review', run: 'dsh review --ci' })
+      break
+    default:
+      steps.push({ name: 'Review', run: 'dsh review --ci' })
+  }
+
+  steps.push({ name: 'Upload SARIF', uses: 'github/codeql-action/upload-sarif@v3' })
+
+  const workflow = `name: Code Review\non:\n  push:\n    branches: [main]\n  pull_request:\n    branches: [main]\njobs:\n  review:\n    runs-on: ubuntu-latest\n    steps:\n${steps.map(s => `      - name: ${s.name}\n${s.action ? `        uses: ${s.action}\n` : ''}${s.with ? `        with:\n${Object.entries(s.with).map(([k, v]) => `          ${k}: ${v}`).join('\n')}\n` : ''}${s.run ? `        run: ${s.run}\n` : ''}`).join('\n')}`
+
+  return {
+    summary: `Generated GitHub Actions workflow for ${language}`,
+    workflow,
+    triggers: ['push to main', 'pull_request to main'],
+    steps,
+    filename: '.github/workflows/code-review.yml'
+  }
+}
+
+function formatCiCdReport(result: CiCdResult): string {
+  const lines: string[] = []
+  lines.push('## CI/CD Integration Report')
+  lines.push('')
+  lines.push('### Summary')
+  lines.push(result.summary)
+  lines.push('')
+  lines.push('### Workflow File')
+  lines.push(`- Filename: \`${result.filename}\``)
+  lines.push(`- Triggers: ${result.triggers.join(', ')}`)
+  lines.push('')
+  lines.push('### Steps')
+  result.steps.forEach((step, idx) => {
+    lines.push(`${idx + 1}. **${step.name}**`)
+    if (step.action) lines.push(`   - Action: \`${step.action}\``)
+    if (step.run) lines.push(`   - Run: \`${step.run}\``)
+    if (step.with) lines.push(`   - With: ${JSON.stringify(step.with)}`)
+  })
+  lines.push('')
+  lines.push('### Workflow YAML')
+  lines.push('```yaml')
+  lines.push(result.workflow)
+  lines.push('```')
+  lines.push('')
+  lines.push('### Usage')
+  lines.push('1. Save the workflow to `.github/workflows/code-review.yml`')
+  lines.push('2. Push to your repository')
+  lines.push('3. The workflow runs automatically on every PR')
+  lines.push('')
+  return lines.join('\n')
+}
+
+// --- PRO-012: Custom rule engine ---
+function runCustomRules(code: string, rulesYaml: string): CustomRuleResult {
+  const matches: RuleMatch[] = []
+  const errors: string[] = []
+  let rulesLoaded = 0
+
+  try {
+    const lines = code.split('\n')
+    // Simple YAML parser (works for flat rule definitions)
+    const ruleBlocks = rulesYaml.split(/^- /m).filter(b => b.trim())
+    
+    ruleBlocks.forEach(block => {
+      const rule: Record<string, string> = {}
+      block.split('\n').forEach(line => {
+        const colonIdx = line.indexOf(':')
+        if (colonIdx > 0) {
+          const key = line.substring(0, colonIdx).trim()
+          const value = line.substring(colonIdx + 1).trim().replace(/^["']|["']$/g, '')
+          rule[key] = value
+        }
+      })
+
+      if (rule.id && rule.pattern) {
+        rulesLoaded++
+        const regex = new RegExp(rule.pattern, 'gi')
+        lines.forEach((line, idx) => {
+          if (regex.test(line)) {
+            matches.push({
+              ruleId: rule.id,
+              line: idx + 1,
+              message: rule.message || `Custom rule '${rule.id}' matched`,
+              severity: (rule.severity as Severity) || 'warning',
+              context: line.trim().substring(0, 80)
+            })
+          }
+        })
+      }
+    })
+  } catch (e) {
+    errors.push(`Failed to parse rules: ${e}`)
+  }
+
+  return {
+    summary: `Loaded ${rulesLoaded} custom rules, ${matches.length} matches found`,
+    rulesLoaded,
+    matches,
+    errors
+  }
+}
+
+function formatCustomRuleReport(result: CustomRuleResult): string {
+  const lines: string[] = []
+  lines.push('## Custom Rule Engine Report')
+  lines.push('')
+  lines.push('### Summary')
+  lines.push(result.summary)
+  lines.push('')
+  if (result.matches.length > 0) {
+    lines.push('### Matches')
+    result.matches.forEach(m => {
+      const icon = m.severity === 'critical' ? '🔴' : m.severity === 'error' ? '🟠' : m.severity === 'warning' ? '🟡' : 'ℹ️'
+      lines.push(`- ${icon} **${m.ruleId}** (line ${m.line}): ${m.message}`)
+      lines.push(`  - Context: \`${m.context}\``)
+    })
+    lines.push('')
+  }
+  if (result.errors.length > 0) {
+    lines.push('### Errors')
+    result.errors.forEach(e => lines.push(`- ❌ ${e}`))
+    lines.push('')
+  }
+  lines.push('### Example Rules YAML')
+  lines.push('```yaml')
+  lines.push('- id: no-console-log')
+  lines.push('  pattern: "console\\\\.log"')
+  lines.push('  message: "Avoid console.log in production"')
+  lines.push('  severity: warning')
+  lines.push('')
+  lines.push('- id: require-error-handling')
+  lines.push('  pattern: "async\\\\s+function"')
+  lines.push('  message: "Async functions should have try-catch"')
+  lines.push('  severity: error')
+  lines.push('```')
+  lines.push('')
+  return lines.join('\n')
+}
+
+// --- Code duplication detection ---
+function detectDuplication(code: string, _filename?: string): DuplicationResult {
+  const duplications: CodeDuplicate[] = []
+  const lines = code.split('\n')
+  const minDuplicateLength = 4
+
+  // Find consecutive similar blocks
+  for (let i = 0; i < lines.length - minDuplicateLength; i++) {
+    const block = lines.slice(i, i + minDuplicateLength).join('\n')
+    const blockTrimmed = block.trim()
+    
+    if (blockTrimmed.length < 20) continue
+
+    for (let j = i + minDuplicateLength; j < lines.length - minDuplicateLength; j++) {
+      const compareBlock = lines.slice(j, j + minDuplicateLength).join('\n')
+      const similarity = calculateSimilarity(blockTrimmed, compareBlock.trim())
+      
+      if (similarity > 0.85) {
+        const existing = duplications.find(d => d.sourceLine === i + 1 && d.targetLine === j + 1)
+        if (!existing) {
+          duplications.push({
+            type: similarity === 1 ? 'exact' : 'similar',
+            sourceFile: 'current',
+            sourceLine: i + 1,
+            targetFile: 'current',
+            targetLine: j + 1,
+            lines: minDuplicateLength,
+            similarity: Math.round(similarity * 100) / 100,
+            suggestion: similarity === 1 ? 'Extract identical block into a function' : 'Consider consolidating similar logic'
+          })
+        }
+      }
+    }
+  }
+
+  const linesWasted = duplications.reduce((sum, d) => sum + d.lines, 0)
+  const score = Math.max(0, 100 - duplications.length * 10 - linesWasted * 2)
+
+  return {
+    summary: `Found ${duplications.length} code duplications (${linesWasted} lines wasted)`,
+    duplications,
+    score,
+    linesWasted
+  }
+}
+
+function calculateSimilarity(a: string, b: string): number {
+  if (a === b) return 1
+  if (a.length === 0 || b.length === 0) return 0
+  
+  const longer = a.length > b.length ? a : b
+  const shorter = a.length > b.length ? b : a
+  
+  // Simple Levenshtein-based similarity
+  const editDistance = levenshteinDistance(longer, shorter)
+  return (longer.length - editDistance) / longer.length
+}
+
+function levenshteinDistance(a: string, b: string): number {
+  const matrix: number[][] = []
+  
+  for (let i = 0; i <= b.length; i++) {
+    matrix[i] = [i]
+  }
+  for (let j = 0; j <= a.length; j++) {
+    matrix[0][j] = j
+  }
+  
+  for (let i = 1; i <= b.length; i++) {
+    for (let j = 1; j <= a.length; j++) {
+      if (b.charAt(i - 1) === a.charAt(j - 1)) {
+        matrix[i][j] = matrix[i - 1][j - 1]
+      } else {
+        matrix[i][j] = Math.min(
+          matrix[i - 1][j - 1] + 1,
+          matrix[i][j - 1] + 1,
+          matrix[i - 1][j] + 1
+        )
+      }
+    }
+  }
+  
+  return matrix[b.length][a.length]
+}
+
+function formatDuplicationReport(result: DuplicationResult): string {
+  const lines: string[] = []
+  lines.push('## Code Duplication Report')
+  lines.push('')
+  lines.push(`**Score: ${result.score}/100 | Wasted Lines: ${result.linesWasted}**`)
+  lines.push('')
+  lines.push('### Summary')
+  lines.push(result.summary)
+  lines.push('')
+  if (result.duplications.length > 0) {
+    lines.push('### Duplications')
+    result.duplications.forEach((d, idx) => {
+      const icon = d.type === 'exact' ? '🔴' : '🟡'
+      lines.push(`${idx + 1}. ${icon} Lines ${d.sourceLine}-${d.sourceLine + d.lines - 1} ↔ ${d.targetLine}-${d.targetLine + d.lines - 1}`)
+      lines.push(`   - Type: ${d.type} | Similarity: ${(d.similarity * 100).toFixed(0)}%`)
+      lines.push(`   - 💡 ${d.suggestion}`)
+    })
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// --- Refactoring suggestions ---
+function suggestRefactoring(code: string, language: string): RefactorResult {
+  const refactorings: Refactoring[] = []
+  const lines = code.split('\n')
+
+  // Long method detection -> suggest extract
+  let funcStart = -1
+  let funcName = ''
+  for (let i = 0; i < lines.length; i++) {
+    const match = lines[i].match(/(?:function|def|func)\s+(\w+)/)
+    if (match && funcStart === -1) {
+      funcStart = i
+      funcName = match[1]
+    }
+    if (funcStart !== -1 && i - funcStart > 30) {
+      refactorings.push({
+        type: 'extract-method',
+        line: funcStart + 1,
+        target: funcName,
+        description: `Function '${funcName}' is too long (${i - funcStart} lines)`,
+        effort: 'medium',
+        impact: 'high',
+        suggestion: 'Extract logical blocks into separate functions'
+      })
+      funcStart = -1
+    }
+  }
+
+  // Large class detection -> suggest extract-class
+  const classMatches = code.match(/class\s+\w+/g) || []
+  classMatches.forEach(cls => {
+    const clsIdx = code.indexOf(cls)
+    const clsLine = code.substring(0, clsIdx).split('\n').length
+    const methodCount = (code.substring(clsIdx, clsIdx + 5000).match(/(?:public|private|protected|static)?\s*\w+\s*\(/g) || []).length
+    if (methodCount > 8) {
+      refactorings.push({
+        type: 'extract-class',
+        line: clsLine,
+        target: cls.replace('class ', ''),
+        description: `Class has ${methodCount} methods - violates SRP`,
+        effort: 'high',
+        impact: 'high',
+        suggestion: 'Split into smaller, focused classes'
+      })
+    }
+  })
+
+  // Duplicated logic -> suggest extract
+  const dupResult = detectDuplication(code)
+  if (dupResult.duplications.length > 0) {
+    refactorings.push({
+      type: 'extract-method',
+      line: dupResult.duplications[0].sourceLine,
+      target: 'duplicated block',
+      description: `${dupResult.duplications.length} duplicated code blocks found`,
+      effort: 'medium',
+      impact: 'medium',
+      suggestion: 'Extract duplicated code into a reusable function'
+    })
+  }
+
+  // Variables that could be inlined
+  const varDeclarations = code.match(/(?:const|let|var)\s+(\w+)\s*=\s*[^;]+;/g) || []
+  varDeclarations.forEach(decl => {
+    const varName = decl.match(/(?:const|let|var)\s+(\w+)/)?.[1]
+    if (varName) {
+      const usages = (code.match(new RegExp(`\\b${varName}\\b`, 'g')) || []).length
+      if (usages === 2 && !decl.includes('function') && !decl.includes('=>')) {
+        const line = code.split('\n').findIndex(l => l.includes(decl)) + 1
+        refactorings.push({
+          type: 'inline',
+          line,
+          target: varName,
+          description: `Variable '${varName}' used only once - could be inlined`,
+          effort: 'low',
+          impact: 'low',
+          suggestion: `Inline the value directly where '${varName}' is used`
+        })
+      }
+    }
+  })
+
+  const potentialImprovement = Math.min(30, refactorings.filter(r => r.impact === 'high').length * 10 + refactorings.filter(r => r.impact === 'medium').length * 5)
+  const score = Math.max(0, 100 - refactorings.filter(r => r.impact === 'high').length * 15)
+
+  return {
+    summary: `Found ${refactorings.length} refactoring opportunities (potential improvement: +${potentialImprovement}pts)`,
+    refactorings,
+    score,
+    potentialImprovement
+  }
+}
+
+function formatRefactorReport(result: RefactorResult): string {
+  const lines: string[] = []
+  lines.push('## Refactoring Suggestions Report')
+  lines.push('')
+  lines.push(`**Score: ${result.score}/100 | Potential Improvement: +${result.potentialImprovement}pts**`)
+  lines.push('')
+  lines.push('### Summary')
+  lines.push(result.summary)
+  lines.push('')
+  if (result.refactorings.length > 0) {
+    lines.push('### Suggested Refactorings')
+    result.refactorings.forEach((r, idx) => {
+      const effortIcon = r.effort === 'low' ? '🟢' : r.effort === 'medium' ? '🟡' : '🔴'
+      const impactIcon = r.impact === 'low' ? '⚪' : r.impact === 'medium' ? '🟡' : '🔴'
+      lines.push(`${idx + 1}. **${r.type}** → \`${r.target}\` (line ${r.line})`)
+      lines.push(`   - ${r.description}`)
+      lines.push(`   - Effort: ${effortIcon} | Impact: ${impactIcon}`)
+      lines.push(`   - 💡 ${r.suggestion}`)
+    })
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// --- Naming convention check ---
+function checkNamingConventions(code: string, language: string): NamingResult {
+  const conventions: NamingConvention[] = []
+  const violations: NamingViolation[] = []
+  const lines = code.split('\n')
+
+  // Define conventions per language
+  const namingRules: Record<string, { type: string; pattern: RegExp; description: string; examples: string[] }[]> = {
+    typescript: [
+      { type: 'variable', pattern: /^[a-z][a-zA-Z0-9]*$/, description: 'camelCase for variables', examples: ['userName', 'totalCount'] },
+      { type: 'function', pattern: /^[a-z][a-zA-Z0-9]*$/, description: 'camelCase for functions', examples: ['getUser', 'calculateTotal'] },
+      { type: 'class', pattern: /^[A-Z][a-zA-Z0-9]*$/, description: 'PascalCase for classes', examples: ['UserService', 'HttpClient'] },
+      { type: 'constant', pattern: /^[A-Z][A-Z0-9_]*$/, description: 'SCREAMING_SNAKE_CASE for constants', examples: ['MAX_SIZE', 'API_KEY'] },
+      { type: 'interface', pattern: /^[A-Z][a-zA-Z0-9]*$/, description: 'PascalCase for interfaces', examples: ['User', 'ApiResponse'] },
+      { type: 'private', pattern: /^_[a-z][a-zA-Z0-9]*$/, description: 'Leading underscore for private', examples: ['_internal', '_cache'] }
+    ],
+    javascript: [
+      { type: 'variable', pattern: /^[a-z][a-zA-Z0-9]*$/, description: 'camelCase for variables', examples: ['userName', 'isActive'] },
+      { type: 'function', pattern: /^[a-z][a-zA-Z0-9]*$/, description: 'camelCase for functions', examples: ['handleClick', 'getData'] },
+      { type: 'constant', pattern: /^[A-Z][A-Z0-9_]*$/, description: 'SCREAMING_SNAKE_CASE for constants', examples: ['MAX_COUNT', 'BASE_URL'] }
+    ],
+    python: [
+      { type: 'variable', pattern: /^[a-z][a-z0-9_]*$/, description: 'snake_case for variables', examples: ['user_name', 'total_count'] },
+      { type: 'function', pattern: /^[a-z][a-z0-9_]*$/, description: 'snake_case for functions', examples: ['get_user', 'calculate_total'] },
+      { type: 'class', pattern: /^[A-Z][a-zA-Z0-9]*$/, description: 'PascalCase for classes', examples: ['UserService', 'HttpClient'] },
+      { type: 'constant', pattern: /^[A-Z][A-Z0-9_]*$/, description: 'SCREAMING_SNAKE_CASE for constants', examples: ['MAX_SIZE', 'API_KEY'] },
+      { type: 'private', pattern: /^_[a-z][a-z0-9_]*$/, description: 'Leading underscore for private', examples: ['_internal', '_cache'] }
+    ],
+    go: [
+      { type: 'variable', pattern: /^[a-z][a-zA-Z0-9]*$/, description: 'camelCase for variables', examples: ['userName', 'totalCount'] },
+      { type: 'exported', pattern: /^[A-Z][a-zA-Z0-9]*$/, description: 'PascalCase for exported', examples: ['GetUser', 'HttpClient'] },
+      { type: 'acronym', pattern: /^[A-Z]+$/, description: 'All caps for acronyms', examples: ['ID', 'URL', 'HTTP'] }
+    ],
+    rust: [
+      { type: 'variable', pattern: /^[a-z][a-z0-9_]*$/, description: 'snake_case for variables', examples: ['user_name', 'total_count'] },
+      { type: 'function', pattern: /^[a-z][a-z0-9_]*$/, description: 'snake_case for functions', examples: ['get_user', 'calculate_total'] },
+      { type: 'type', pattern: /^[A-Z][a-zA-Z0-9]*$/, description: 'PascalCase for types', examples: ['UserService', 'HttpClient'] },
+      { type: 'constant', pattern: /^[A-Z][A-Z0-9_]*$/, description: 'SCREAMING_SNAKE_CASE for constants', examples: ['MAX_SIZE', 'API_KEY'] }
+    ]
+  }
+
+  const rules = namingRules[language] || namingRules.typescript
+  
+  rules.forEach(rule => {
+    conventions.push({
+      type: rule.type,
+      pattern: rule.pattern.source,
+      description: rule.description,
+      examples: rule.examples
+    })
+  })
+
+  // Check variable declarations, function declarations, class declarations
+  lines.forEach((line, idx) => {
+    const lineNum = idx + 1
+
+    // Check const/let/var declarations
+    const varMatch = line.match(/(?:const|let|var)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)/)
+    if (varMatch && !line.trim().startsWith('//')) {
+      const varName = varMatch[1]
+      const isConst = line.includes('const')
+      if (isConst && !/^[A-Z][A-Z0-9_]*$/.test(varName) && !/^[a-z][a-zA-Z0-9]*$/.test(varName)) {
+        violations.push({
+          line: lineNum,
+          symbol: varName,
+          convention: 'constant naming',
+          message: `Constant '${varName}' should be SCREAMING_SNAKE_CASE`,
+          suggestion: `Rename to '${varName.replace(/([A-Z])/g, '_$1').toUpperCase().replace(/^_/, '')}'`,
+          severity: 'warning'
+        })
+      }
+    }
+
+    // Check function declarations
+    const funcMatch = line.match(/(?:function|def|func)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)/)
+    if (funcMatch && !line.trim().startsWith('//')) {
+      const funcName = funcMatch[1]
+      if (language === 'python' || language === 'rust') {
+        if (!/^[a-z][a-z0-9_]*$/.test(funcName) && !/^_[a-z]/.test(funcName)) {
+          violations.push({
+            line: lineNum,
+            symbol: funcName,
+            convention: 'function naming',
+            message: `Function '${funcName}' should be snake_case`,
+            suggestion: `Rename to '${funcName.replace(/([A-Z])/g, '_$1').toLowerCase().replace(/^_/, '')}'`,
+            severity: 'warning'
+          })
+        }
+      }
+    }
+  })
+
+  const score = Math.max(0, 100 - violations.filter(v => v.severity === 'warning').length * 10)
+
+  return {
+    summary: `Checked ${conventions.length} naming conventions, found ${violations.length} violations`,
+    score,
+    conventions,
+    violations
+  }
+}
+
+function formatNamingReport(result: NamingResult): string {
+  const lines: string[] = []
+  lines.push('## Naming Convention Report')
+  lines.push('')
+  lines.push(`**Score: ${result.score}/100**`)
+  lines.push('')
+  lines.push('### Summary')
+  lines.push(result.summary)
+  lines.push('')
+  if (result.conventions.length > 0) {
+    lines.push('### Active Conventions')
+    result.conventions.forEach(c => {
+      lines.push(`- **${c.type}**: ${c.description} (${c.examples.join(', ')})`)
+    })
+    lines.push('')
+  }
+  if (result.violations.length > 0) {
+    lines.push('### Violations')
+    result.violations.forEach(v => {
+      lines.push(`- ⚠️ Line ${v.line}: **${v.symbol}** - ${v.message}`)
+      lines.push(`  - 💡 ${v.suggestion}`)
+    })
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
 function formatStyleReport(result: StyleCheckResult): string {
   const lines: string[] = []
   lines.push('## Style Check Report')
@@ -2866,6 +3622,97 @@ export function apply(ctx: Context) {
       return formatMonorepoReport(result)
     }
   }))
+
+  // Tool 22: Multi-Language Analysis (v0.7.0 - PRO-010)
+  ctx.tools.register(defineTool({
+    name: 'multilang_analyze',
+    description: 'Deep language-specific analysis for Python, Go, Rust, Java. Detects language idioms and anti-patterns.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code to analyze' },
+      language: { type: 'string', description: 'Programming language' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string; language?: string }) {
+      const language = args.language || detectLanguage(args.code)
+      const result = analyzeMultiLanguage(args.code, language)
+      return formatMultiLangReport(result)
+    }
+  }))
+
+  // Tool 23: CI/CD Workflow Generator (v0.7.0 - PRO-011)
+  ctx.tools.register(defineTool({
+    name: 'cicd_generate',
+    description: 'Generate GitHub Actions workflow for automated code review. Includes SARIF upload for Code Scanning.',
+    parameters: {
+      language: { type: 'string', required: true, description: 'Programming language for the workflow' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { language: string }) {
+      const result = generateCiCdWorkflow(args.language)
+      return formatCiCdReport(result)
+    }
+  }))
+
+  // Tool 24: Custom Rule Engine (v0.7.0 - PRO-012)
+  ctx.tools.register(defineTool({
+    name: 'custom_rules',
+    description: 'Run custom linting rules defined in YAML format. Supports regex patterns, severity levels.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code to check' },
+      rulesYaml: { type: 'string', required: true, description: 'YAML-formatted custom rules' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string; rulesYaml: string }) {
+      const result = runCustomRules(args.code, args.rulesYaml)
+      return formatCustomRuleReport(result)
+    }
+  }))
+
+  // Tool 25: Code Duplication Detection (v0.7.0)
+  ctx.tools.register(defineTool({
+    name: 'duplicate_detect',
+    description: 'Detect code duplication: exact copies, similar blocks, structural repetition. Calculates wasted lines.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = detectDuplication(args.code)
+      return formatDuplicationReport(result)
+    }
+  }))
+
+  // Tool 26: Refactoring Suggestions (v0.7.0)
+  ctx.tools.register(defineTool({
+    name: 'refactor_suggest',
+    description: 'Suggest refactoring opportunities: extract method, extract class, inline, rename. With effort/impact ratings.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code to analyze' },
+      language: { type: 'string', description: 'Programming language' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string; language?: string }) {
+      const language = args.language || detectLanguage(args.code)
+      const result = suggestRefactoring(args.code, language)
+      return formatRefactorReport(result)
+    }
+  }))
+
+  // Tool 27: Naming Convention Check (v0.7.0)
+  ctx.tools.register(defineTool({
+    name: 'naming_check',
+    description: 'Check naming conventions per language: camelCase, PascalCase, snake_case, SCREAMING_SNAKE_CASE.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code to check' },
+      language: { type: 'string', description: 'Programming language' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string; language?: string }) {
+      const language = args.language || detectLanguage(args.code)
+      const result = checkNamingConventions(args.code, language)
+      return formatNamingReport(result)
+    }
+  }))
   
-  console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze`)
+  console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check`)
 }
