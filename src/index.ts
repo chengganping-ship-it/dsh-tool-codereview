@@ -72,7 +72,7 @@
  * - API gateway (BFF pattern, service routing)
  * 
  * @module dsh-tool-codereview
- * @version 0.18.0
+ * @version 0.19.0
  * @license MIT
  */
 
@@ -82,7 +82,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 export const name = 'dsh-tool-codereview'
 export const inject = ['tools']
 
-const VERSION = '0.18.0'
+const VERSION = '0.19.0'
 
 // ==================== TYPES ====================
 
@@ -12285,6 +12285,694 @@ function formatSdkReport(r: SdkResult): string {
   return lines.join('\n')
 }
 
+// ==================== V0.19.0: CONTAINER SECURITY ====================
+
+interface ContainerResult {
+  totalIssues: number
+  severity: Severity
+  securityIssues: { line: number; issue: string; suggestion: string }[]
+  bestPractices: { line: number; issue: string; suggestion: string }[]
+  optimization: { line: number; issue: string; suggestion: string }[]
+  containerScore: number
+  summary: string
+}
+
+function analyzeContainerSecurity(code: string): ContainerResult {
+  const lines = code.split('\n')
+  const securityIssues: ContainerResult['securityIssues'] = []
+  const bestPractices: ContainerResult['bestPractices'] = []
+  const optimization: ContainerResult['optimization'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^#/)) return
+
+    if (line.match(/FROM\s+(?:ubuntu|debian|centos|node(?!\s*:\d))/i) && !line.match(/alpine|distroless|scratch/i)) {
+      optimization.push({ line: i + 1, issue: 'Large base image increases attack surface and build time', suggestion: 'Use distroless or Alpine variants for minimal footprint' })
+    }
+
+    if (line.match(/USER\s+root/i) || line.match(/RUN.*sudo/i)) {
+      securityIssues.push({ line: i + 1, issue: 'Container runs as root — privilege escalation risk', suggestion: 'Create non-root user: RUN adduser --disabled-password appuser && USER appuser' })
+    }
+
+    if (line.match(/(?:SECRET|PASSWORD|TOKEN|KEY|CRET)\s*=\s*[^$]/i) && !line.match(/\$\{|ENV.*\$/)) {
+      securityIssues.push({ line: i + 1, issue: 'Hardcoded secret in Dockerfile', suggestion: 'Use BuildKit secrets (--mount=type=secret) or runtime secrets management' })
+    }
+
+    if (line.match(/RUN\s+(?:apt|yum|apk).*install/i) && !line.match(/rm.*cache|clean|--no-cache/)) {
+      optimization.push({ line: i + 1, issue: 'Package manager cache not cleaned — bloats image', suggestion: 'Add && rm -rf /var/cache/apk/* or use --no-cache flag' })
+    }
+
+    if (line.match(/COPY\s+\.\s+\./) && !line.match(/\.dockerignore/)) {
+      bestPractices.push({ line: i + 1, issue: 'COPY . . copies entire context including .git, node_modules', suggestion: 'Use .dockerignore and COPY only necessary files for smaller context' })
+    }
+
+    if (line.match(/latest/i) && line.match(/FROM|image/i)) {
+      bestPractices.push({ line: i + 1, issue: 'Using :latest tag — non-reproducible builds', suggestion: 'Pin to specific digest or semver tag for reproducible builds' })
+    }
+
+    if (line.match(/EXPOSE\s+(\d+)/)) {
+      const port = parseInt(line.match(/EXPOSE\s+(\d+)/)?.[1] || '0')
+      if (port < 1024) {
+        securityIssues.push({ line: i + 1, issue: 'Exposed privileged port ' + port + ' — requires root', suggestion: 'Use unprivileged ports (>1024) and map at runtime' })
+      }
+    }
+
+    if (line.match(/HEALTHCHECK/i) && line.match(/NONE/i)) {
+      bestPractices.push({ line: i + 1, issue: 'HEALTHCHECK NONE disables health monitoring', suggestion: 'Implement HTTP/TCP health check for orchestrator integration' })
+    }
+  })
+
+  const totalIssues = securityIssues.length + bestPractices.length + optimization.length
+  const containerScore = Math.max(0, 100 - securityIssues.length * 15 - bestPractices.length * 8 - optimization.length * 6)
+  const severity: Severity = securityIssues.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, securityIssues, bestPractices, optimization, containerScore,
+    summary: securityIssues.length + ' security issue(s), ' + bestPractices.length + ' best practice(s), ' + optimization.length + ' optimization(s)' }
+}
+
+function formatContainerReport(r: ContainerResult): string {
+  const lines: string[] = []
+  lines.push('# Container Security Analysis')
+  lines.push('')
+  lines.push('**Container Score:** ' + r.containerScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.securityIssues.length > 0) {
+    lines.push('## Security Issues (' + r.securityIssues.length + ')')
+    r.securityIssues.forEach(s => lines.push('- Line ' + s.line + ': ' + s.suggestion))
+    lines.push('')
+  }
+  if (r.bestPractices.length > 0) {
+    lines.push('## Best Practices (' + r.bestPractices.length + ')')
+    r.bestPractices.forEach(b => lines.push('- Line ' + b.line + ': ' + b.suggestion))
+    lines.push('')
+  }
+  if (r.optimization.length > 0) {
+    lines.push('## Optimization (' + r.optimization.length + ')')
+    r.optimization.forEach(o => lines.push('- Line ' + o.line + ': ' + o.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.19.0: ML PIPELINE QUALITY ====================
+
+interface MlPipelineResult {
+  totalIssues: number
+  severity: Severity
+  dataLeakage: { line: number; issue: string; suggestion: string }[]
+  reproducibility: { line: number; issue: string; suggestion: string }[]
+  driftRisks: { line: number; issue: string; suggestion: string }[]
+  mlScore: number
+  summary: string
+}
+
+function analyzeMlPipeline(code: string): MlPipelineResult {
+  const lines = code.split('\n')
+  const dataLeakage: MlPipelineResult['dataLeakage'] = []
+  const reproducibility: MlPipelineResult['reproducibility'] = []
+  const driftRisks: MlPipelineResult['driftRisks'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\#|\/\/|\/\*|\*)/)) return
+
+    if (line.match(/fit\(.*transform|fit_transform/) && line.match(/test|eval|all/)) {
+      dataLeakage.push({ line: i + 1, issue: 'Data leakage: fit on test/evaluation data', suggestion: 'Fit transformers only on training data, then transform test data separately' })
+    }
+
+    if (line.match(/random|shuffle|split/) && !line.match(/seed|random_state|set_seed/)) {
+      reproducibility.push({ line: i + 1, issue: 'No random seed set — non-reproducible results', suggestion: 'Set random seed (np.random.seed, tf.random.set_seed) for reproducibility' })
+    }
+
+    if (line.match(/accuracy|precision|recall|f1/) && !line.match(/cross_val|validation|confidence/)) {
+      driftRisks.push({ line: i + 1, issue: 'Metric computed without cross-validation — may not generalize', suggestion: 'Use cross-validation or hold-out set for robust performance estimation' })
+    }
+
+    if (line.match(/pickle\.dump|joblib\.dump|save_model/) && !line.match(/version|hash|checksum/)) {
+      reproducibility.push({ line: i + 1, issue: 'Model saved without versioning — cannot reproduce', suggestion: 'Tag models with version, training data hash, and hyperparameters' })
+    }
+
+    if (line.match(/StandardScaler|MinMaxScaler|normalize/) && line.match(/test|validate/)) {
+      dataLeakage.push({ line: i + 1, issue: 'Scaler applied to test data before splitting — target leakage', suggestion: 'Split data first, then fit scaler only on training set' })
+    }
+
+    if (line.match(/feature.*importance|selectKBest|PCA/) && !line.match(/pipeline/)) {
+      driftRisks.push({ line: i + 1, issue: 'Feature selection outside pipeline — drift risk', suggestion: 'Include feature selection inside sklearn Pipeline to prevent test-time leakage' })
+    }
+  })
+
+  const totalIssues = dataLeakage.length + reproducibility.length + driftRisks.length
+  const mlScore = Math.max(0, 100 - dataLeakage.length * 15 - reproducibility.length * 10 - driftRisks.length * 8)
+  const severity: Severity = dataLeakage.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, dataLeakage, reproducibility, driftRisks, mlScore,
+    summary: dataLeakage.length + ' data leakage risk(s), ' + reproducibility.length + ' reproducibility issue(s), ' + driftRisks.length + ' drift risk(s)' }
+}
+
+function formatMlPipelineReport(r: MlPipelineResult): string {
+  const lines: string[] = []
+  lines.push('# ML Pipeline Quality Analysis')
+  lines.push('')
+  lines.push('**ML Pipeline Score:** ' + r.mlScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.dataLeakage.length > 0) {
+    lines.push('## Data Leakage Risks (' + r.dataLeakage.length + ')')
+    r.dataLeakage.forEach(d => lines.push('- Line ' + d.line + ': ' + d.suggestion))
+    lines.push('')
+  }
+  if (r.reproducibility.length > 0) {
+    lines.push('## Reproducibility (' + r.reproducibility.length + ')')
+    r.reproducibility.forEach(rp => lines.push('- Line ' + rp.line + ': ' + rp.suggestion))
+    lines.push('')
+  }
+  if (r.driftRisks.length > 0) {
+    lines.push('## Drift Risks (' + r.driftRisks.length + ')')
+    r.driftRisks.forEach(dr => lines.push('- Line ' + dr.line + ': ' + dr.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.19.0: API DEPRECATION MANAGEMENT ====================
+
+interface DeprecationResult {
+  totalIssues: number
+  severity: Severity
+  deprecated: { line: number; api: string; suggestion: string }[]
+  sunsetMissing: { line: number; api: string; suggestion: string }[]
+  versioningGaps: { line: number; issue: string; suggestion: string }[]
+  deprecationScore: number
+  summary: string
+}
+
+function analyzeApiDeprecation(code: string): DeprecationResult {
+  const lines = code.split('\n')
+  const deprecated: DeprecationResult['deprecated'] = []
+  const sunsetMissing: DeprecationResult['sunsetMissing'] = []
+  const versioningGaps: DeprecationResult['versioningGaps'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/@deprecated|@obsolete|DEPRECATED/i)) {
+      const apiMatch = line.match(/(?:function|class|method|const)\s+(\w+)/)
+      const name = apiMatch ? apiMatch[1] : 'API'
+      if (!line.match(/@see|@link|@migration/)) {
+        deprecated.push({ line: i + 1, api: name, suggestion: 'Add @see/migration path for consumers to migrate away from deprecated API' })
+      }
+      if (!line.match(/since|until|removal|sunset/i)) {
+        sunsetMissing.push({ line: i + 1, api: name, suggestion: 'Specify removal version or date for deprecated API (e.g., @since 2.0 @remove 3.0)' })
+      }
+    }
+
+    if (line.match(/(?:version|v)\s*[=:]\s*['"]?\d+\.\d+/i) && !line.match(/semver|compatible|backward/i)) {
+      versioningGaps.push({ line: i + 1, issue: 'API version specified without compatibility guarantee', suggestion: 'Document breakage policy: deprecation notice period, migration guide, compatibility matrix' })
+    }
+
+    if (line.match(/endpoint|route|path.*\/v\d+/) && !line.match(/deprecated|sunset|removal/)) {
+      const next3 = lines.slice(i, i + 3).join('\n')
+      if (next3.match(/breaking|incompatible|removed/i)) {
+        versioningGaps.push({ line: i + 1, issue: 'Breaking API change without deprecation period', suggestion: 'Maintain old version with deprecation header for minimum 6 months before removal' })
+      }
+    }
+
+    if (line.match(/Sunset|Deprecation-Reminder|Api-Version/i) && line.match(/header|response/)) {
+      // This is good — but check for date
+      if (!line.match(/\d{4}-\d{2}|January|February|March/)) {
+        sunsetMissing.push({ line: i + 1, api: 'response', suggestion: 'Include specific removal date in Sunset/Deprecation headers (RFC 8594)' })
+      }
+    }
+  })
+
+  const totalIssues = deprecated.length + sunsetMissing.length + versioningGaps.length
+  const deprecationScore = Math.max(0, 100 - deprecated.length * 8 - sunsetMissing.length * 12 - versioningGaps.length * 10)
+  const severity: Severity = sunsetMissing.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, deprecated, sunsetMissing, versioningGaps, deprecationScore,
+    summary: deprecated.length + ' undocumented deprecation(s), ' + sunsetMissing.length + ' missing sunset date(s), ' + versioningGaps.length + ' versioning gap(s)' }
+}
+
+function formatDeprecationReport(r: DeprecationResult): string {
+  const lines: string[] = []
+  lines.push('# API Deprecation Management Analysis')
+  lines.push('')
+  lines.push('**Deprecation Score:** ' + r.deprecationScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.deprecated.length > 0) {
+    lines.push('## Deprecated APIs Without Migration (' + r.deprecated.length + ')')
+    r.deprecated.forEach(d => lines.push('- Line ' + d.line + ': ' + d.api + ' — ' + d.suggestion))
+    lines.push('')
+  }
+  if (r.sunsetMissing.length > 0) {
+    lines.push('## Missing Sunset Dates (' + r.sunsetMissing.length + ')')
+    r.sunsetMissing.forEach(s => lines.push('- Line ' + s.line + ': ' + s.suggestion))
+    lines.push('')
+  }
+  if (r.versioningGaps.length > 0) {
+    lines.push('## Versioning Gaps (' + r.versioningGaps.length + ')')
+    r.versioningGaps.forEach(v => lines.push('- Line ' + v.line + ': ' + v.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.19.0: DESIGN SYSTEM ADHERENCE ====================
+
+interface DesignSystemResult {
+  totalIssues: number
+  severity: Severity
+  hardcoded: { line: number; value: string; token: string; suggestion: string }[]
+  nonToken: { line: number; issue: string; suggestion: string }[]
+  consistency: { line: number; issue: string; suggestion: string }[]
+  dsScore: number
+  summary: string
+}
+
+function analyzeDesignSystem(code: string): DesignSystemResult {
+  const lines = code.split('\n')
+  const hardcoded: DesignSystemResult['hardcoded'] = []
+  const nonToken: DesignSystemResult['nonToken'] = []
+  const consistency: DesignSystemResult['consistency'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    const colorMatch = line.match(/#[0-9a-fA-F]{3,8}\b/)
+    if (colorMatch && !line.match(/token|variable|theme|designToken/)) {
+      hardcoded.push({ line: i + 1, value: colorMatch[0], token: 'color', suggestion: 'Replace ' + colorMatch[0] + ' with design token (e.g., tokens.color.primary)' })
+    }
+
+    const spacingMatch = line.match(/(?:margin|padding|gap|top|left|right|bottom)[^:]*:\s*(\d+)px/)
+    if (spacingMatch && !line.match(/token|variable|theme|spacing/)) {
+      hardcoded.push({ line: i + 1, value: spacingMatch[1] + 'px', token: 'spacing', suggestion: 'Replace ' + spacingMatch[1] + 'px with spacing token (e.g., tokens.spacing.md)' })
+    }
+
+    const fontMatch = line.match(/font-size:\s*(\d+)(?:px|rem)/)
+    if (fontMatch && !line.match(/token|variable|theme|typography/) && parseInt(fontMatch[1]) > 0) {
+      const size = parseInt(fontMatch[1])
+      if (size < 12 || size > 48) {
+        nonToken.push({ line: i + 1, issue: 'Font size outside scale: ' + size + 'px', suggestion: 'Use typography tokens (tokens.fontSize.body, tokens.fontSize.heading)' })
+      }
+    }
+
+    if (line.match(/border-radius:\s*(\d+)/)) {
+      const radius = parseInt(line.match(/border-radius:\s*(\d+)/)?.[1] || '0')
+      if (radius % 4 !== 0 && radius % 8 !== 0) {
+        consistency.push({ line: i + 1, issue: 'Non-standard border-radius: ' + radius + 'px', suggestion: 'Use multiples of 4px or 8px per design grid system' })
+      }
+    }
+
+    if (line.match(/box-shadow/) && !line.match(/token|elevation|theme/)) {
+      nonToken.push({ line: i + 1, issue: 'Hardcoded box-shadow — inconsistent elevation system', suggestion: 'Use elevation tokens (tokens.shadow.card, tokens.shadow.modal) for consistent depth' })
+    }
+
+    if (line.match(/@import|className.*style|inline.*style/i)) {
+      nonToken.push({ line: i + 1, issue: 'Inline styles bypass design tokens', suggestion: 'Use styled components with theme tokens for consistent theming' })
+    }
+  })
+
+  const totalIssues = hardcoded.length + nonToken.length + consistency.length
+  const dsScore = Math.max(0, 100 - hardcoded.length * 10 - nonToken.length * 8 - consistency.length * 6)
+  const severity: Severity = hardcoded.length > 3 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, hardcoded, nonToken, consistency, dsScore,
+    summary: hardcoded.length + ' hardcoded value(s), ' + nonToken.length + ' non-token usage(s), ' + consistency.length + ' inconsistency issue(s)' }
+}
+
+function formatDesignSystemReport(r: DesignSystemResult): string {
+  const lines: string[] = []
+  lines.push('# Design System Adherence Analysis')
+  lines.push('')
+  lines.push('**Design System Score:** ' + r.dsScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.hardcoded.length > 0) {
+    lines.push('## Hardcoded Values (' + r.hardcoded.length + ')')
+    r.hardcoded.forEach(h => lines.push('- Line ' + h.line + ': ' + h.value + ' → ' + h.suggestion))
+    lines.push('')
+  }
+  if (r.nonToken.length > 0) {
+    lines.push('## Non-Token Usage (' + r.nonToken.length + ')')
+    r.nonToken.forEach(n => lines.push('- Line ' + n.line + ': ' + n.suggestion))
+    lines.push('')
+  }
+  if (r.consistency.length > 0) {
+    lines.push('## Consistency Issues (' + r.consistency.length + ')')
+    r.consistency.forEach(c => lines.push('- Line ' + c.line + ': ' + c.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.19.0: PROGRESSIVE WEB APP (PWA) ====================
+
+interface PwaResult {
+  totalIssues: number
+  severity: Severity
+  serviceWorker: { line: number; issue: string; suggestion: string }[]
+  manifest: { line: number; issue: string; suggestion: string }[]
+  offline: { line: number; issue: string; suggestion: string }[]
+  pwaScore: number
+  summary: string
+}
+
+function analyzePwaCompliance(code: string): PwaResult {
+  const lines = code.split('\n')
+  const serviceWorker: PwaResult['serviceWorker'] = []
+  const manifest: PwaResult['manifest'] = []
+  const offline: PwaResult['offline'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/navigator\.serviceWorker/) && !line.match(/register/)) {
+      serviceWorker.push({ line: i + 1, issue: 'Service worker reference without registration', suggestion: 'Register SW: navigator.serviceWorker.register("/sw.js")' })
+    }
+
+    if (line.match(/caches\.(open|match|addAll)/) && !line.match(/strategy|fallback|networkFirst/)) {
+      offline.push({ line: i + 1, issue: 'Cache API used without defined strategy', suggestion: 'Implement cache-first for assets, network-first for API calls' })
+    }
+
+    if (line.match(/fetch.*event|self.addEventListener.*fetch/) && !line.match(/cache|network|staleWhileRevalidate/)) {
+      offline.push({ line: i + 1, issue: 'Fetch handler without caching strategy', suggestion: 'Add stale-while-revalidate or cache-first pattern for offline support' })
+    }
+
+    if (line.match(/manifest\.json|link.*manifest/) && !line.match(/theme_color|icons|display/)) {
+      manifest.push({ line: i + 1, issue: 'Web App Manifest without required fields', suggestion: 'Include name, short_name, icons, theme_color, display: standalone' })
+    }
+
+    if (line.match(/beforeinstallprompt|install.*prompt/) && !line.match(/deferredPrompt|userChoice/)) {
+      manifest.push({ line: i + 1, issue: 'PWA install prompt may be lost if not captured', suggestion: 'Capture deferredPrompt and show custom install button' })
+    }
+
+    if (line.match(/Notification|push.*event/i) && !line.match(/permission|subscription|VAPID/)) {
+      offline.push({ line: i + 1, issue: 'Push/Notification without permission check', suggestion: 'Check Notification.requestPermission() before subscribing' })
+    }
+
+    if (line.match(/appShell|shell.*cache|precache/i) && !line.match(/fallback|offline\.html/)) {
+      offline.push({ line: i + 1, issue: 'App shell cached without offline fallback', suggestion: 'Add offline.html fallback for uncached routes' })
+    }
+  })
+
+  const totalIssues = serviceWorker.length + manifest.length + offline.length
+  const pwaScore = Math.max(0, 100 - serviceWorker.length * 10 - manifest.length * 12 - offline.length * 8)
+  const severity: Severity = totalIssues > 3 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, serviceWorker, manifest, offline, pwaScore,
+    summary: serviceWorker.length + ' SW issue(s), ' + manifest.length + ' manifest gap(s), ' + offline.length + ' offline readiness issue(s)' }
+}
+
+function formatPwaReport(r: PwaResult): string {
+  const lines: string[] = []
+  lines.push('# Progressive Web App (PWA) Analysis')
+  lines.push('')
+  lines.push('**PWA Score:** ' + r.pwaScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.serviceWorker.length > 0) {
+    lines.push('## Service Worker (' + r.serviceWorker.length + ')')
+    r.serviceWorker.forEach(s => lines.push('- Line ' + s.line + ': ' + s.suggestion))
+    lines.push('')
+  }
+  if (r.manifest.length > 0) {
+    lines.push('## Manifest (' + r.manifest.length + ')')
+    r.manifest.forEach(m => lines.push('- Line ' + m.line + ': ' + m.suggestion))
+    lines.push('')
+  }
+  if (r.offline.length > 0) {
+    lines.push('## Offline Readiness (' + r.offline.length + ')')
+    r.offline.forEach(o => lines.push('- Line ' + o.line + ': ' + o.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.19.0: ADVANCED TYPE SYSTEM ====================
+
+interface TypeSystemResult {
+  totalIssues: number
+  severity: Severity
+  anyUsage: { line: number; issue: string; suggestion: string }[]
+  narrowing: { line: number; issue: string; suggestion: string }[]
+  generics: { line: number; issue: string; suggestion: string }[]
+  typeScore: number
+  summary: string
+}
+
+function analyzeTypeSystem(code: string): TypeSystemResult {
+  const lines = code.split('\n')
+  const anyUsage: TypeSystemResult['anyUsage'] = []
+  const narrowing: TypeSystemResult['narrowing'] = []
+  const generics: TypeSystemResult['generics'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/:\s*any\b/) && !line.match(/\/\/\s*@ts-ignore|eslint-disable/)) {
+      anyUsage.push({ line: i + 1, issue: 'Explicit any type — bypasses type checking', suggestion: 'Replace with unknown, generic, or specific type for type safety' })
+    }
+
+    if (line.match(/as\s+(?:any|never)/) && !line.match(/test|spec|mock/i)) {
+      anyUsage.push({ line: i + 1, issue: 'Unsafe type assertion ' + line.match(/as\s+\w+/)?.[0], suggestion: 'Use type guards or narrowing instead of type assertions' })
+    }
+
+    if (line.match(/!\s*$/) && line.match(/\w+!/)) {
+      narrowing.push({ line: i + 1, issue: 'Non-null assertion operator (!) — runtime crash risk', suggestion: 'Use optional chaining (?.) or explicit null check' })
+    }
+
+    if (line.match(/function\s+\w+\s*\([^)]+\)\s*\{/) && !line.match(/extends|super|override|<T/)) {
+      const params = line.match(/\(([^)]+)\)/)?.[1] || ''
+      if (params.includes(': any') || (params.split(',').length > 2 && !params.includes('<'))) {
+        generics.push({ line: i + 1, issue: 'Function lacks generic type parameter for reusability', suggestion: 'Use <T> generic to make function type-safe and reusable across types' })
+      }
+    }
+
+    if (line.match(/type\s+\w+\s*=\s*(?:string|number|boolean)\s*[|&]/)) {
+      if (!line.match(/export|interface|type\s+guard/)) {
+        narrowing.push({ line: i + 1, issue: 'Union type without type guard for narrowing', suggestion: 'Add discriminated union with kind/tag field for safe narrowing' })
+      }
+    }
+
+    if (line.match(/catch\s*\(\s*\w+\s*\)/) && !line.match(/instanceof|unknown/)) {
+      narrowing.push({ line: i + 1, issue: 'Catch clause with untyped error — use unknown', suggestion: 'Type catch as unknown and narrow with instanceof for safe error handling' })
+    }
+  })
+
+  const totalIssues = anyUsage.length + narrowing.length + generics.length
+  const typeScore = Math.max(0, 100 - anyUsage.length * 12 - narrowing.length * 8 - generics.length * 6)
+  const severity: Severity = anyUsage.length > 2 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, anyUsage, narrowing, generics, typeScore,
+    summary: anyUsage.length + ' any/unsafe type(s), ' + narrowing.length + ' narrowing issue(s), ' + generics.length + ' generics opportunity(ies)' }
+}
+
+function formatTypeSystemReport(r: TypeSystemResult): string {
+  const lines: string[] = []
+  lines.push('# Advanced Type System Analysis')
+  lines.push('')
+  lines.push('**Type Safety Score:** ' + r.typeScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.anyUsage.length > 0) {
+    lines.push('## Any/Unsafe Types (' + r.anyUsage.length + ')')
+    r.anyUsage.forEach(a => lines.push('- Line ' + a.line + ': ' + a.suggestion))
+    lines.push('')
+  }
+  if (r.narrowing.length > 0) {
+    lines.push('## Narrowing Issues (' + r.narrowing.length + ')')
+    r.narrowing.forEach(n => lines.push('- Line ' + n.line + ': ' + n.suggestion))
+    lines.push('')
+  }
+  if (r.generics.length > 0) {
+    lines.push('## Generics Opportunities (' + r.generics.length + ')')
+    r.generics.forEach(g => lines.push('- Line ' + g.line + ': ' + g.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.19.0: GREEN COMPUTING ====================
+
+interface GreenResult {
+  totalIssues: number
+  severity: Severity
+  cpuWaste: { line: number; issue: string; suggestion: string }[]
+  memoryWaste: { line: number; issue: string; suggestion: string }[]
+  carbonAware: { line: number; issue: string; suggestion: string }[]
+  greenScore: number
+  summary: string
+}
+
+function analyzeGreenComputing(code: string): GreenResult {
+  const lines = code.split('\n')
+  const cpuWaste: GreenResult['cpuWaste'] = []
+  const memoryWaste: GreenResult['memoryWaste'] = []
+  const carbonAware: GreenResult['carbonAware'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/setInterval\s*\([^,]+,\s*(\d+)/)) {
+      const interval = parseInt(line.match(/setInterval\s*\([^,]+,\s*(\d+)/)?.[1] || '0')
+      if (interval < 1000 && interval > 0) {
+        cpuWaste.push({ line: i + 1, issue: 'High-frequency polling every ' + interval + 'ms wastes CPU cycles', suggestion: 'Use WebSocket, MutationObserver, or increase interval to reduce CPU wakeups' })
+      }
+    }
+
+    if (line.match(/(?:debounce|throttle)/) && line.match(/requestAnimationFrame|scroll|resize/i)) {
+      // Good pattern — skip
+    } else if (line.match(/(?:scroll|resize|mousemove)\s*=\(?.*\)/) && !line.match(/debounce|throttle|passive/)) {
+      cpuWaste.push({ line: i + 1, issue: 'Raw scroll/resize handler fires excessively', suggestion: 'Wrap with requestAnimationFrame + debounce, mark { passive: true }' })
+    }
+
+    if (line.match(/new\s+Array\(\s*\d{4,}/)) {
+      memoryWaste.push({ line: i + 1, issue: 'Pre-allocated large array — wastes memory if underutilized', suggestion: 'Use lazy allocation or typed arrays for numeric data' })
+    }
+
+    if (line.match(/JSON\.parse.*JSON\.stringify/) && line.match(/deep.*copy|clone/i)) {
+      memoryWaste.push({ line: i + 1, issue: 'Deep clone via JSON is memory-intensive for large objects', suggestion: 'Use structuredClone with transferable objects or immutable patterns' })
+    }
+
+    if (line.match(/process\.(env|exit)|globalThis\./) && line.match(/carbon|green|sustainability|energy/i)) {
+      // Carbon-aware code — good
+    } else if (line.match(/cron|schedule.*daily|batch.*nightly/i) && !line.match(/carbon|renewable|region|energy/)) {
+      carbonAware.push({ line: i + 1, issue: 'Batch job scheduled without carbon awareness', suggestion: 'Schedule heavy compute in low-carbon-intensity regions/times (e.g., windy nights)' })
+    }
+
+    if (line.match(/(?:map|filter|reduce).*(?:map|filter|reduce).*(?:map|filter|reduce)/) && !line.match(/transduce|compose|pipe/)) {
+      cpuWaste.push({ line: i + 1, issue: 'Triple-chained array methods = 3 iterations + 2 intermediate arrays', suggestion: 'Use transducer or single reduce to fuse iterations' })
+    }
+  })
+
+  const totalIssues = cpuWaste.length + memoryWaste.length + carbonAware.length
+  const greenScore = Math.max(0, 100 - cpuWaste.length * 10 - memoryWaste.length * 8 - carbonAware.length * 6)
+  const severity: Severity = totalIssues > 3 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, cpuWaste, memoryWaste, carbonAware, greenScore,
+    summary: cpuWaste.length + ' CPU inefficiency(ies), ' + memoryWaste.length + ' memory waste(s), ' + carbonAware.length + ' carbon awareness opportunity(ies)' }
+}
+
+function formatGreenReport(r: GreenResult): string {
+  const lines: string[] = []
+  lines.push('# Green Computing Analysis')
+  lines.push('')
+  lines.push('**Green Score:** ' + r.greenScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.cpuWaste.length > 0) {
+    lines.push('## CPU Inefficiencies (' + r.cpuWaste.length + ')')
+    r.cpuWaste.forEach(c => lines.push('- Line ' + c.line + ': ' + c.suggestion))
+    lines.push('')
+  }
+  if (r.memoryWaste.length > 0) {
+    lines.push('## Memory Waste (' + r.memoryWaste.length + ')')
+    r.memoryWaste.forEach(m => lines.push('- Line ' + m.line + ': ' + m.suggestion))
+    lines.push('')
+  }
+  if (r.carbonAware.length > 0) {
+    lines.push('## Carbon Awareness (' + r.carbonAware.length + ')')
+    r.carbonAware.forEach(ca => lines.push('- Line ' + ca.line + ': ' + ca.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.19.0: REAL-TIME COLLABORATION ====================
+
+interface CollabResult {
+  totalIssues: number
+  severity: Severity
+  conflict: { line: number; issue: string; suggestion: string }[]
+  consistency: { line: number; issue: string; suggestion: string }[]
+  ordering: { line: number; issue: string; suggestion: string }[]
+  collabScore: number
+  summary: string
+}
+
+function analyzeRealtimeCollab(code: string): CollabResult {
+  const lines = code.split('\n')
+  const conflict: CollabResult['conflict'] = []
+  const consistency: CollabResult['consistency'] = []
+  const ordering: CollabResult['ordering'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/broadcast|broadcastSync|postMessage|yjs|y\.doc/i) && !line.match(/transaction|origin|version/)) {
+      conflict.push({ line: i + 1, issue: 'Broadcast without version tracking — concurrent edits may conflict', suggestion: 'Use vector clocks or Lamport timestamps for causal ordering' })
+    }
+
+    if (line.match(/OperationalTransform|OT\.transform/i)) {
+      // Known pattern — check for context
+      if (!line.match(/clientId|revision|version/)) {
+        consistency.push({ line: i + 1, issue: 'OT transform without client context', suggestion: 'Pass client ID and revision number with each operation' })
+      }
+    }
+
+    if (line.match(/CRDT|crdt|automerge|diamondTypes/i) && !line.match(/state|clock|merge/)) {
+      consistency.push({ line: i + 1, issue: 'CRDT library without explicit merge strategy', suggestion: 'Define merge strategy for CRDT state synchronization' })
+    }
+
+    if (line.match(/lock.*document|lock.*page|acquireLock/i) && !line.match(/timeout|lease|heartbeat/)) {
+      conflict.push({ line: i + 1, issue: 'Document lock without timeout — stuck lock blocks editors', suggestion: 'Use lease-based locking with heartbeat and auto-expiry' })
+    }
+
+    if (line.match(/WebSocket.*message|ws\.onmessage/) && !line.match(/sequence|version|ack/)) {
+      ordering.push({ line: i + 1, issue: 'WebSocket messages without ordering guarantee', suggestion: 'Add sequence numbers and buffer out-of-order messages' })
+    }
+
+    if (line.match(/lastWriteWins|LWW/) && line.match(/conflict|merge/)) {
+      conflict.push({ line: i + 1, issue: 'Last-write-wins may silently drop concurrent edits', suggestion: 'Consider CRDT or OT for collaborative text editing' })
+    }
+
+    if (line.match(/cursor.*position|awareness|cursor.*sync/i) && !line.match(/mousemove.*throttle|debounce/)) {
+      ordering.push({ line: i + 1, issue: 'Cursor sync without throttling floods network', suggestion: 'Throttle cursor position updates to 30-60fps with interpolation' })
+    }
+  })
+
+  const totalIssues = conflict.length + consistency.length + ordering.length
+  const collabScore = Math.max(0, 100 - conflict.length * 12 - consistency.length * 8 - ordering.length * 10)
+  const severity: Severity = conflict.length > 1 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, conflict, consistency, ordering, collabScore,
+    summary: conflict.length + ' conflict resolution issue(s), ' + consistency.length + ' consistency gap(s), ' + ordering.length + ' ordering concern(s)' }
+}
+
+function formatCollabReport(r: CollabResult): string {
+  const lines: string[] = []
+  lines.push('# Real-Time Collaboration Analysis')
+  lines.push('')
+  lines.push('**Collaboration Score:** ' + r.collabScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.conflict.length > 0) {
+    lines.push('## Conflict Resolution (' + r.conflict.length + ')')
+    r.conflict.forEach(c => lines.push('- Line ' + c.line + ': ' + c.suggestion))
+    lines.push('')
+  }
+  if (r.consistency.length > 0) {
+    lines.push('## Consistency (' + r.consistency.length + ')')
+    r.consistency.forEach(c => lines.push('- Line ' + c.line + ': ' + c.suggestion))
+    lines.push('')
+  }
+  if (r.ordering.length > 0) {
+    lines.push('## Ordering (' + r.ordering.length + ')')
+    r.ordering.forEach(o => lines.push('- Line ' + o.line + ': ' + o.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
 // ==================== PLUGIN REGISTRATION ====================
 
 export function apply(ctx: Context) {
@@ -13983,5 +14671,117 @@ export function apply(ctx: Context) {
     }
   }))
 
-  console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design`)
+  // Tool 114: Container Security (v0.19.0)
+  ctx.tools.register(defineTool({
+    name: 'container_security',
+    description: 'Analyze container/Dockerfile security: root user, secrets, base image, caching.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The Dockerfile or container config to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeContainerSecurity(args.code)
+      return formatContainerReport(result)
+    }
+  }))
+
+  // Tool 115: ML Pipeline Quality (v0.19.0)
+  ctx.tools.register(defineTool({
+    name: 'ml_pipeline',
+    description: 'Analyze ML pipeline: data leakage, reproducibility, feature drift, model versioning.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The ML pipeline code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeMlPipeline(args.code)
+      return formatMlPipelineReport(result)
+    }
+  }))
+
+  // Tool 116: API Deprecation Management (v0.19.0)
+  ctx.tools.register(defineTool({
+    name: 'api_deprecation',
+    description: 'Analyze API deprecation: sunset dates, migration paths, versioning policy.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The API code to analyze for deprecation' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeApiDeprecation(args.code)
+      return formatDeprecationReport(result)
+    }
+  }))
+
+  // Tool 117: Design System Adherence (v0.19.0)
+  ctx.tools.register(defineTool({
+    name: 'design_system',
+    description: 'Analyze design system adherence: hardcoded values, token usage, consistency.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The UI/styling code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeDesignSystem(args.code)
+      return formatDesignSystemReport(result)
+    }
+  }))
+
+  // Tool 118: Progressive Web App (v0.19.0)
+  ctx.tools.register(defineTool({
+    name: 'pwa_compliance',
+    description: 'Analyze PWA compliance: service worker, manifest, offline, install prompt.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The web app code to analyze for PWA' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzePwaCompliance(args.code)
+      return formatPwaReport(result)
+    }
+  }))
+
+  // Tool 119: Advanced Type System (v0.19.0)
+  ctx.tools.register(defineTool({
+    name: 'type_system',
+    description: 'Analyze TypeScript type system: any usage, narrowing, generics, assertions.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The TypeScript code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeTypeSystem(args.code)
+      return formatTypeSystemReport(result)
+    }
+  }))
+
+  // Tool 120: Green Computing (v0.19.0)
+  ctx.tools.register(defineTool({
+    name: 'green_computing',
+    description: 'Analyze energy efficiency: CPU waste, memory footprint, carbon awareness.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The code to analyze for energy efficiency' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeGreenComputing(args.code)
+      return formatGreenReport(result)
+    }
+  }))
+
+  // Tool 121: Real-Time Collaboration (v0.19.0)
+  ctx.tools.register(defineTool({
+    name: 'realtime_collab',
+    description: 'Analyze real-time collaboration: CRDT/OT, conflict resolution, message ordering.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The collaborative code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeRealtimeCollab(args.code)
+      return formatCollabReport(result)
+    }
+  }))
+
+  console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design, container_security, ml_pipeline, api_deprecation, design_system, pwa_compliance, type_system, green_computing, realtime_collab`)
 }
