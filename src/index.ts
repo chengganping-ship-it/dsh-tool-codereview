@@ -72,7 +72,7 @@
  * - API gateway (BFF pattern, service routing)
  * 
  * @module dsh-tool-codereview
- * @version 0.21.0
+ * @version 0.22.0
  * @license MIT
  */
 
@@ -82,7 +82,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 export const name = 'dsh-tool-codereview'
 export const inject = ['tools']
 
-const VERSION = '0.21.0'
+const VERSION = '0.22.0'
 
 // ==================== TYPES ====================
 
@@ -14283,6 +14283,570 @@ function formatSeoReport(r: SeoResult): string {
   return lines.join('\n')
 }
 
+// ==================== V0.22.0: MONOREPO BOUNDARIES ====================
+
+interface MonorepoBoundsResult {
+  totalIssues: number
+  severity: Severity
+  boundaries: { line: number; issue: string; suggestion: string }[]
+  hoisting: { line: number; issue: string; suggestion: string }[]
+  monoScore: number
+  summary: string
+}
+
+function analyzeMonorepoBounds(code: string): MonorepoBoundsResult {
+  const lines = code.split('\n')
+  const boundaries: MonorepoBoundsResult['boundaries'] = []
+  const hoisting: MonorepoBoundsResult['hoisting'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/from\s+['"]\.\.\/.*\/src\//) || line.match(/require\s*\(\s*['"]\.\.\/.*\/src\//)) {
+      boundaries.push({ line: i + 1, issue: 'Cross-package import through src/ internals', suggestion: 'Import from package public API (@scope/pkg) not internal paths' })
+    }
+
+    if (line.match(/from\s+['"]@.*\/.*\/.*\/.*/) && !line.match(/index|main|exports/i)) {
+      boundaries.push({ line: i + 1, issue: 'Deep import into monorepo package internals', suggestion: 'Use package-level barrel export; deep imports break encapsulation' })
+    }
+
+    if (line.match(/dependencies|devDependencies|peerDependencies/) && line.match(/workspace:\*|workspace:\^|workspace:\~/)) {
+      hoisting.push({ line: i + 1, issue: 'Workspace dependency without explicit version', suggestion: 'Use "workspace:*" for automatic versioning in Nx/Turborepo' })
+    }
+
+    if (line.match(/nx\.json|project\.json|turbo\.json/) && !line.match(/implicitDependencies|namedInputs|cache/)) {
+      boundaries.push({ line: i + 1, issue: 'Monorepo config without implicit dependencies', suggestion: 'Define implicitDependencies for correct affected builds' })
+    }
+
+    if (line.match(/npm\s+run|yarn\s+run|pnpm\s+run/) && !line.match(/nx|turbo|affected/)) {
+      hoisting.push({ line: i + 1, issue: 'Script without task runner orchestration', suggestion: 'Use Nx/Turbo for parallel execution with dependency ordering' })
+    }
+  })
+
+  const totalIssues = boundaries.length + hoisting.length
+  const monoScore = Math.max(0, 100 - boundaries.length * 12 - hoisting.length * 8)
+  const severity: Severity = boundaries.length > 1 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, boundaries, hoisting, monoScore,
+    summary: boundaries.length + ' boundary violation(s), ' + hoisting.length + ' hoisting issue(s)' }
+}
+
+function formatMonorepoBoundsReport(r: MonorepoBoundsResult): string {
+  const lines: string[] = []
+  lines.push('# Monorepo Boundaries Analysis')
+  lines.push('')
+  lines.push('**Monorepo Score:** ' + r.monoScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.boundaries.length > 0) {
+    lines.push('## Boundary Violations (' + r.boundaries.length + ')')
+    r.boundaries.forEach(b => lines.push('- Line ' + b.line + ': ' + b.suggestion))
+    lines.push('')
+  }
+  if (r.hoisting.length > 0) {
+    lines.push('## Hoisting & Orchestration (' + r.hoisting.length + ')')
+    r.hoisting.forEach(h => lines.push('- Line ' + h.line + ': ' + h.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.22.0: DOMAIN-DRIVEN DESIGN ====================
+
+interface DddResult {
+  totalIssues: number
+  severity: Severity
+  aggregates: { line: number; issue: string; suggestion: string }[]
+  boundedContexts: { line: number; issue: string; suggestion: string }[]
+  dddScore: number
+  summary: string
+}
+
+function analyzeDddPatterns(code: string): DddResult {
+  const lines = code.split('\n')
+  const aggregates: DddResult['aggregates'] = []
+  const boundedContexts: DddResult['boundedContexts'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/class\s+\w+Service.*\{/) && line.match(/save|create|update|delete|find|query/i) && !line.match(/repository|repo/i)) {
+      aggregates.push({ line: i + 1, issue: 'Service class with persistence logic — leaky abstraction', suggestion: 'Use Repository pattern for data access; keep domain services pure' })
+    }
+
+    if (line.match(/interface\s+(?:I)?(?:User|Order|Product|Account|Payment)\s*\{/) && line.match(/id.*string.*name.*string.*email.*string/)) {
+      aggregates.push({ line: i + 1, issue: 'Anemic domain model — interface with only primitives', suggestion: 'Encapsulate domain logic in rich entities with behavior methods' })
+    }
+
+    if (line.match(/type\s+\w+Event\s*=|interface\s+\w+Event/) && !line.match(/aggregateId|version|timestamp|occurredOn/)) {
+      boundedContexts.push({ line: i + 1, issue: 'Domain event without required metadata', suggestion: 'Add aggregateId, version, and occurredOn to domain events' })
+    }
+
+    if (line.match(/module|namespace|domain|context/i) && line.match(/import.*from.*\.\.\/.*domain|cross.*domain/) && !line.match(/anti.?corruption|adapter|translator/)) {
+      boundedContexts.push({ line: i + 1, issue: 'Cross-domain import without anti-corruption layer', suggestion: 'Use anti-corruption layer (adapter/translator) between bounded contexts' })
+    }
+
+    if (line.match(/enum\s+\w+Status|type\s+\w+Status/) && !line.match(/State|Transition|Event/)) {
+      aggregates.push({ line: i + 1, issue: 'Status enum without state transition rules', suggestion: 'Define valid state transitions in the aggregate root' })
+    }
+  })
+
+  const totalIssues = aggregates.length + boundedContexts.length
+  const dddScore = Math.max(0, 100 - aggregates.length * 12 - boundedContexts.length * 10)
+  const severity: Severity = aggregates.length > 1 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, aggregates, boundedContexts, dddScore,
+    summary: aggregates.length + ' aggregate issue(s), ' + boundedContexts.length + ' bounded context issue(s)' }
+}
+
+function formatDddReport(r: DddResult): string {
+  const lines: string[] = []
+  lines.push('# Domain-Driven Design Analysis')
+  lines.push('')
+  lines.push('**DDD Score:** ' + r.dddScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.aggregates.length > 0) {
+    lines.push('## Aggregates & Entities (' + r.aggregates.length + ')')
+    r.aggregates.forEach(a => lines.push('- Line ' + a.line + ': ' + a.suggestion))
+    lines.push('')
+  }
+  if (r.boundedContexts.length > 0) {
+    lines.push('## Bounded Contexts (' + r.boundedContexts.length + ')')
+    r.boundedContexts.forEach(b => lines.push('- Line ' + b.line + ': ' + b.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.22.0: MICROFRONTENDS RUNTIME ====================
+
+interface MfRuntimeResult {
+  totalIssues: number
+  severity: Severity
+  composition: { line: number; issue: string; suggestion: string }[]
+  isolation: { line: number; issue: string; suggestion: string }[]
+  mfRuntimeScore: number
+  summary: string
+}
+
+function analyzeMfRuntime(code: string): MfRuntimeResult {
+  const lines = code.split('\n')
+  const composition: MfRuntimeResult['composition'] = []
+  const isolation: MfRuntimeResult['isolation'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/systemjs|importMap|import-map|esm\.sh|skypack/i) && !line.match(/version|integrity|lock/)) {
+      composition.push({ line: i + 1, issue: 'Runtime module loading without version lock', suggestion: 'Pin import map to specific versions for reproducible runtime composition' })
+    }
+
+    if (line.match(/window\.\$micro|window\.microApp|globalThis\.apps|sharedState/i) && !line.match(/namespace|encapsulate|scoped/)) {
+      isolation.push({ line: i + 1, issue: 'Shared runtime state without namespacing', suggestion: 'Namespace shared state: window.microApp.shell.auth vs window.microApp.app1.auth' })
+    }
+
+    if (line.match(/single-spa|singleSpa/i) && !line.match(/registerApplication|unmount|mount|parcel/)) {
+      composition.push({ line: i + 1, issue: 'single-spa without lifecycle management', suggestion: 'Ensure unmount lifecycle for memory cleanup between MFE switches' })
+    }
+
+    if (line.match(/qiankun|wujie|micro-app/i) && !line.match(/sandbox|jsSandbox|cssSandbox|proxy/)) {
+      isolation.push({ line: i + 1, issue: 'Micro-frontend container without JS sandbox', suggestion: 'Enable strict sandbox (jsSandbox: true) for style/script isolation' })
+    }
+
+    if (line.match(/shell|host.*app|main.*shell|layout.*app/i) && !line.match(/prefetch|preloading|warmup/i)) {
+      composition.push({ line: i + 1, issue: 'Shell without prefetch strategy for MFE loading', suggestion: 'Prefetch MFE bundles on hover/idle for instant navigation' })
+    }
+  })
+
+  const totalIssues = composition.length + isolation.length
+  const mfRuntimeScore = Math.max(0, 100 - composition.length * 10 - isolation.length * 12)
+  const severity: Severity = isolation.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, composition, isolation, mfRuntimeScore,
+    summary: composition.length + ' composition issue(s), ' + isolation.length + ' isolation issue(s)' }
+}
+
+function formatMfRuntimeReport(r: MfRuntimeResult): string {
+  const lines: string[] = []
+  lines.push('# Microfrontends Runtime Analysis')
+  lines.push('')
+  lines.push('**MF Runtime Score:** ' + r.mfRuntimeScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.composition.length > 0) {
+    lines.push('## Composition (' + r.composition.length + ')')
+    r.composition.forEach(c => lines.push('- Line ' + c.line + ': ' + c.suggestion))
+    lines.push('')
+  }
+  if (r.isolation.length > 0) {
+    lines.push('## Isolation (' + r.isolation.length + ')')
+    r.isolation.forEach(is => lines.push('- Line ' + is.line + ': ' + is.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.22:0: REAL-TIME PROTOCOLS ====================
+
+interface RealtimeResult {
+  totalIssues: number
+  severity: Severity
+  protocol: { line: number; issue: string; suggestion: string }[]
+  reliability: { line: number; issue: string; suggestion: string }[]
+  rtScore: number
+  summary: string
+}
+
+function analyzeRealtimeProtocols(code: string): RealtimeResult {
+  const lines = code.split('\n')
+  const protocol: RealtimeResult['protocol'] = []
+  const reliability: RealtimeResult['reliability'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/Server-Sent|EventSource|SSE/i) && !line.match(/retry|event.*id|last.?event.?id|reconnect/i)) {
+      reliability.push({ line: i + 1, issue: 'SSE without Last-Event-ID recovery', suggestion: 'Include Last-Event-ID header on reconnect for message gap recovery' })
+    }
+
+    if (line.match(/WebSocket|new\s+WebSocket/i) && !line.match(/heartbeat|ping|pong|keepalive|keep.?alive/i)) {
+      reliability.push({ line: i + 1, issue: 'WebSocket without heartbeat — silent disconnect detection', suggestion: 'Send ping every 30s; close if no pong within 10s timeout' })
+    }
+
+    if (line.match(/long.?poll|longPoll|polling|setInterval.*fetch/i) && !line.match(/etag|if.?none.?match|cache.?control/i)) {
+      protocol.push({ line: i + 1, issue: 'Long polling without conditional request optimization', suggestion: 'Use ETag/If-None-Match to avoid redundant data transfer on 304' })
+    }
+
+    if (line.match(/ws:\/\//) && !line.match(/wss:\/\//)) {
+      protocol.push({ line: i + 1, issue: 'Insecure WebSocket (ws://) — data interception risk', suggestion: 'Use wss:// for encrypted WebSocket transport' })
+    }
+
+    if (line.match(/EventSource|SSE.*url|new\s+EventSource/) && !line.match(/error|onerror|retry|timeout/i)) {
+      reliability.push({ line: i + 1, issue: 'EventSource without error handler', suggestion: 'Add onerror handler with exponential backoff reconnection' })
+    }
+  })
+
+  const totalIssues = protocol.length + reliability.length
+  const rtScore = Math.max(0, 100 - protocol.length * 12 - reliability.length * 10)
+  const severity: Severity = protocol.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, protocol, reliability, rtScore,
+    summary: protocol.length + ' protocol issue(s), ' + reliability.length + ' reliability issue(s)' }
+}
+
+function formatRealtimeReport(r: RealtimeResult): string {
+  const lines: string[] = []
+  lines.push('# Real-Time Protocol Analysis')
+  lines.push('')
+  lines.push('**Realtime Score:** ' + r.rtScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.protocol.length > 0) {
+    lines.push('## Protocol (' + r.protocol.length + ')')
+    r.protocol.forEach(p => lines.push('- Line ' + p.line + ': ' + p.suggestion))
+    lines.push('')
+  }
+  if (r.reliability.length > 0) {
+    lines.push('## Reliability (' + r.reliability.length + ')')
+    r.reliability.forEach(r => lines.push('- Line ' + r.line + ': ' + r.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.22.0: DATA PIPELINE QUALITY ====================
+
+interface PipelineResult {
+  totalIssues: number
+  severity: Severity
+  correctness: { line: number; issue: string; suggestion: string }[]
+  deadLetter: { line: number; issue: string; suggestion: string }[]
+  pipelineScore: number
+  summary: string
+}
+
+function analyzeDataPipeline(code: string): PipelineResult {
+  const lines = code.split('\n')
+  const correctness: PipelineResult['correctness'] = []
+  const deadLetter: PipelineResult['deadLetter'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/kafka|rabbitmq|sqs|sns|pubsub|eventhub/i) && !line.match(/schema|avro|protobuf|validation/)) {
+      correctness.push({ line: i + 1, issue: 'Message queue without schema validation', suggestion: 'Use schema registry (Avro/Protobuf) for producer/consumer contract' })
+    }
+
+    if (line.match(/consumer|subscribe|onMessage|processMessage/i) && !line.match(/dead.?letter|dlq|retry|error.*queue/i)) {
+      deadLetter.push({ line: i + 1, issue: 'Message consumer without dead letter queue', suggestion: 'Route failed messages to DLQ after max retries for manual inspection' })
+    }
+
+    if (line.match(/batch|bulk|chunk/i) && line.match(/insert|write|save|put/) && !line.match(/transaction|atomic|rollback|idempotency/)) {
+      correctness.push({ line: i + 1, issue: 'Batch write without idempotency guarantee', suggestion: 'Use idempotency keys to prevent duplicate writes on retry' })
+    }
+
+    if (line.match(/ETL|extract.*transform|transform.*load|map.*reduce/i) && !line.match(/checkpoint|offset|watermark|state/)) {
+      deadLetter.push({ line: i + 1, issue: 'ETL pipeline without checkpoint/resume', suggestion: 'Persist offset/checkpoint for failure recovery without reprocessing' })
+    }
+
+    if (line.match(/stream|observable|flux|pipeline.*step/i) && !line.match(/backpressure|buffer|throttle|flow.*control/i)) {
+      correctness.push({ line: i + 1, issue: 'Stream processing without backpressure', suggestion: 'Implement backpressure (buffer/throttle) to prevent memory overflow' })
+    }
+  })
+
+  const totalIssues = correctness.length + deadLetter.length
+  const pipelineScore = Math.max(0, 100 - correctness.length * 12 - deadLetter.length * 10)
+  const severity: Severity = deadLetter.length > 1 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, correctness, deadLetter, pipelineScore,
+    summary: correctness.length + ' correctness issue(s), ' + deadLetter.length + ' dead letter queue gap(s)' }
+}
+
+function formatPipelineReport(r: PipelineResult): string {
+  const lines: string[] = []
+  lines.push('# Data Pipeline Quality Analysis')
+  lines.push('')
+  lines.push('**Pipeline Score:** ' + r.pipelineScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.correctness.length > 0) {
+    lines.push('## Correctness (' + r.correctness.length + ')')
+    r.correctness.forEach(c => lines.push('- Line ' + c.line + ': ' + c.suggestion))
+    lines.push('')
+  }
+  if (r.deadLetter.length > 0) {
+    lines.push('## Dead Letter Queue (' + r.deadLetter.length + ')')
+    r.deadLetter.forEach(d => lines.push('- Line ' + d.line + ': ' + d.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.22.0: API GATEWAY DEEP ====================
+
+interface GatewayDeepResult {
+  totalIssues: number
+  severity: Severity
+  auth: { line: number; issue: string; suggestion: string }[]
+  routing: { line: number; issue: string; suggestion: string }[]
+  gatewayScore: number
+  summary: string
+}
+
+function analyzeGatewayDeep(code: string): GatewayDeepResult {
+  const lines = code.split('\n')
+  const auth: GatewayDeepResult['auth'] = []
+  const routing: GatewayDeepResult['routing'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/jwt|jsonwebtoken|verify.*token|passport/i) && !line.match(/exp|expiry|refresh|rotate|blacklist/)) {
+      auth.push({ line: i + 1, issue: 'JWT verification without expiry or rotation', suggestion: 'Check exp claim; implement token refresh and revocation list' })
+    }
+
+    if (line.match(/oauth|authorize|callback|grant/i) && !line.match(/state|pkce|nonce|consent/)) {
+      auth.push({ line: i + 1, issue: 'OAuth without PKCE/state — CSRF vulnerability', suggestion: 'Add PKCE (code_challenge) and state parameter for OAuth2 security' })
+    }
+
+    if (line.match(/cors|access.?control.?allow/i) && !line.match(/origin.*whitelist|credentials|preflight/)) {
+      routing.push({ line: i + 1, issue: 'CORS without origin whitelist', suggestion: 'Specify exact origins; avoid Access-Control-Allow-Origin: * with credentials' })
+    }
+
+    if (line.match(/rate.?limit|throttle|express.?rate/i) && !line.match(/redis|distributed|cluster|shared/)) {
+      routing.push({ line: i + 1, issue: 'Rate limiter without distributed state', suggestion: 'Use Redis-backed rate limiting for multi-instance consistency' })
+    }
+
+    if (line.match(/helmet|security.*header|x.?frame|x.?content|content.?security/i) && !line.match(/reportUri|reportOnly|nonce/)) {
+      auth.push({ line: i + 1, issue: 'Security headers without CSP report URI', suggestion: 'Add report-uri/report-to to CSP for violation monitoring' })
+    }
+  })
+
+  const totalIssues = auth.length + routing.length
+  const gatewayScore = Math.max(0, 100 - auth.length * 12 - routing.length * 8)
+  const severity: Severity = auth.length > 1 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, auth, routing, gatewayScore,
+    summary: auth.length + ' auth issue(s), ' + routing.length + ' routing issue(s)' }
+}
+
+function formatGatewayDeepReport(r: GatewayDeepResult): string {
+  const lines: string[] = []
+  lines.push('# API Gateway Deep Analysis')
+  lines.push('')
+  lines.push('**Gateway Score:** ' + r.gatewayScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.auth.length > 0) {
+    lines.push('## Authentication (' + r.auth.length + ')')
+    r.auth.forEach(a => lines.push('- Line ' + a.line + ': ' + a.suggestion))
+    lines.push('')
+  }
+  if (r.routing.length > 0) {
+    lines.push('## Routing (' + r.routing.length + ')')
+    r.routing.forEach(r => lines.push('- Line ' + r.line + ': ' + r.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.22.0: TEST RIGOR ====================
+
+interface TestRigorResult {
+  totalIssues: number
+  severity: Severity
+  flaky: { line: number; issue: string; suggestion: string }[]
+  coverage: { line: number; issue: string; suggestion: string }[]
+  testRigorScore: number
+  summary: string
+}
+
+function analyzeTestRigor(code: string): TestRigorResult {
+  const lines = code.split('\n')
+  const flaky: TestRigorResult['flaky'] = []
+  const coverage: TestRigorResult['coverage'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/sleep|setTimeout|setInterval/) && line.match(/test|spec|it\(|describe\(/i)) {
+      flaky.push({ line: i + 1, issue: 'Test with sleep/setTimeout — timing-dependent flakiness', suggestion: 'Use fake timers or await expect.poll() instead of sleep' })
+    }
+
+    if (line.match(/Math\.random|Date\.now|uuid|new\s+Id\(\)/) && line.match(/test|spec|assert/i)) {
+      flaky.push({ line: i + 1, issue: 'Test with non-deterministic values (random/Date/UUID)', suggestion: 'Use seeded random (faker.seed) or deterministic IDs for reproducible tests' })
+    }
+
+    if (line.match(/beforeAll|beforeEach|setup/i) && line.match(/database|seed|truncate/i) && !line.match(/transaction|rollback|isolation/)) {
+      coverage.push({ line: i + 1, issue: 'Test setup without transaction isolation', suggestion: 'Wrap setup in transaction with rollback for parallel test safety' })
+    }
+
+    if (line.match(/test\.skip|it\.skip|describe\.skip|xtest|xit|xdescribe/i) && !line.match(/reason|issue|TODO/)) {
+      coverage.push({ line: i + 1, issue: 'Skipped test without documented reason', suggestion: 'Add issue reference: it.skip("reason — see #1234")' })
+    }
+
+    if (line.match(/mock|spy|stub|fake/) && line.match(/Date|Math|console|global/i) && !line.match(/restore|cleanup|after/)) {
+      flaky.push({ line: i + 1, issue: 'Global mock without cleanup — leaks to other tests', suggestion: 'Add afterEach(() => jest.restoreAllMocks()) for mock cleanup' })
+    }
+
+    if (line.match(/parallel|concurrent|worker|threads/i) && !line.match(/isolation|lock|mutex|atomic/)) {
+      coverage.push({ line: i + 1, issue: 'Parallel tests without isolation guarantee', suggestion: 'Ensure test isolation: separate DB/schema per worker to prevent cross-test pollution' })
+    }
+  })
+
+  const totalIssues = flaky.length + coverage.length
+  const testRigorScore = Math.max(0, 100 - flaky.length * 12 - coverage.length * 8)
+  const severity: Severity = flaky.length > 1 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, flaky, coverage, testRigorScore,
+    summary: flaky.length + ' flaky test risk(s), ' + coverage.length + ' coverage gap(s)' }
+}
+
+function formatTestRigorReport(r: TestRigorResult): string {
+  const lines: string[] = []
+  lines.push('# Test Rigor Analysis')
+  lines.push('')
+  lines.push('**Test Rigor Score:** ' + r.testRigorScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.flaky.length > 0) {
+    lines.push('## Flaky Test Risks (' + r.flaky.length + ')')
+    r.flaky.forEach(f => lines.push('- Line ' + f.line + ': ' + f.suggestion))
+    lines.push('')
+  }
+  if (r.coverage.length > 0) {
+    lines.push('## Coverage Gaps (' + r.coverage.length + ')')
+    r.coverage.forEach(c => lines.push('- Line ' + c.line + ': ' + c.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.22.0: CODE QUALITY GATE ====================
+
+interface QualityGateResult {
+  totalIssues: number
+  severity: Severity
+  complexity: { line: number; issue: string; suggestion: string }[]
+  duplication: { line: number; issue: string; suggestion: string }[]
+  gateScore: number
+  summary: string
+}
+
+function analyzeQualityGate(code: string): QualityGateResult {
+  const lines = code.split('\n')
+  const complexity: QualityGateResult['complexity'] = []
+  const duplication: QualityGateResult['duplication'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/if.*if.*if.*if/) || line.match(/switch.*case.*case.*case.*default/)) {
+      complexity.push({ line: i + 1, issue: 'High cyclomatic complexity — deeply nested conditionals', suggestion: 'Extract methods, use lookup tables, or strategy pattern' })
+    }
+
+    if (line.match(/function|const\s+\w+\s*=.*=>/) && !line.match(/pure|memo|cache|once/)) {
+      const funcLines = lines.slice(i, i + 50).join('\n')
+      const ifCount = (funcLines.match(/if\s*\(/g) || []).length
+      if (ifCount > 5) {
+        complexity.push({ line: i + 1, issue: 'Function with ' + ifCount + ' conditionals — high cognitive load', suggestion: 'Consider decomposition or declarative patterns' })
+      }
+    }
+
+    if (line.match(/copy.?paste|duplicate|similar|boilerplate|again/i)) {
+      duplication.push({ line: i + 1, issue: 'Possible code duplication', suggestion: 'Extract shared logic into utility function or custom hook' })
+    }
+
+    if (line.match(/eslint-disable-next-line|ts-ignore|ts-nocheck|prettier-ignore/) && !line.match(/reason|TODO|issue/)) {
+      duplication.push({ line: i + 1, issue: 'Suppression without justification degrades quality gate', suggestion: 'Add comment linking issue explaining suppression need' })
+    }
+
+    if (line.match(/coverage|threshold|istanbul|nyc|jacoco/i) && !line.match(/branches|functions|lines|statements/)) {
+      complexity.push({ line: i + 1, issue: 'Coverage config without per-metric thresholds', suggestion: 'Set 4-dimensional thresholds: branches/functions/lines/statements' })
+    }
+
+    if (line.match(/sonarqube|codeclimate|codacy|snyk/i) && !line.match(/quality.*gate|gate.*fail|block|merge/)) {
+      duplication.push({ line: i + 1, issue: 'Static analysis integration without quality gate enforcement', suggestion: 'Configure PR status check to block merge when gate fails' })
+    }
+  })
+
+  const totalIssues = complexity.length + duplication.length
+  const gateScore = Math.max(0, 100 - complexity.length * 10 - duplication.length * 8)
+  const severity: Severity = complexity.length > 2 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, complexity, duplication, gateScore,
+    summary: complexity.length + ' complexity issue(s), ' + duplication.length + ' duplication issue(s)' }
+}
+
+function formatQualityGateReport(r: QualityGateResult): string {
+  const lines: string[] = []
+  lines.push('# Code Quality Gate Analysis')
+  lines.push('')
+  lines.push('**Quality Gate Score:** ' + r.gateScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.complexity.length > 0) {
+    lines.push('## Complexity (' + r.complexity.length + ')')
+    r.complexity.forEach(c => lines.push('- Line ' + c.line + ': ' + c.suggestion))
+    lines.push('')
+  }
+  if (r.duplication.length > 0) {
+    lines.push('## Duplication (' + r.duplication.length + ')')
+    r.duplication.forEach(d => lines.push('- Line ' + d.line + ': ' + d.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
 // ==================== PLUGIN REGISTRATION ====================
 
 export function apply(ctx: Context) {
@@ -16317,5 +16881,119 @@ export function apply(ctx: Context) {
     }
   }))
 
-  console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design, container_security, ml_pipeline, api_deprecation, design_system, pwa_compliance, type_system, green_computing, realtime_collab, a11y_deep, i18n_deep, css_architecture, state_machine, web_components, resilience, module_federation, review_automation, observability, migration_safety, edge_computing, api_versioning, wasm_advanced, feature_toggles, email_deliverability, seo_analysis`)
+  // ==================== V0.22.0 REGISTRATIONS (Tools 138-145) ====================
+
+  // Tool 138: Monorepo Boundaries
+  ctx.tools.register(defineTool({
+    name: 'monorepo_boundaries',
+    description: 'Analyze monorepo architecture: cross-package boundaries, workspace hoisting, Nx/Turborepo config.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The monorepo code/config to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeMonorepoBounds(args.code)
+      return formatMonorepoBoundsReport(result)
+    }
+  }))
+
+  // Tool 139: Domain-Driven Design
+  ctx.tools.register(defineTool({
+    name: 'ddd_patterns',
+    description: 'Analyze Domain-Driven Design: aggregates, bounded contexts, anemic models, anti-corruption layers.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The domain code to analyze for DDD patterns' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeDddPatterns(args.code)
+      return formatDddReport(result)
+    }
+  }))
+
+  // Tool 140: Microfrontends Runtime
+  ctx.tools.register(defineTool({
+    name: 'mf_runtime',
+    description: 'Analyze microfrontends runtime: composition, isolation, sandbox, prefetch, single-spa/shell.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The microfrontend code/config to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeMfRuntime(args.code)
+      return formatMfRuntimeReport(result)
+    }
+  }))
+
+  // Tool 141: Real-Time Protocols
+  ctx.tools.register(defineTool({
+    name: 'realtime_protocols',
+    description: 'Analyze real-time protocols: SSE recovery, WebSocket heartbeat, long polling, ws:// vs wss://.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The real-time code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeRealtimeProtocols(args.code)
+      return formatRealtimeReport(result)
+    }
+  }))
+
+  // Tool 142: Data Pipeline Quality
+  ctx.tools.register(defineTool({
+    name: 'data_pipeline',
+    description: 'Analyze data pipeline quality: schema validation, dead letter queues, batch idempotency, backpressure.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The data pipeline code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeDataPipeline(args.code)
+      return formatPipelineReport(result)
+    }
+  }))
+
+  // Tool 143: API Gateway Deep
+  ctx.tools.register(defineTool({
+    name: 'gateway_deep',
+    description: 'Analyze API gateway patterns: JWT expiry, OAuth PKCE, CORS whitelist, distributed rate limiting, CSP.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The gateway/auth code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeGatewayDeep(args.code)
+      return formatGatewayDeepReport(result)
+    }
+  }))
+
+  // Tool 144: Test Rigor
+  ctx.tools.register(defineTool({
+    name: 'test_rigor',
+    description: 'Analyze test rigor: flaky test risks, non-deterministic values, mock cleanup, parallel isolation.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The test code to analyze for rigor' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeTestRigor(args.code)
+      return formatTestRigorReport(result)
+    }
+  }))
+
+  // Tool 145: Code Quality Gate
+  ctx.tools.register(defineTool({
+    name: 'quality_gate',
+    description: 'Analyze code quality gate: cyclomatic complexity, duplication, suppression justification, coverage thresholds.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The code to analyze for quality gate metrics' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeQualityGate(args.code)
+      return formatQualityGateReport(result)
+    }
+  }))
+
+  console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design, container_security, ml_pipeline, api_deprecation, design_system, pwa_compliance, type_system, green_computing, realtime_collab, a11y_deep, i18n_deep, css_architecture, state_machine, web_components, resilience, module_federation, review_automation, observability, migration_safety, edge_computing, api_versioning, wasm_advanced, feature_toggles, email_deliverability, seo_analysis, monorepo_boundaries, ddd_patterns, mf_runtime, realtime_protocols, data_pipeline, gateway_deep, test_rigor, quality_gate`)
 }
