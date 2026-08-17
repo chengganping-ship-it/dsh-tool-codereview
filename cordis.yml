@@ -1,10 +1,10 @@
-# DeepSeek Harness Plugin: Code Review Assistant v0.31.0
-# Enterprise-grade code analysis toolkit with 217 comprehensive tools
+# DeepSeek Harness Plugin: Code Review Assistant v0.32.0
+# Enterprise-grade code analysis toolkit with 225 comprehensive tools
 
 - id: dsh-tool-codereview
   name: dsh-tool-codereview
-  version: 0.31.0
-  description: Enterprise Code Review & Security Scan - 217 tools including code_review, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, api_versioning, serialization_perf, memory_allocation, build_pipeline, error_messages, logging_discipline, config_as_code, component_interface, token_hygiene, query_antipatterns, websocket_lifecycle, graphql_perf, deprecation_tracking, code_splitting_audit, css_arch_deep, sec_dep_audit, webhook_signature, oauth_security, email_infra, health_check_depth, cors_security, feature_rollout, secret_lifecycle, rate_limit_strategy, container_security_scan, grpc_security, data_residency, deployment_progressive, obs_exemplar, data_pipeline_quality, service_mesh, plugin_architecture
+  version: 0.32.0
+  description: Enterprise Code Review & Security Scan - 225 tools including code_review, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, api_versioning, serialization_perf, memory_allocation, build_pipeline, error_messages, logging_discipline, config_as_code, component_interface, token_hygiene, query_antipatterns, websocket_lifecycle, graphql_perf, deprecation_tracking, code_splitting_audit, css_arch_deep, sec_dep_audit, webhook_signature, oauth_security, email_infra, health_check_depth, cors_security, feature_rollout, secret_lifecycle, rate_limit_strategy, container_security_scan, grpc_security, data_residency, deployment_progressive, obs_exemplar, data_pipeline_quality, service_mesh, plugin_architecture
   author: chengganping-ship-it
   tools:
     - code_review
@@ -221,3 +221,11 @@
     - struct_error_ctx
     - stream_backpressure
     - identifier_collision
+    - graphql_query_depth
+    - auth_token_rotation
+    - mq_dead_letter
+    - file_upload_sec
+    - query_plan
+    - encryption_at_rest
+    - ws_connection_state
+    - rate_limit_policy
