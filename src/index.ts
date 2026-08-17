@@ -72,7 +72,7 @@
  * - API gateway (BFF pattern, service routing)
  * 
  * @module dsh-tool-codereview
- * @version 0.23.0
+ * @version 0.24.0
  * @license MIT
  */
 
@@ -82,7 +82,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 export const name = 'dsh-tool-codereview'
 export const inject = ['tools']
 
-const VERSION = '0.23.0'
+const VERSION = '0.24.0'
 
 // ==================== TYPES ====================
 
@@ -15399,6 +15399,534 @@ function formatReviewAutomationReport(r: ReviewAutomationResult): string {
   return lines.join('\n')
 }
 
+// ==================== V0.24.0: API CONTRACT TESTING ====================
+
+interface ContractTestResult {
+  totalIssues: number
+  severity: Severity
+  consumer: { line: number; issue: string; suggestion: string }[]
+  schema: { line: number; issue: string; suggestion: string }[]
+  contractScore: number
+  summary: string
+}
+
+function analyzeContractTesting(code: string): ContractTestResult {
+  const lines = code.split('\n')
+  const consumer: ContractTestResult['consumer'] = []
+  const schema: ContractTestResult['schema'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/pact|consumer.?driven|contract.*test|pactflow/i) && !line.match(/provider|verify|publish|broker/)) {
+      consumer.push({ line: i + 1, issue: 'CDC pact without provider verification', suggestion: 'Add provider-side pact verification to ensure provider honors consumer contract' })
+    }
+
+    if (line.match(/swagger|openapi|api.*schema|json.*schema/i) && !line.match(/validate|compliance|conform|match/)) {
+      schema.push({ line: i + 1, issue: 'API schema without compliance validation', suggestion: 'Add schema validation tests to verify responses conform to OpenAPI spec' })
+    }
+
+    if (line.match(/mock.*server|wiremock|msw|_mock_|stub.*api/i) && !line.match(/contract|schema|response.*structure/i)) {
+      consumer.push({ line: i + 1, issue: 'Mock server without contract-based response structure', suggestion: 'Generate mock responses from contract/schema to prevent drift' })
+    }
+
+    if (line.match(/response|body|payload|result.*json/i) && !line.match(/schema|validate|type.*guard|zod|joi|yup/)) {
+      schema.push({ line: i + 1, issue: 'Response handling without runtime schema validation', suggestion: 'Use Zod/Joi to validate API responses at runtime for contract safety' })
+    }
+  })
+
+  const totalIssues = consumer.length + schema.length
+  const contractScore = Math.max(0, 100 - consumer.length * 12 - schema.length * 10)
+  const severity: Severity = consumer.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, consumer, schema, contractScore,
+    summary: consumer.length + ' consumer contract gap(s), ' + schema.length + ' schema compliance gap(s)' }
+}
+
+function formatContractTestReport(r: ContractTestResult): string {
+  const lines: string[] = []
+  lines.push('# API Contract Testing Analysis')
+  lines.push('')
+  lines.push('**Contract Score:** ' + r.contractScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.consumer.length > 0) {
+    lines.push('## Consumer Contracts (' + r.consumer.length + ')')
+    r.consumer.forEach(c => lines.push('- Line ' + c.line + ': ' + c.suggestion))
+    lines.push('')
+  }
+  if (r.schema.length > 0) {
+    lines.push('## Schema Compliance (' + r.schema.length + ')')
+    r.schema.forEach(s => lines.push('- Line ' + s.line + ': ' + s.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.24.0: SECURITY HEADERS DEEP ====================
+
+interface SecHeadersResult {
+  totalIssues: number
+  severity: Severity
+  hsts: { line: number; issue: string; suggestion: string }[]
+  csp: { line: number; issue: string; suggestion: string }[]
+  secHeadersScore: number
+  summary: string
+}
+
+function analyzeSecHeadersDeep(code: string): SecHeadersResult {
+  const lines = code.split('\n')
+  const hsts: SecHeadersResult['hsts'] = []
+  const csp: SecHeadersResult['csp'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/Strict-Transport-Security|HSTS|strict.?transport/i) && !line.match(/max.?age|includeSubDomains|preload/)) {
+      hsts.push({ line: i + 1, issue: 'HSTS header without max-age directive', suggestion: 'Set Strict-Transport-Security: max-age=31536000; includeSubDomains' })
+    }
+
+    if (line.match(/Content-Security-Policy|CSP|content.?security/i) && !line.match(/nonce|hash|strict-dynamic|report-uri|report-to/)) {
+      csp.push({ line: i + 1, issue: 'CSP without nonce/hash-based source allowlist', suggestion: 'Use nonce or hash for script-src; avoid unsafe-inline/unsafe-eval' })
+    }
+
+    if (line.match(/X-Frame-Options|frame.?options|frameancestor/i) && !line.match(/ DENY|SAMEORIGIN|allow-from/i)) {
+      hsts.push({ line: i + 1, issue: 'X-Frame-Options directive misconfigured', suggestion: 'Use X-Frame-Options: DENY or SAMEORIGIN to prevent clickjacking' })
+    }
+
+    if (line.match(/Permissions-Policy|Feature-Policy|permissions.*header/i) && !line.match(/camera|microphone|geolocation|payment/)) {
+      csp.push({ line: i + 1, issue: 'Permissions-Policy without restricted features', suggestion: 'Restrict unused features: camera=(), microphone=(), geolocation=()' })
+    }
+
+    if (line.match(/X-Content-Type-Options|content.?type.*option|nosniff|MIME/i) && !line.match(/nosniff|sniff/)) {
+      hsts.push({ line: i + 1, issue: 'Missing X-Content-Type-Options: nosniff', suggestion: 'Add X-Content-Type-Options: nosniff to prevent MIME type sniffing' })
+    }
+  })
+
+  const totalIssues = hsts.length + csp.length
+  const secHeadersScore = Math.max(0, 100 - hsts.length * 10 - csp.length * 12)
+  const severity: Severity = csp.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, hsts, csp, secHeadersScore,
+    summary: hsts.length + ' HSTS/header gap(s), ' + csp.length + ' CSP gap(s)' }
+}
+
+function formatSecHeadersReport(r: SecHeadersResult): string {
+  const lines: string[] = []
+  lines.push('# Security Headers Deep Analysis')
+  lines.push('')
+  lines.push('**Sec Headers Score:** ' + r.secHeadersScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.hsts.length > 0) {
+    lines.push('## HSTS & Transport Security (' + r.hsts.length + ')')
+    r.hsts.forEach(h => lines.push('- Line ' + h.line + ': ' + h.suggestion))
+    lines.push('')
+  }
+  if (r.csp.length > 0) {
+    lines.push('## CSP & Permissions (' + r.csp.length + ')')
+    r.csp.forEach(c => lines.push('- Line ' + c.line + ': ' + c.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.24.0: DATA PRIVACY COMPLIANCE ====================
+
+interface PrivacyResult {
+  totalIssues: number
+  severity: Severity
+  pii: { line: number; issue: string; suggestion: string }[]
+  consent: { line: number; issue: string; suggestion: string }[]
+  privacyScore: number
+  summary: string
+}
+
+function analyzePrivacyCompliance(code: string): PrivacyResult {
+  const lines = code.split('\n')
+  const pii: PrivacyResult['pii'] = []
+  const consent: PrivacyResult['consent'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/email|phone|ssn|passport|address|credit.?card|iban/) && line.match(/log|console|print|debug|store|save|persist/) && !line.match(/mask|encrypt|hash|tokenize|redact|anonymize/)) {
+      pii.push({ line: i + 1, issue: 'PII being logged/stored without protection', suggestion: 'Mask/hash PII before logging; use tokenization for storage' })
+    }
+
+    if (line.match(/GDPR|CCPA|data.?protection|privacy.?law|regulation/i) && !line.match(/consent|right.?to.?erase|data.?portability|process.*record/)) {
+      consent.push({ line: i + 1, issue: 'Privacy regulation reference without implementation', suggestion: 'Implement consent tracking, right-to-erasure, and data portability' })
+    }
+
+    if (line.match(/data.?retention|retention.*period|delete.*data|purge/i) && !line.match(/schedule|cron|automated|policy|days|months/)) {
+      consent.push({ line: i + 1, issue: 'Data retention mention without automated enforcement', suggestion: 'Implement automated data purging based on retention schedule' })
+    }
+
+    if (line.match(/cookie|tracking|analytics|fingerprint|pixel/i) && !line.match(/consent|opt.?in|opt.?out|gdpr.*compliant|permission/)) {
+      consent.push({ line: i + 1, issue: 'Tracking technology without consent mechanism', suggestion: 'Add consent banner with opt-in/opt-out for non-essential cookies' })
+    }
+  })
+
+  const totalIssues = pii.length + consent.length
+  const privacyScore = Math.max(0, 100 - pii.length * 12 - consent.length * 10)
+  const severity: Severity = pii.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, pii, consent, privacyScore,
+    summary: pii.length + ' PII risk(s), ' + consent.length + ' consent gap(s)' }
+}
+
+function formatPrivacyReport(r: PrivacyResult): string {
+  const lines: string[] = []
+  lines.push('# Data Privacy Compliance Analysis')
+  lines.push('')
+  lines.push('**Privacy Score:** ' + r.privacyScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.pii.length > 0) {
+    lines.push('## PII Protection (' + r.pii.length + ')')
+    r.pii.forEach(p => lines.push('- Line ' + p.line + ': ' + p.suggestion))
+    lines.push('')
+  }
+  if (r.consent.length > 0) {
+    lines.push('## Consent Management (' + r.consent.length + ')')
+    r.consent.forEach(c => lines.push('- Line ' + c.line + ': ' + c.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.24.0: CONCURRENCY PATTERNS ====================
+
+interface ConcurrencyPatternResult {
+  totalIssues: number
+  severity: Severity
+  semaphore: { line: number; issue: string; suggestion: string }[]
+  lock: { line: number; issue: string; suggestion: string }[]
+  concurrencyScore: number
+  summary: string
+}
+
+function analyzeConcurrencyPatterns(code: string): ConcurrencyPatternResult {
+  const lines = code.split('\n')
+  const semaphore: ConcurrencyPatternResult['semaphore'] = []
+  const lock: ConcurrencyPatternResult['lock'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/Promise\.all|Promise\.allSettled|parallel|concurrent.*task/i) && !line.match(/limit|semaphore|throttle|pool|chunk|batch/)) {
+      semaphore.push({ line: i + 1, issue: 'Unbounded parallel execution — resource exhaustion risk', suggestion: 'Use semaphore/p-limit to cap concurrency and prevent resource exhaustion' })
+    }
+
+    if (line.match(/mutex|lock|ReadWriteLock|readWrite/i) && !line.match(/timeout|tryLock|deadlock.*free|ordered/)) {
+      lock.push({ line: i + 1, issue: 'Lock acquisition without timeout — deadlock risk', suggestion: 'Use tryLock with timeout to prevent indefinite blocking' })
+    }
+
+    if (line.match(/optimistic|version.?check|compare.*and.?swap|CAS/i) && !line.match(/retry|conflict.*resolution|merge/)) {
+      semaphore.push({ line: i + 1, issue: 'Optimistic concurrency without conflict resolution', suggestion: 'Implement retry with exponential backoff on version conflict' })
+    }
+
+    if (line.match(/thread.?safe|ThreadSafe|synchronized|atomic/i) && !line.match(/volatile|AtomicReference|immutable|copyOnWrite/)) {
+      lock.push({ line: i + 1, issue: 'Thread safety claim without volatile/immutable backing', suggestion: 'Use volatile for visibility, AtomicReference for atomic updates, or immutable data' })
+    }
+
+    if (line.match(/blockingQueue|BlockingQueue|producer.?consumer|bounded.*queue/i) && !line.match(/capacity|backoff|reject.*policy|overflow/)) {
+      semaphore.push({ line: i + 1, issue: 'Bounded queue without overflow policy', suggestion: 'Define rejection policy (drop oldest/block) for queue overflow' })
+    }
+  })
+
+  const totalIssues = semaphore.length + lock.length
+  const concurrencyScore = Math.max(0, 100 - semaphore.length * 10 - lock.length * 12)
+  const severity: Severity = lock.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, semaphore, lock, concurrencyScore,
+    summary: semaphore.length + ' semaphore/concurrency issue(s), ' + lock.length + ' lock issue(s)' }
+}
+
+function formatConcurrencyPatternReport(r: ConcurrencyPatternResult): string {
+  const lines: string[] = []
+  lines.push('# Concurrency Patterns Analysis')
+  lines.push('')
+  lines.push('**Concurrency Score:** ' + r.concurrencyScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.semaphore.length > 0) {
+    lines.push('## Semaphore & Throttling (' + r.semaphore.length + ')')
+    r.semaphore.forEach(s => lines.push('- Line ' + s.line + ': ' + s.suggestion))
+    lines.push('')
+  }
+  if (r.lock.length > 0) {
+    lines.push('## Lock Management (' + r.lock.length + ')')
+    r.lock.forEach(l => lines.push('- Line ' + l.line + ': ' + l.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.24.0: CLOUD-NATIVE PATTERNS ====================
+
+interface CloudNativeResult {
+  totalIssues: number
+  severity: Severity
+  sidecar: { line: number; issue: string; suggestion: string }[]
+  ambassador: { line: number; issue: string; suggestion: string }[]
+  cloudNativeScore: number
+  summary: string
+}
+
+function analyzeCloudNative(code: string): CloudNativeResult {
+  const lines = code.split('\n')
+  const sidecar: CloudNativeResult['sidecar'] = []
+  const ambassador: CloudNativeResult['ambassador'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/sidecar|Envoy|linkerd|service.?mesh|istio/i) && !line.match(/proxy|intercept|redirect|mTLS/)) {
+      sidecar.push({ line: i + 1, issue: 'Sidecar without traffic interception config', suggestion: 'Configure iptables redirect or explicit proxy for sidecar traffic capture' })
+    }
+
+    if (line.match(/ambassador|adapter|init.?container|container.*pattern/i) && !line.match(/transform|normalize|protocol.*convert/)) {
+      ambassador.push({ line: i + 1, issue: 'Ambassador/adapter without protocol transformation', suggestion: 'Use ambassador for protocol translation (e.g., HTTP to gRPC)' })
+    }
+
+    if (line.match(/init.*container|InitContainer|initContainer/i) && !line.match(/wait.*ready|dependency.*check|setup.*complete/)) {
+      sidecar.push({ line: i + 1, issue: 'Init container without readiness signal', suggestion: 'Use init container to verify dependency readiness before app start' })
+    }
+
+    if (line.match(/multi.?container|pod.*container|co.?located/i) && !line.match(/shared.*volume|emptyDir|ipc|localhost/)) {
+      ambassador.push({ line: i + 1, issue: 'Multi-container pod without shared resource config', suggestion: 'Use shared volume (emptyDir) or localhost IPC for inter-container communication' })
+    }
+  })
+
+  const totalIssues = sidecar.length + ambassador.length
+  const cloudNativeScore = Math.max(0, 100 - sidecar.length * 12 - ambassador.length * 10)
+  const severity: Severity = sidecar.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, sidecar, ambassador, cloudNativeScore,
+    summary: sidecar.length + ' sidecar issue(s), ' + ambassador.length + ' adapter issue(s)' }
+}
+
+function formatCloudNativeReport(r: CloudNativeResult): string {
+  const lines: string[] = []
+  lines.push('# Cloud-Native Patterns Analysis')
+  lines.push('')
+  lines.push('**Cloud-Native Score:** ' + r.cloudNativeScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.sidecar.length > 0) {
+    lines.push('## Sidecar (' + r.sidecar.length + ')')
+    r.sidecar.forEach(s => lines.push('- Line ' + s.line + ': ' + s.suggestion))
+    lines.push('')
+  }
+  if (r.ambassador.length > 0) {
+    lines.push('## Ambassador/Adapter (' + r.ambassador.length + ')')
+    r.ambassador.forEach(a => lines.push('- Line ' + a.line + ': ' + a.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.24.0: ERROR RECOVERY ====================
+
+interface ErrorRecoveryResult {
+  totalIssues: number
+  severity: Severity
+  retry: { line: number; issue: string; suggestion: string }[]
+  circuit: { line: number; issue: string; suggestion: string }[]
+  recoveryScore: number
+  summary: string
+}
+
+function analyzeErrorRecovery(code: string): ErrorRecoveryResult {
+  const lines = code.split('\n')
+  const retry: ErrorRecoveryResult['retry'] = []
+  const circuit: ErrorRecoveryResult['circuit'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/retry|retries|retryable|transient/i) && !line.match(/backoff|exponential|max.?attempt|jitter|circuit/)) {
+      retry.push({ line: i + 1, issue: 'Retry without exponential backoff', suggestion: 'Add exponential backoff with jitter to prevent thundering herd' })
+    }
+
+    if (line.match(/circuit.?breaker|circuitBreaker|open.*circuit|half.?open/i) && !line.match(/failure.*threshold|timeout.*ms|state.*machine/)) {
+      circuit.push({ line: i + 1, issue: 'Circuit breaker without failure threshold config', suggestion: 'Configure failure threshold (e.g., 5 failures in 60s) and half-open recovery' })
+    }
+
+    if (line.match(/fallback|fallback.*response|degrade|graceful.*degradation/i) && !line.match(/cache|default|static.*response|error.*boundary/)) {
+      retry.push({ line: i + 1, issue: 'Fallback without defined response strategy', suggestion: 'Define fallback response: cached data, default value, or static degradation' })
+    }
+
+    if (line.match(/bulkhead|bulkhead.*pattern|isolate.*pool|pool.*per.*service/i) && !line.match(/max.*thread|max.*concurrent|semaphore.*limit/)) {
+      circuit.push({ line: i + 1, issue: 'Bulkhead without resource limit', suggestion: 'Set max concurrent requests per service to prevent cascade failure' })
+    }
+  })
+
+  const totalIssues = retry.length + circuit.length
+  const recoveryScore = Math.max(0, 100 - retry.length * 10 - circuit.length * 12)
+  const severity: Severity = circuit.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, retry, circuit, recoveryScore,
+    summary: retry.length + ' retry issue(s), ' + circuit.length + ' circuit breaker issue(s)' }
+}
+
+function formatErrorRecoveryReport(r: ErrorRecoveryResult): string {
+  const lines: string[] = []
+  lines.push('# Error Recovery Analysis')
+  lines.push('')
+  lines.push('**Recovery Score:** ' + r.recoveryScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.retry.length > 0) {
+    lines.push('## Retry Strategy (' + r.retry.length + ')')
+    r.retry.forEach(r => lines.push('- Line ' + r.line + ': ' + r.suggestion))
+    lines.push('')
+  }
+  if (r.circuit.length > 0) {
+    lines.push('## Circuit Breaker (' + r.circuit.length + ')')
+    r.circuit.forEach(c => lines.push('- Line ' + c.line + ': ' + c.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.24.0: SYSTEM DESIGN REVIEW ====================
+
+interface SystemDesignResult {
+  totalIssues: number
+  severity: Severity
+  cap: { line: number; issue: string; suggestion: string }[]
+  bottleneck: { line: number; issue: string; suggestion: string }[]
+  designScore: number
+  summary: string
+}
+
+function analyzeSystemDesign(code: string): SystemDesignResult {
+  const lines = code.split('\n')
+  const cap: SystemDesignResult['cap'] = []
+  const bottleneck: SystemDesignResult['bottleneck'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/CAP|partition.*tolerance|availability.*consistency|network.*partition/i) && !line.match(/trade.?off|choose.*AP|choose.*CP|eventual.*consistency/)) {
+      cap.push({ line: i + 1, issue: 'CAP theorem without explicit trade-off decision', suggestion: 'Document AP vs CP choice per subsystem based on business requirements' })
+    }
+
+    if (line.match(/single.?point|SPOF|single.?instance|no.*redundancy|primary.*only/i) && !line.match(/replica|failover|standby|active.?active/)) {
+      bottleneck.push({ line: i + 1, issue: 'Single point of failure without redundancy', suggestion: 'Add failover/replica for critical single points' })
+    }
+
+    if (line.match(/scale|scaling|horizontal.*scale|vertical.*scale/i) && !line.match(/partition|shard|load.?balance|auto.?scale/)) {
+      bottleneck.push({ line: i + 1, issue: 'Scaling mention without concrete strategy', suggestion: 'Define partitioning/sharding strategy for horizontal scaling' })
+    }
+
+    if (line.match(/cache.*layer|cache.*strategy|Redis.*cluster|CDN|edge.*cache/i) && !line.match(/ttl|invalidat|eviction|warm.*up|hit.*ratio/)) {
+      cap.push({ line: i + 1, issue: 'Cache layer without invalidation strategy', suggestion: 'Define TTL, invalidation triggers, and cache warm-up strategy' })
+    }
+  })
+
+  const totalIssues = cap.length + bottleneck.length
+  const designScore = Math.max(0, 100 - cap.length * 10 - bottleneck.length * 12)
+  const severity: Severity = bottleneck.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, cap, bottleneck, designScore,
+    summary: cap.length + ' CAP/trade-off issue(s), ' + bottleneck.length + ' bottleneck issue(s)' }
+}
+
+function formatSystemDesignReport(r: SystemDesignResult): string {
+  const lines: string[] = []
+  lines.push('# System Design Review Analysis')
+  lines.push('')
+  lines.push('**Design Score:** ' + r.designScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.cap.length > 0) {
+    lines.push('## CAP Theorem Trade-offs (' + r.cap.length + ')')
+    r.cap.forEach(c => lines.push('- Line ' + c.line + ': ' + c.suggestion))
+    lines.push('')
+  }
+  if (r.bottleneck.length > 0) {
+    lines.push('## Bottlenecks (' + r.bottleneck.length + ')')
+    r.bottleneck.forEach(b => lines.push('- Line ' + b.line + ': ' + b.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.24.0: DEPENDENCY INJECTION ====================
+
+interface DiPatternResult {
+  totalIssues: number
+  severity: Severity
+  constructor: { line: number; issue: string; suggestion: string }[]
+  serviceLocator: { line: number; issue: string; suggestion: string }[]
+  diScore: number
+  summary: string
+}
+
+function analyzeDiPatterns(code: string): DiPatternResult {
+  const lines = code.split('\n')
+  const constructor: DiPatternResult['constructor'] = []
+  const serviceLocator: DiPatternResult['serviceLocator'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/new\s+\w+Service\(|new\s+\w+Repository\(|new\s+\w+Factory\(/) && !line.match(/@Inject|@Injectable|inject|container/i)) {
+      constructor.push({ line: i + 1, issue: 'Direct instantiation of service — tight coupling', suggestion: 'Use constructor injection instead of new Service() for testability' })
+    }
+
+    if (line.match(/serviceLocator|getService|container\.get|ServiceLocator|service.*locat/i) && !line.match(/@Inject|@Provide|interface|token/i)) {
+      serviceLocator.push({ line: i + 1, issue: 'Service locator pattern hides dependencies', suggestion: 'Prefer constructor injection over ServiceLocator for explicit dependency declaration' })
+    }
+
+    if (line.match(/@Injectable|@Service|@Component|@Repository/i) && !line.match(/@Inject|constructor.*Inject|providedIn|scope/)) {
+      constructor.push({ line: i + 1, issue: 'Injectable without scope configuration', suggestion: 'Define DI scope (singleton/transient/request) for each injectable' })
+    }
+
+    if (line.match(/interface.*implements|implements.*Interface|abstract.*class/i) && line.match(/extends/) && !line.match(/dependency|inversion|依赖倒置|DIP/)) {
+      serviceLocator.push({ line: i + 1, issue: 'Inheritance-based reuse instead of composition', suggestion: 'Favor composition over inheritance; inject interface implementations' })
+    }
+  })
+
+  const totalIssues = constructor.length + serviceLocator.length
+  const diScore = Math.max(0, 100 - constructor.length * 12 - serviceLocator.length * 10)
+  const severity: Severity = constructor.length > 1 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, constructor, serviceLocator, diScore,
+    summary: constructor.length + ' constructor injection gap(s), ' + serviceLocator.length + ' service locator issue(s)' }
+}
+
+function formatDiPatternReport(r: DiPatternResult): string {
+  const lines: string[] = []
+  lines.push('# Dependency Injection Analysis')
+  lines.push('')
+  lines.push('**DI Score:** ' + r.diScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.constructor.length > 0) {
+    lines.push('## Constructor Injection (' + r.constructor.length + ')')
+    r.constructor.forEach(c => lines.push('- Line ' + c.line + ': ' + c.suggestion))
+    lines.push('')
+  }
+  if (r.serviceLocator.length > 0) {
+    lines.push('## Service Locator (' + r.serviceLocator.length + ')')
+    r.serviceLocator.forEach(s => lines.push('- Line ' + s.line + ': ' + s.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
 // ==================== PLUGIN REGISTRATION ====================
 
 export function apply(ctx: Context) {
@@ -17661,5 +18189,119 @@ ctx.tools.register(defineTool({
   }
 }))
 
-console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design, container_security, ml_pipeline, api_deprecation, design_system, pwa_compliance, type_system, green_computing, realtime_collab, a11y_deep, i18n_deep, css_architecture, state_machine, web_components, resilience, module_federation, review_automation, observability, migration_safety, edge_computing, api_versioning, wasm_advanced, feature_toggles, email_deliverability, seo_analysis, monorepo_boundaries, ddd_patterns, mf_runtime, realtime_protocols, data_pipeline, gateway_deep, test_rigor, quality_gate, graphql_schema, event_sourcing_integrity, rate_limiting, migration_safety, auth_hardening, distributed_tracing, infrastructure_as_code, review_automation`)
+// ==================== V0.24.0 REGISTRATIONS (Tools 154-161) ====================
+
+// Tool 154: API Contract Testing
+ctx.tools.register(defineTool({
+  name: 'contract_testing',
+  description: 'Analyze API contract testing: CDC pacts, OpenAPI compliance, mock server contract drift.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The contract test code to analyze' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeContractTesting(args.code)
+    return formatContractTestReport(result)
+  }
+}))
+
+// Tool 155: Security Headers Deep
+ctx.tools.register(defineTool({
+  name: 'sec_headers_deep',
+  description: 'Analyze security headers: HSTS max-age, CSP nonce/hash, Permissions-Policy, X-Content-Type-Options.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The header config code to analyze' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeSecHeadersDeep(args.code)
+    return formatSecHeadersReport(result)
+  }
+}))
+
+// Tool 156: Data Privacy Compliance
+ctx.tools.register(defineTool({
+  name: 'privacy_compliance',
+  description: 'Analyze data privacy: PII protection in logs, GDPR consent, retention policy, tracking consent.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The data handling code to analyze for privacy' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzePrivacyCompliance(args.code)
+    return formatPrivacyReport(result)
+  }
+}))
+
+// Tool 157: Concurrency Patterns
+ctx.tools.register(defineTool({
+  name: 'concurrency_patterns',
+  description: 'Analyze concurrency patterns: semaphore/p-limit, lock timeout, optimistic CAS, bounded queue overflow.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The concurrency code to analyze' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeConcurrencyPatterns(args.code)
+    return formatConcurrencyPatternReport(result)
+  }
+}))
+
+// Tool 158: Cloud-Native Patterns
+ctx.tools.register(defineTool({
+  name: 'cloud_native',
+  description: 'Analyze cloud-native patterns: sidecar interception, ambassador protocol translation, init container readiness.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The cloud-native config/code to analyze' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeCloudNative(args.code)
+    return formatCloudNativeReport(result)
+  }
+}))
+
+// Tool 159: Error Recovery
+ctx.tools.register(defineTool({
+  name: 'error_recovery',
+  description: 'Analyze error recovery: retry backoff, circuit breaker threshold, fallback strategy, bulkhead limits.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The resilience/recovery code to analyze' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeErrorRecovery(args.code)
+    return formatErrorRecoveryReport(result)
+  }
+}))
+
+// Tool 160: System Design Review
+ctx.tools.register(defineTool({
+  name: 'system_design',
+  description: 'Analyze system design: CAP trade-offs, SPOF detection, scaling strategy, cache invalidation.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The architecture/design code to analyze' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeSystemDesign(args.code)
+    return formatSystemDesignReport(result)
+  }
+}))
+
+// Tool 161: Dependency Injection
+ctx.tools.register(defineTool({
+  name: 'dependency_injection',
+  description: 'Analyze DI patterns: constructor injection, service locator anti-pattern, IoC scope configuration.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The dependency injection code to analyze' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeDiPatterns(args.code)
+    return formatDiPatternReport(result)
+  }
+}))
+
+console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design, container_security, ml_pipeline, api_deprecation, design_system, pwa_compliance, type_system, green_computing, realtime_collab, a11y_deep, i18n_deep, css_architecture, state_machine, web_components, resilience, module_federation, review_automation, observability, migration_safety, edge_computing, api_versioning, wasm_advanced, feature_toggles, email_deliverability, seo_analysis, monorepo_boundaries, ddd_patterns, mf_runtime, realtime_protocols, data_pipeline, gateway_deep, test_rigor, quality_gate, graphql_schema, event_sourcing_integrity, rate_limiting, migration_safety, auth_hardening, distributed_tracing, infrastructure_as_code, review_automation, contract_testing, sec_headers_deep, privacy_compliance, concurrency_patterns, cloud_native, error_recovery, system_design, dependency_injection`)
 }
