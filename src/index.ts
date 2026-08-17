@@ -42,7 +42,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 export const name = 'dsh-tool-codereview'
 export const inject = ['tools']
 
-const VERSION = '0.10.0'
+const VERSION = '0.11.0'
 
 // ==================== TYPES ====================
 
@@ -5998,6 +5998,876 @@ function formatErrorTraceReport(result: ErrorTraceResult): string {
   return lines.join('\n')
 }
 
+// ==================== v0.11.0 NEW TOOLS ====================
+
+// ---- Tool 50: Auto Refactoring ----
+
+interface AutoRefactorResult {
+  refactorings: { type: string; line: number; description: string; original: string; refactored: string }[]
+  summary: string
+  totalOpportunities: number
+}
+
+function suggestAutoRefactor(code: string): AutoRefactorResult {
+  const result: AutoRefactorResult = {
+    refactorings: [],
+    summary: '',
+    totalOpportunities: 0
+  }
+
+  const lines = code.split('\n')
+
+  // Extract Method: repeated code blocks
+  for (let i = 0; i < lines.length - 2; i++) {
+    const block = lines.slice(i, i + 3).join('\n')
+    if (block.trim().length < 20) continue
+    for (let j = i + 3; j < lines.length - 2; j++) {
+      const candidate = lines.slice(j, j + 3).join('\n')
+      if (candidate.trim() === block.trim()) {
+        result.refactorings.push({
+          type: 'extract_method',
+          line: i + 1,
+          description: `Duplicate block found at lines ${i + 1}-${i + 3} and ${j + 1}-${j + 3}`,
+          original: block.substring(0, 60).replace(/\n/g, ' ') + '...',
+          refactored: `Extract to function and call from both locations`
+        })
+        break
+      }
+    }
+  }
+
+  // Extract Variable: complex expressions in return/assignment
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    if (/(?:return|const|let|var)\s+[^;]*\?.(?:[^;]{3,})/.test(line)) {
+      result.refactorings.push({
+        type: 'extract_variable',
+        line: i + 1,
+        description: 'Complex expression could be extracted to a named variable for readability',
+        original: line.trim().substring(0, 60),
+        refactored: `Assign expression to a descriptively named variable`
+      })
+    }
+  }
+
+  // Inline Temp: variable used only once
+  const varDecls = new Map<string, { line: number; count: number }>()
+  const declPattern = /(?:const|let|var)\s+(\w+)\s*=/g
+  let m: RegExpExecArray | null
+  while ((m = declPattern.exec(code)) !== null) {
+    const lineNum = code.substring(0, m.index).split('\n').length
+    varDecls.set(m[1], { line: lineNum, count: 0 })
+  }
+  for (const [name] of varDecls) {
+    const usages = (new RegExp(`\\b${name}\\b`, 'g').exec(code)?.length || 0) - 1 // Exclude declaration
+    varDecls.get(name)!.count = usages
+  }
+  for (const [name, info] of varDecls) {
+    if (info.count === 1) {
+      result.refactorings.push({
+        type: 'inline_temp',
+        line: info.line,
+        description: `Variable '${name}' is used only once — inline it`,
+        original: `const ${name} = ...`,
+        refactored: `Use the expression directly where '${name}' is referenced`
+      })
+    }
+  }
+
+  // Replace Magic Number with named constant
+  const magicNumPattern = /(?:const|let|var)\s+\w+\s*=\s*(\d+(?:\.\d+)?)\s*;/g
+  while ((m = magicNumPattern.exec(code)) !== null) {
+    const num = parseFloat(m[1])
+    if (num !== 0 && num !== 1 && num !== -1 && !Number.isNaN(num)) {
+      const lineNum = code.substring(0, m.index).split('\n').length
+      result.refactorings.push({
+        type: 'replace_magic_number',
+        line: lineNum,
+        description: `Magic number ${m[1]} should be a named constant`,
+        original: `const x = ${m[1]}`,
+        refactored: `const MEANINGFUL_NAME = ${m[1]} // describe what this represents`
+      })
+    }
+  }
+
+  result.totalOpportunities = result.refactorings.length
+  result.summary = result.totalOpportunities === 0
+    ? 'No refactoring opportunities detected.'
+    : `Found ${result.totalOpportunities} refactoring opportunities.`
+
+  return result
+}
+
+function formatAutoRefactorReport(result: AutoRefactorResult): string {
+  const lines: string[] = []
+  lines.push('## Auto Refactoring Report')
+  lines.push('')
+  lines.push(`**Summary:** ${result.summary}`)
+  lines.push('')
+
+  if (result.refactorings.length > 0) {
+    const grouped = new Map<string, typeof result.refactorings>()
+    result.refactorings.forEach(r => {
+      if (!grouped.has(r.type)) grouped.set(r.type, [])
+      grouped.get(r.type)!.push(r)
+    })
+
+    for (const [type, items] of grouped) {
+      lines.push(`### ${type.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())} (${items.length})`)
+      items.forEach(r => {
+        lines.push(`- Line ${r.line}: ${r.description}`)
+        lines.push(`  - Original: \`${r.original}\``)
+        lines.push(`  - Suggested: \`${r.refactored}\``)
+      })
+      lines.push('')
+    }
+  }
+
+  return lines.join('\n')
+}
+
+// ---- Tool 51: Code Similarity Detection ----
+
+interface SimilarityResult {
+  fileSimilarities: { block1: string; block2: string; similarity: number; lines: string }[]
+  tokenSimilarity: number
+  summary: string
+  duplicateBlocks: number
+}
+
+function detectCodeSimilarity(code: string): SimilarityResult {
+  const result: SimilarityResult = {
+    fileSimilarities: [],
+    tokenSimilarity: 0,
+    summary: '',
+    duplicateBlocks: 0
+  }
+
+  const lines = code.split('\n')
+  const blockSize = 4
+
+  // Tokenize for comparison
+  const tokenize = (s: string): Set<string> => {
+    return new Set(s.replace(/[{}();,]/g, ' ').split(/\s+/).filter(t => t.length > 2))
+  }
+
+  // Compare all block pairs
+  const blocks: { start: number; tokens: Set<string>; text: string }[] = []
+  for (let i = 0; i <= lines.length - blockSize; i++) {
+    const blockText = lines.slice(i, i + blockSize).join('\n')
+    blocks.push({ start: i + 1, tokens: tokenize(blockText), text: blockText })
+  }
+
+  for (let i = 0; i < blocks.length; i++) {
+    for (let j = i + 1; j < blocks.length; j++) {
+      const a = blocks[i].tokens
+      const b = blocks[j].tokens
+      if (a.size === 0 || b.size === 0) continue
+
+      const intersection = new Set([...a].filter(x => b.has(x)))
+      const union = new Set([...a, ...b])
+      const jaccard = intersection.size / union.size
+
+      if (jaccard > 0.6) {
+        result.fileSimilarities.push({
+          block1: `L${blocks[i].start}-${blocks[i].start + blockSize - 1}`,
+          block2: `L${blocks[j].start}-${blocks[j].start + blockSize - 1}`,
+          similarity: Math.round(jaccard * 100),
+          lines: `${blocks[i].start}-${blocks[i].start + blockSize - 1} vs ${blocks[j].start}-${blocks[j].start + blockSize - 1}`
+        })
+      }
+    }
+  }
+
+  result.duplicateBlocks = result.fileSimilarities.length
+  result.tokenSimilarity = result.fileSimilarities.length > 0
+    ? Math.round(result.fileSimilarities.reduce((s, f) => s + f.similarity, 0) / result.fileSimilarities.length)
+    : 0
+
+  result.summary = result.duplicateBlocks === 0
+    ? 'No significant code similarity detected. Code is sufficiently unique.'
+    : `Found ${result.duplicateBlocks} similar code block pairs (avg ${result.tokenSimilarity}% similarity).`
+
+  return result
+}
+
+function formatSimilarityReport(result: SimilarityResult): string {
+  const lines: string[] = []
+  lines.push('## Code Similarity Report')
+  lines.push('')
+  lines.push(`**Summary:** ${result.summary}`)
+  lines.push(`**Average token similarity:** ${result.tokenSimilarity}%`)
+  lines.push('')
+
+  if (result.fileSimilarities.length > 0) {
+    lines.push('### Similar Blocks')
+    result.fileSimilarities.forEach(s => {
+      const icon = s.similarity > 80 ? '🔴' : s.similarity > 70 ? '🟡' : '🟢'
+      lines.push(`${icon} ${s.block1} ↔ ${s.block2}: ${s.similarity}% similar`)
+    })
+    lines.push('')
+    lines.push('### Recommendations')
+    lines.push('- Extract shared logic into a reusable function')
+    lines.push('- Use inheritance or composition to share behavior')
+    lines.push('- Consider creating a utility/helper for duplicated patterns')
+  } else {
+    lines.push('✅ No significant similarity detected.')
+  }
+
+  return lines.join('\n')
+}
+
+// ---- Tool 52: Primitive Obsession Detection ----
+
+interface PrimitiveObsessionResult {
+  occurrences: { name: string; type: string; line: number; suggestion: string }[]
+  summary: string
+  obsessionScore: number
+}
+
+function detectPrimitiveObsession(code: string): PrimitiveObsessionResult {
+  const result: PrimitiveObsessionResult = {
+    occurrences: [],
+    summary: '',
+    obsessionScore: 100
+  }
+
+  const lines = code.split('\n')
+
+  // Detect variables that could be domain types
+  const primitivePatterns: { pattern: RegExp; type: string; suggestion: string }[] = [
+    { pattern: /(?:phone|telephone|mobile)/i, type: 'PhoneNumber', suggestion: 'Create a PhoneNumber class with validation' },
+    { pattern: /(?:email|e-mail|mail)/i, type: 'EmailAddress', suggestion: 'Create an EmailAddress value object' },
+    { pattern: /(?:currency|price|amount|money|salary)/i, type: 'Money', suggestion: 'Create a Money value object with currency' },
+    { pattern: /(?:date|time|deadline|expiry|duration)/i, type: 'DateTime', suggestion: 'Use a proper date/time value object' },
+    { pattern: /(?:color|rgb|hex)/i, type: 'Color', suggestion: 'Create a Color value object' },
+    { pattern: /(?:address|location|zip|postal)/i, type: 'Address', suggestion: 'Create an Address entity' },
+    { pattern: /(?:coordinate|latitude|longitude|lat|lng)/i, type: 'Coordinate', suggestion: 'Create a Coordinate value object' },
+    { pattern: /(?:weight|height|distance|volume|temperature)/i, type: 'Measurement', suggestion: 'Create a Measurement value object with units' },
+    { pattern: /(?:id|uuid|guid|identifier)/i, type: 'Identifier', suggestion: 'Create an Id/UUID wrapper type' },
+    { pattern: /(?:status|state)/i, type: 'Status', suggestion: 'Use an enum or dedicated Status type' }
+  ]
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    for (const pp of primitivePatterns) {
+      if (pp.pattern.test(line) && /(?:const|let|var|:\s*(?:string|number|boolean))/.test(line)) {
+        const nameMatch = line.match(/(?:const|let|var)\s+(\w+)/)
+        const name = nameMatch ? nameMatch[1] : 'unknown'
+        result.occurrences.push({ name, type: pp.type, line: i + 1, suggestion: pp.suggestion })
+      }
+    }
+  }
+
+  const penalty = Math.min(100, result.occurrences.length * 8)
+  result.obsessionScore = 100 - penalty
+
+  result.summary = result.occurrences.length === 0
+    ? 'No primitive obsession detected. Good use of domain types.'
+    : `Found ${result.occurrences.length} primitive obsession candidates (score: ${result.obsessionScore}/100).`
+
+  return result
+}
+
+function formatPrimitiveObsessionReport(result: PrimitiveObsessionResult): string {
+  const lines: string[] = []
+  lines.push('## Primitive Obsession Detection')
+  lines.push('')
+  lines.push(`**Summary:** ${result.summary}`)
+  lines.push(`**Obsession Score:** ${result.obsessionScore}/100`)
+  lines.push('')
+
+  if (result.occurrences.length > 0) {
+    lines.push('### Candidates')
+    result.occurrences.forEach(o => {
+      lines.push(`- Line ${o.line}: \`${o.name}\` → consider \`${o.type}\``)
+      lines.push(`  - ${o.suggestion}`)
+    })
+    lines.push('')
+    lines.push('### Benefits of Value Objects')
+    lines.push('- Type safety: prevent mixing different kinds of primitives')
+    lines.push('- Validation: enforce constraints at construction time')
+    lines.push('- Self-documenting: type name conveys meaning')
+    lines.push('- Encapsulation: behavior lives with the data')
+  }
+
+  return lines.join('\n')
+}
+
+// ---- Tool 53: SQL Injection Deep Detection ----
+
+interface SqlInjectionResult {
+  vulnerabilities: { line: number; severity: 'critical' | 'high' | 'medium'; query: string; issue: string; fix: string }[]
+  safePatterns: string[]
+  summary: string
+  riskScore: number
+}
+
+function detectSqlInjection(code: string): SqlInjectionResult {
+  const result: SqlInjectionResult = {
+    vulnerabilities: [],
+    safePatterns: [],
+    summary: '',
+    riskScore: 100
+  }
+
+  const lines = code.split('\n')
+
+  // Dangerous patterns: string concatenation in SQL
+  const dangerousPatterns: { pattern: RegExp; severity: 'critical' | 'high' | 'medium'; issue: string; fix: string }[] = [
+    {
+      pattern: /(?:SELECT|INSERT|UPDATE|DELETE|DROP|CREATE|ALTER)\s+.*\+/i,
+      severity: 'critical',
+      issue: 'SQL query built with string concatenation',
+      fix: 'Use parameterized queries with placeholders'
+    },
+    {
+      pattern: /(?:query|execute|exec|run)\s*\(\s*["'`].*\$\{/,
+      severity: 'critical',
+      issue: 'Template literal interpolation in SQL query',
+      fix: 'Use parameterized queries: db.query("SELECT * FROM t WHERE id = ?", [id])'
+    },
+    {
+      pattern: /(?:query|execute|exec)\s*\(\s*["'`].*\+\s*\w+/,
+      severity: 'critical',
+      issue: 'Variable concatenation in SQL call',
+      fix: 'Use ORM or parameterized queries'
+    },
+    {
+      pattern: /(?:query|execute|exec)\s*\(\s*`[^`]*\$\{[^}]+\}[^`]*`/,
+      severity: 'critical',
+      issue: 'Interpolated template literal in SQL',
+      fix: 'Never interpolate user input into SQL strings'
+    },
+    {
+      pattern: /(?:WHERE|AND|OR)\s+\w+\s*=\s*["'`]?\s*\+\s*\w+/i,
+      severity: 'high',
+      issue: 'Dynamic WHERE clause construction',
+      fix: 'Build query with parameter array'
+    },
+    {
+      pattern: /`[^`]*\$\{[^}]+}.*FROM|WHERE|INTO`/,
+      severity: 'critical',
+      issue: 'Template literal with SQL keywords and interpolation',
+      fix: 'Use query builder or parameterized statements'
+    }
+  ]
+
+  // Safe patterns that indicate proper usage
+  const safeIndicators: { pattern: RegExp; description: string }[] = [
+    { pattern: /\?.*\[/i, description: 'Parameterized query with placeholder' },
+    { pattern: /:\w+\s*[,)]/, description: 'Named parameter binding' },
+    { pattern: /\$1|\$2|\$\d/, description: 'Posomial parameter ($1, $2)' },
+    { pattern: /prepare[d]?\s*(?:statement|query)/i, description: 'Prepared statement usage' },
+    { pattern: /\.query\s*\(\s*["'`][^"'`]*["'`]\s*,\s*\[/, description: 'Parameterized with array binding' }
+  ]
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    for (const dp of dangerousPatterns) {
+      if (dp.pattern.test(line)) {
+        result.vulnerabilities.push({
+          line: i + 1,
+          severity: dp.severity,
+          query: line.trim().substring(0, 80),
+          issue: dp.issue,
+          fix: dp.fix
+        })
+      }
+    }
+    for (const si of safeIndicators) {
+      if (si.pattern.test(line)) {
+        result.safePatterns.push(`Line ${i + 1}: ${si.description}`)
+      }
+    }
+  }
+
+  const critCount = result.vulnerabilities.filter(v => v.severity === 'critical').length
+  const highCount = result.vulnerabilities.filter(v => v.severity === 'high').length
+  result.riskScore = Math.max(0, 100 - critCount * 25 - highCount * 15)
+
+  result.summary = result.vulnerabilities.length === 0
+    ? `No SQL injection vectors found. ${result.safePatterns.length} safe pattern(s) detected.`
+    : `Found ${result.vulnerabilities.length} potential SQL injection vector(s). Risk: ${result.riskScore}/100.`
+
+  return result
+}
+
+function formatSqlInjectionReport(result: SqlInjectionResult): string {
+  const lines: string[] = []
+  lines.push('## SQL Injection Detection Report')
+  lines.push('')
+  lines.push(`**Summary:** ${result.summary}`)
+  lines.push(`**Risk Score:** ${result.riskScore}/100`)
+  lines.push('')
+
+  if (result.vulnerabilities.length > 0) {
+    lines.push('### Vulnerabilities')
+    result.vulnerabilities.forEach(v => {
+      const icon = v.severity === 'critical' ? '🔴' : '🟡'
+      lines.push(`${icon} Line ${v.line} [${v.severity.toUpperCase()}]`)
+      lines.push(`  Query: \`${v.query}\``)
+      lines.push(`  Issue: ${v.issue}`)
+      lines.push(`  Fix: ${v.fix}`)
+      lines.push('')
+    })
+  }
+
+  if (result.safePatterns.length > 0) {
+    lines.push('### Safe Patterns Detected')
+    result.safePatterns.forEach(s => lines.push(`✅ ${s}`))
+    lines.push('')
+  }
+
+  lines.push('### Best Practices')
+  lines.push('- Always use parameterized queries with ? or :name placeholders')
+  lines.push('- Use an ORM (Prisma, TypeORM, Sequelize) for type-safe queries')
+  lines.push('- Never concatenate user input into SQL strings')
+  lines.push('- Validate and whitelist ORDER BY / column name inputs')
+
+  return lines.join('\n')
+}
+
+// ---- Tool 54: Interface Compliance Checker ----
+
+interface InterfaceComplianceResult {
+  interfaces: { name: string; methods: string[]; line: number }[]
+  implementations: { name: string; implements: string; missing: string[]; extra: string[]; line: number; compliant: boolean }[]
+  summary: string
+  complianceRate: number
+}
+
+function checkInterfaceCompliance(code: string): InterfaceComplianceResult {
+  const result: InterfaceComplianceResult = {
+    interfaces: [],
+    implementations: [],
+    summary: '',
+    complianceRate: 100
+  }
+
+  // Parse interface definitions
+  const interfacePattern = /interface\s+(\w+)\s*(?:extends\s+([\w\s,]+))?\s*\{([^}]+)\}/g
+  let m: RegExpExecArray | null
+  while ((m = interfacePattern.exec(code)) !== null) {
+    const name = m[1]
+    const body = m[3]
+    const lineNum = code.substring(0, m.index).split('\n').length
+    const methods: string[] = []
+    const methodPattern = /(\w+)\s*(?:\([^)]*\))(?:\s*:\s*[^;]+)?[;]?/g
+    let mm: RegExpExecArray | null
+    while ((mm = methodPattern.exec(body)) !== null) {
+      methods.push(mm[1])
+    }
+    result.interfaces.push({ name, methods, line: lineNum })
+  }
+
+  // Parse class implementations
+  const classPattern = /class\s+(\w+)\s+(?:extends\s+\w+\s+)?(?:implements\s+([\w\s,]+))?\s*\{/g
+  while ((m = classPattern.exec(code)) !== null) {
+    const className = m[1]
+    const implStr = m[2] || ''
+    const lineNum = code.substring(0, m.index).split('\n').length
+    const implInterfaces = implStr.split(',').map(s => s.trim()).filter(Boolean)
+
+    // Get class methods
+    const classStart = m.index + m[0].length
+    const classBody = code.substring(classStart, classStart + 2000)
+    const classMethods: string[] = []
+    const cmPattern = /(?:public|private|protected)?\s*(?:async\s+)?(\w+)\s*\(/g
+    let cm: RegExpExecArray | null
+    while ((cm = cmPattern.exec(classBody)) !== null) {
+      if (cm[1] !== 'constructor' && cm[1] !== 'if' && cm[1] !== 'for' && cm[1] !== 'while') {
+        classMethods.push(cm[1])
+      }
+    }
+
+    // Check compliance for each implemented interface
+    for (const implName of implInterfaces) {
+      const iface = result.interfaces.find(i => i.name === implName)
+      if (iface) {
+        const missing = iface.methods.filter(im => !classMethods.includes(im))
+        const extra = classMethods.filter(cm => !iface.methods.includes(cm))
+        result.implementations.push({
+          name: className,
+          implements: implName,
+          missing,
+          extra,
+          line: lineNum,
+          compliant: missing.length === 0
+        })
+      }
+    }
+  }
+
+  const total = result.implementations.length
+  const compliant = result.implementations.filter(i => i.compliant).length
+  result.complianceRate = total > 0 ? Math.round((compliant / total) * 100) : 100
+
+  result.summary = total === 0
+    ? 'No interface implementations detected.'
+    : `${compliant}/${total} implementations are fully compliant (${result.complianceRate}%).`
+
+  return result
+}
+
+function formatInterfaceComplianceReport(result: InterfaceComplianceResult): string {
+  const lines: string[] = []
+  lines.push('## Interface Compliance Report')
+  lines.push('')
+  lines.push(`**Summary:** ${result.summary}`)
+  lines.push(`**Compliance Rate:** ${result.complianceRate}%`)
+  lines.push('')
+
+  if (result.interfaces.length > 0) {
+    lines.push('### Defined Interfaces')
+    result.interfaces.forEach(i => {
+      lines.push(`- \`${i.name}\` (line ${i.line}): ${i.methods.join(', ') || 'no methods'}`)
+    })
+    lines.push('')
+  }
+
+  if (result.implementations.length > 0) {
+    lines.push('### Implementations')
+    result.implementations.forEach(impl => {
+      const icon = impl.compliant ? '✅' : '❌'
+      lines.push(`${icon} \`${impl.name}\` implements \`${impl.implements}\` (line ${impl.line})`)
+      if (impl.missing.length > 0) {
+        lines.push(`  Missing: ${impl.missing.map(m => `\`${m}\``).join(', ')}`)
+      }
+      if (impl.extra.length > 0) {
+        lines.push(`  Extra: ${impl.extra.map(e => `\`${e}\``).join(', ')}`)
+      }
+    })
+    lines.push('')
+  }
+
+  return lines.join('\n')
+}
+
+// ---- Tool 55: Magic String Detection ----
+
+interface MagicStringResult {
+  occurrences: { value: string; line: number; context: string; suggestion: string }[]
+  internationalizable: { value: string; line: number }[]
+  summary: string
+  stringScore: number
+}
+
+function detectMagicStrings(code: string): MagicStringResult {
+  const result: MagicStringResult = {
+    occurrences: [],
+    internationalizable: [],
+    summary: '',
+    stringScore: 100
+  }
+
+  const lines = code.split('\n')
+
+  // Skip strings that are clearly safe
+  const safePatterns = /^(?:import|export|require|console|log|error|warn|info|http|https|ftp|www|\.css|\.js|\.ts|\.json|text\/|application\/)/i
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+
+    // Match string literals (single, double, and backtick quoted)
+    const stringPattern = /["'`]([^"'`\\]*(?:\\.[^"'`\\]*)*)["'`]/g
+    let m: RegExpExecArray | null
+    while ((m = stringPattern.exec(line)) !== null) {
+      const str = m[1]
+
+      // Skip empty, very short, or obviously safe strings
+      if (str.length <= 2 || safePatterns.test(str)) continue
+      if (/^[A-Z_][A-Z0-9_]*$/.test(str)) continue // Already a constant
+      if (/^(?:true|false|null|undefined)$/.test(str)) continue
+      if (/^\d+$/.test(str)) continue // Numeric
+
+      // Check if it looks like user-facing text
+      if (/^[A-Z][a-z]+(?:\s+[a-z]+)*$/.test(str) && str.includes(' ')) {
+        result.internationalizable.push({ value: str, line: i + 1 })
+      }
+
+      // Detect magic strings used as keys or values
+      const context = line.trim()
+      if (/(?:type|status|state|role|level|format|mode|kind|error|message|label|title|text)\s*[:=]\s*["'`]/.test(context)) {
+        const constName = str.toUpperCase().replace(/[^A-Z0-9]/g, '_').replace(/_+/g, '_')
+        result.occurrences.push({
+          value: str,
+          line: i + 1,
+          context: context.substring(0, 60),
+          suggestion: `const ${constName} = "${str}"`
+        })
+      }
+    }
+  }
+
+  const penalty = Math.min(100, result.occurrences.length * 5 + result.internationalizable.length * 3)
+  result.stringScore = 100 - penalty
+
+  result.summary = result.occurrences.length === 0 && result.internationalizable.length === 0
+    ? 'No problematic magic strings detected.'
+    : `Found ${result.occurrences.length} magic string(s) and ${result.internationalizable.length} user-facing string(s) that should be constants.`
+
+  return result
+}
+
+function formatMagicStringReport(result: MagicStringResult): string {
+  const lines: string[] = []
+  lines.push('## Magic String Detection')
+  lines.push('')
+  lines.push(`**Summary:** ${result.summary}`)
+  lines.push(`**String Quality Score:** ${result.stringScore}/100`)
+  lines.push('')
+
+  if (result.occurrences.length > 0) {
+    lines.push('### Magic Strings (extract to constants)')
+    result.occurrences.forEach(o => {
+      lines.push(`- Line ${o.line}: \`"${o.value}"\``)
+      lines.push(`  Context: \`${o.context}\``)
+      lines.push(`  Suggested: \`${o.suggestion}\``)
+    })
+    lines.push('')
+  }
+
+  if (result.internationalizable.length > 0) {
+    lines.push('### User-Facing Strings (consider i18n)')
+    result.internationalizable.forEach(s => {
+      lines.push(`- Line ${s.line}: \`"${s.value}"\``)
+    })
+    lines.push('')
+  }
+
+  lines.push('### Recommendations')
+  lines.push('- Move string literals to a dedicated constants file or enum')
+  lines.push('- User-facing strings should use an i18n framework (react-intl, i18next)')
+  lines.push('- Use string literal unions for type-safe string values')
+
+  return lines.join('\n')
+}
+
+// ---- Tool 56: Semantic Version Bump Recommender ----
+
+interface SemverResult {
+  currentVersion: string
+  recommendedBump: 'major' | 'minor' | 'patch' | 'none'
+  reasons: string[]
+  breakingChanges: string[]
+  newFeatures: string[]
+  fixes: string[]
+  summary: string
+}
+
+function recommendSemverBump(code: string): SemverResult {
+  const result: SemverResult = {
+    currentVersion: '1.0.0',
+    recommendedBump: 'none',
+    reasons: [],
+    breakingChanges: [],
+    newFeatures: [],
+    fixes: [],
+    summary: ''
+  }
+
+  // Detect breaking changes
+  const removedExports = /(?:REMOVED|DELETED|BREAKING).*?(?:export|function|class)/gi
+  const changedSignatures = /(?: signature| parameter| return type)/gi
+  if (removedExports.test(code)) {
+    result.breakingChanges.push('Removed exports detected')
+  }
+  if (changedSignatures.test(code)) {
+    result.breakingChanges.push('Changed function signatures detected')
+  }
+
+  // Detect new features
+  const newExports = code.match(/export\s+(?:function|class|interface|type|const)\s+(\w+)/g) || []
+  if (newExports.length > 0) {
+    result.newFeatures.push(`${newExports.length} new export(s) added`)
+  }
+
+  const newEndpoints = code.match(/(?:app|router)\.(?:get|post|put|delete|patch)\s*\(/g) || []
+  if (newEndpoints.length > 0) {
+    result.newFeatures.push(`${newEndpoints.length} new API endpoint(s)`)
+  }
+
+  // Detect fixes
+  const fixComments = code.match(/(?:fix|fixed|fixes|bug|patch|hotfix|resolve)/gi) || []
+  if (fixComments.length > 0) {
+    result.fixes.push(`${fixComments.length} fix-related comment(s)`)
+  }
+
+  // Determine bump level
+  if (result.breakingChanges.length > 0) {
+    result.recommendedBump = 'major'
+    result.reasons.push('Breaking changes require major version bump')
+  } else if (result.newFeatures.length > 0) {
+    result.recommendedBump = 'minor'
+    result.reasons.push('New features warrant minor version bump')
+  } else if (result.fixes.length > 0) {
+    result.recommendedBump = 'patch'
+    result.reasons.push('Bug fixes only — patch bump appropriate')
+  } else {
+    result.reasons.push('No significant changes detected')
+  }
+
+  result.summary = `Recommended: ${result.recommendedBump.toUpperCase()} bump. ${result.reasons.join('. ')}`
+
+  return result
+}
+
+function formatSemverReport(result: SemverResult): string {
+  const lines: string[] = []
+  lines.push('## Semantic Version Bump Recommendation')
+  lines.push('')
+  lines.push(`**Recommendation:** ${result.recommendedBump.toUpperCase()}`)
+  lines.push(`**Summary:** ${result.summary}`)
+  lines.push('')
+
+  if (result.breakingChanges.length > 0) {
+    lines.push('### Breaking Changes (requires MAJOR)')
+    result.breakingChanges.forEach(b => lines.push(`- 🔴 ${b}`))
+    lines.push('')
+  }
+  if (result.newFeatures.length > 0) {
+    lines.push('### New Features (warrants MINOR)')
+    result.newFeatures.forEach(f => lines.push(`- 🟢 ${f}`))
+    lines.push('')
+  }
+  if (result.fixes.length > 0) {
+    lines.push('### Fixes (PATCH appropriate)')
+    result.fixes.forEach(f => lines.push(`- 🟡 ${f}`))
+    lines.push('')
+  }
+
+  lines.push('### Semantic Versioning Rules')
+  lines.push('- **MAJOR**: Breaking changes that require consumer updates')
+  lines.push('- **MINOR**: New features, backward compatible')
+  lines.push('- **PATCH**: Bug fixes only, no API changes')
+
+  return lines.join('\n')
+}
+
+// ---- Tool 57: PR Review Comment Generator ----
+
+interface PRCommentResult {
+  comments: { file: string; line: number; body: string; category: string; severity: 'suggestion' | 'nit' | 'issue' | 'praise' }[]
+  summary: string
+  totalComments: number
+}
+
+function generatePRReviewComments(code: string): PRCommentResult {
+  const result: PRCommentResult = {
+    comments: [],
+    summary: '',
+    totalComments: 0
+  }
+
+  const lines = code.split('\n')
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim()
+    const lineNum = i + 1
+
+    // Security issues
+    if (/(?:eval|innerHTML|dangerouslySetInnerHTML)\s*\(/.test(line)) {
+      result.comments.push({
+        file: 'src/file.ts',
+        line: lineNum,
+        body: '⚠️ Using eval/innerHTML can lead to XSS vulnerabilities. Consider safer alternatives.',
+        category: 'security',
+        severity: 'issue'
+      })
+    }
+
+    // Performance
+    if (/\.map\s*\(.*\.map\s*\(/.test(line)) {
+      result.comments.push({
+        file: 'src/file.ts',
+        line: lineNum,
+        body: '🔍 Chained .map() calls create intermediate arrays. Consider combining into a single map or using reduce.',
+        category: 'performance',
+        severity: 'suggestion'
+      })
+    }
+
+    // Best practices
+    if (/console\.(?:log|debug)\s*\(/.test(line) && !line.includes('//')) {
+      result.comments.push({
+        file: 'src/file.ts',
+        line: lineNum,
+        body: '🧹 Remove console.log before merging, or replace with a proper logger.',
+        category: 'clean code',
+        severity: 'nit'
+      })
+    }
+
+    // Good patterns
+    if (/(?:async\s+function|const\s+\w+\s*=\s*async)\s*\(/.test(line)) {
+      if (lines[i + 1]?.trim().startsWith('try')) {
+        result.comments.push({
+          file: 'src/file.ts',
+          line: lineNum,
+          body: '👍 Good: async function with try/catch error handling.',
+          category: 'best practice',
+          severity: 'praise'
+        })
+      }
+    }
+
+    // Component complexity marker
+    if (/^(?:export\s+)?(?:function|const)\s+\w+\s*[=(].*=>/.test(line)) {
+      let funcEnd = i + 1
+      let braceCount = 0
+      while (funcEnd < lines.length) {
+        braceCount += (lines[funcEnd].match(/{/g) || []).length
+        braceCount -= (lines[funcEnd].match(/}/g) || []).length
+        if (braceCount <= 0 && funcEnd > i) break
+        funcEnd++
+        if (funcEnd - i > 50) break
+      }
+      if (funcEnd - i > 30) {
+        result.comments.push({
+          file: 'src/file.ts',
+          line: lineNum,
+          body: '📏 This function is quite long. Consider extracting smaller helper functions.',
+          category: 'readability',
+          severity: 'suggestion'
+        })
+      }
+    }
+  }
+
+  result.totalComments = result.comments.length
+  result.summary = `Generated ${result.totalComments} review comment(s).`
+
+  return result
+}
+
+function formatPRReviewCommentReport(result: PRCommentResult): string {
+  const lines: string[] = []
+  lines.push('## PR Review Comments')
+  lines.push('')
+  lines.push(`**Summary:** ${result.summary}`)
+  lines.push('')
+
+  if (result.comments.length > 0) {
+    const grouped = new Map<string, typeof result.comments>()
+    result.comments.forEach(c => {
+      if (!grouped.has(c.category)) grouped.set(c.category, [])
+      grouped.get(c.category)!.push(c)
+    })
+
+    for (const [cat, items] of grouped) {
+      lines.push(`### ${cat.charAt(0).toUpperCase() + cat.slice(1)} (${items.length})`)
+      items.forEach(c => {
+        const icon = c.severity === 'issue' ? '🔴' : c.severity === 'suggestion' ? '🟡' : c.severity === 'nit' ? '⚪' : '🟢'
+        lines.push(`${icon} Line ${c.line}: ${c.body}`)
+      })
+      lines.push('')
+    }
+  }
+
+  return lines.join('\n')
+}
+
 // ==================== PLUGIN REGISTRATION ====================
 
 export function apply(ctx: Context) {
@@ -6800,5 +7670,117 @@ export function apply(ctx: Context) {
     }
   }))
 
-  console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace`)
+  // Tool 50: Auto Refactoring (v0.11.0)
+  ctx.tools.register(defineTool({
+    name: 'auto_refactor',
+    description: 'Suggest automated refactorings: extract method, extract variable, inline temp, replace magic number.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code to refactor' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = suggestAutoRefactor(args.code)
+      return formatAutoRefactorReport(result)
+    }
+  }))
+
+  // Tool 51: Code Similarity Detection (v0.11.0)
+  ctx.tools.register(defineTool({
+    name: 'code_similarity',
+    description: 'Detect code similarity using token-based Jaccard similarity. Finds duplicate blocks.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = detectCodeSimilarity(args.code)
+      return formatSimilarityReport(result)
+    }
+  }))
+
+  // Tool 52: Primitive Obsession Detection (v0.11.0)
+  ctx.tools.register(defineTool({
+    name: 'primitive_obsession',
+    description: 'Detect primitive obsession: phone, email, money, date etc. that should be domain types.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = detectPrimitiveObsession(args.code)
+      return formatPrimitiveObsessionReport(result)
+    }
+  }))
+
+  // Tool 53: SQL Injection Deep Detection (v0.11.0)
+  ctx.tools.register(defineTool({
+    name: 'sql_injection',
+    description: 'Deep SQL injection detection: concatenation, template literals, dynamic WHERE. Identifies safe patterns too.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code to scan' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = detectSqlInjection(args.code)
+      return formatSqlInjectionReport(result)
+    }
+  }))
+
+  // Tool 54: Interface Compliance Checker (v0.11.0)
+  ctx.tools.register(defineTool({
+    name: 'interface_compliance',
+    description: 'Check class compliance with interfaces: missing methods, extra methods, signature mismatches.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code to check' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = checkInterfaceCompliance(args.code)
+      return formatInterfaceComplianceReport(result)
+    }
+  }))
+
+  // Tool 55: Magic String Detection (v0.11.0)
+  ctx.tools.register(defineTool({
+    name: 'magic_string',
+    description: 'Detect magic strings: hardcoded literals that should be constants. Flags user-facing strings for i18n.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = detectMagicStrings(args.code)
+      return formatMagicStringReport(result)
+    }
+  }))
+
+  // Tool 56: Semantic Version Bump Recommender (v0.11.0)
+  ctx.tools.register(defineTool({
+    name: 'semver_bump',
+    description: 'Recommend semantic version bump: breaking changes (major), features (minor), fixes (patch).',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = recommendSemverBump(args.code)
+      return formatSemverReport(result)
+    }
+  }))
+
+  // Tool 57: PR Review Comment Generator (v0.11.0)
+  ctx.tools.register(defineTool({
+    name: 'code_review_comment',
+    description: 'Generate inline PR review comments: security issues, performance, clean code, best practices.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code to review' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = generatePRReviewComments(args.code)
+      return formatPRReviewCommentReport(result)
+    }
+  }))
+
+  console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment`)
 }

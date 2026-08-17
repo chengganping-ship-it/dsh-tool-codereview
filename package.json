@@ -1,7 +1,7 @@
 {
   "name": "dsh-tool-codereview",
-  "version": "0.10.0",
-  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 49 tools, Dead Code, Circular Deps, Regex Security, JSDoc, API Surface, Hotspots, Layers, Error Trace",
+  "version": "0.11.0",
+  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 57 tools, Auto Refactor, Similarity, SQL Injection, Semver, PR Comments",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
