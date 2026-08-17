@@ -1,7 +1,7 @@
 {
   "name": "dsh-tool-codereview",
-  "version": "0.30.0",
-  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 209 tools, Browser Compat, Floating Point, Snapshot Testing, Event Schema, Form Validation, Retry Idempotency, A11y Semantics, Race Condition",
+  "version": "0.31.0",
+  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 217 tools, Cache Invalidation, Data Loader, Event Versioning, Connection Lifecycle, CSPNonce, Structured Error, Stream Backpressure, Identifier Collision",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
