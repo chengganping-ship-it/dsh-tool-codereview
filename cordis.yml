@@ -1,10 +1,10 @@
-# DeepSeek Harness Plugin: Code Review Assistant v0.5.0
-# Enterprise-grade code analysis toolkit with 16 comprehensive tools
+# DeepSeek Harness Plugin: Code Review Assistant v0.6.0
+# Enterprise-grade code analysis toolkit with 21 comprehensive tools
 
 - id: dsh-tool-codereview
   name: dsh-tool-codereview
-  version: 0.5.0
-  description: Enterprise Code Review & Security Scan - 16 tools including code_review, security_scan, code_smell_detect, ts_strict_check, diff_preview, incremental_analysis, breaking_change, sarif_export
+  version: 0.6.0
+  description: Enterprise Code Review & Security Scan - 21 tools including code_review, security_scan, code_smell_detect, ts_strict_check, diff_preview, incremental_analysis, breaking_change, sarif_export, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze
   author: chengganping-ship-it
   tools:
     - code_review
@@ -23,3 +23,8 @@
     - breaking_change
     - sarif_export
     - diff_preview
+    - config_load
+    - test_generate
+    - complexity_metrics
+    - batch_analyze
+    - monorepo_analyze

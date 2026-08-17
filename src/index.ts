@@ -314,6 +314,121 @@ interface DiffFix {
   severity: Severity
 }
 
+// ==================== v0.6.0 NEW TYPES ====================
+
+// PRO-004: Config file support
+interface DshConfig {
+  severityThreshold?: Severity
+  ignoreRules?: string[]
+  enableSarif?: boolean
+  enableAutoFix?: boolean
+  customRules?: CustomRule[]
+  outputFormat?: 'markdown' | 'json' | 'sarif'
+}
+
+interface CustomRule {
+  id: string
+  pattern: string
+  message: string
+  severity: Severity
+  language?: string
+}
+
+interface ConfigLoadResult {
+  summary: string
+  config: DshConfig
+  loaded: boolean
+  errors: string[]
+}
+
+// PRO-007: Test generation
+interface TestGenResult {
+  summary: string
+  tests: TestCase[]
+  coverage: number
+  score: number
+}
+
+interface TestCase {
+  functionName: string
+  language: string
+  testName: string
+  testCode: string
+  type: 'unit' | 'edge-case' | 'error-case'
+  description: string
+}
+
+// PRO-009: Complexity metrics
+interface ComplexityResult {
+  summary: string
+  score: number
+  metrics: ComplexityMetrics
+  functions: FunctionComplexity[]
+  risks: string[]
+}
+
+interface ComplexityMetrics {
+  cyclomaticComplexity: number
+  halsteadVolume: number
+  halsteadDifficulty: number
+  halsteadEffort: number
+  linesOfCode: number
+  commentRatio: number
+  nestingDepth: number
+}
+
+interface FunctionComplexity {
+  name: string
+  line: number
+  cyclomatic: number
+  params: number
+  returns: number
+  risk: 'low' | 'medium' | 'high' | 'critical'
+}
+
+// PRO-013: Batch analysis
+interface BatchResult {
+  summary: string
+  totalFiles: number
+  analyzedFiles: number
+  files: FileResult[]
+  overallScore: number
+  totalIssues: number
+  commonIssues: { message: string; count: number }[]
+}
+
+interface FileResult {
+  fileName: string
+  language: string
+  score: number
+  issues: ReviewIssue[]
+  metrics: { lines: number; functions: number; classes: number }
+}
+
+// PRO-008: Monorepo analysis
+interface MonorepoResult {
+  summary: string
+  packages: PackageResult[]
+  dependencies: DepEdge[]
+  cycles: string[][]
+  score: number
+}
+
+interface PackageResult {
+  name: string
+  path: string
+  language: string
+  score: number
+  fileCount: number
+  issues: number
+}
+
+interface DepEdge {
+  from: string
+  to: string
+  type: 'dependency' | 'devDependency' | 'peer'
+}
+
 // ==================== CONFIGURATION ====================
 
 interface PluginConfig {
@@ -1845,6 +1960,516 @@ function formatDiffPreviewReport(result: DiffPreviewResult): string {
   return lines.join('\n')
 }
 
+// ==================== v0.6.0 NEW FUNCTIONS ====================
+
+// --- PRO-004: Config file support (.dshcoderc) ---
+function loadDshConfig(configContent?: string): ConfigLoadResult {
+  const errors: string[] = []
+  const defaultConfig: DshConfig = {
+    severityThreshold: 'info',
+    ignoreRules: [],
+    enableSarif: true,
+    enableAutoFix: true,
+    outputFormat: 'markdown'
+  }
+
+  if (!configContent) {
+    return {
+      summary: 'No config file provided, using defaults',
+      config: defaultConfig,
+      loaded: false,
+      errors: []
+    }
+  }
+
+  try {
+    const parsed = JSON.parse(configContent) as DshConfig
+    const config = { ...defaultConfig, ...parsed }
+    
+    if (config.severityThreshold && !['critical', 'error', 'warning', 'info'].includes(config.severityThreshold)) {
+      errors.push(`Invalid severityThreshold: ${config.severityThreshold}`)
+      config.severityThreshold = 'info'
+    }
+    if (config.outputFormat && !['markdown', 'json', 'sarif'].includes(config.outputFormat)) {
+      errors.push(`Invalid outputFormat: ${config.outputFormat}`)
+      config.outputFormat = 'markdown'
+    }
+
+    return {
+      summary: `Loaded .dshcoderc config (${Object.keys(parsed).length} settings)`,
+      config,
+      loaded: true,
+      errors
+    }
+  } catch {
+    return {
+      summary: 'Failed to parse .dshcoderc config, using defaults',
+      config: defaultConfig,
+      loaded: false,
+      errors: ['Invalid JSON in config file']
+    }
+  }
+}
+
+function formatConfigLoadReport(result: ConfigLoadResult): string {
+  const lines: string[] = []
+  lines.push('## Configuration Load Report')
+  lines.push('')
+  lines.push(`**Status: ${result.loaded ? '✅ LOADED' : '⚠️ DEFAULTS'}**`)
+  lines.push('')
+  lines.push('### Summary')
+  lines.push(result.summary)
+  lines.push('')
+  lines.push('### Active Configuration')
+  lines.push(`- Severity Threshold: \`${result.config.severityThreshold}\``)
+  lines.push(`- Output Format: \`${result.config.outputFormat}\``)
+  lines.push(`- SARIF Enabled: \`${result.config.enableSarif}\``)
+  lines.push(`- Auto-fix Enabled: \`${result.config.enableAutoFix}\``)
+  lines.push(`- Ignored Rules: ${result.config.ignoreRules?.length ?? 0}`)
+  lines.push(`- Custom Rules: ${result.config.customRules?.length ?? 0}`)
+  lines.push('')
+  if (result.errors.length > 0) {
+    lines.push('### Errors')
+    result.errors.forEach(e => lines.push(`- ❌ ${e}`))
+    lines.push('')
+  }
+  lines.push('### Example .dshcoderc')
+  lines.push('```json')
+  lines.push(JSON.stringify({
+    severityThreshold: 'warning',
+    ignoreRules: ['no-console'],
+    enableSarif: true,
+    outputFormat: 'markdown'
+  }, null, 2))
+  lines.push('```')
+  lines.push('')
+  return lines.join('\n')
+}
+
+// --- PRO-007: Test generation suggestions ---
+function generateTestSuggestions(code: string, language: string): TestGenResult {
+  const tests: TestCase[] = []
+  const codeLines = code.split('\n')
+  
+  // Detect functions
+  const funcRegex = /(?:function|def|func)\s+(\w+)\s*\(([^)]*)\)/g
+  let match: RegExpExecArray | null
+  while ((match = funcRegex.exec(code)) !== null) {
+    const funcName = match[1]
+    const params = match[2]
+    if (funcName && !['if', 'for', 'while', 'switch', 'return', 'console'].includes(funcName)) {
+      // Unit test
+      const testCode = getUnitTestCode(funcName, params, language)
+      tests.push({
+        functionName: funcName,
+        language,
+        testName: `${funcName}_should_work_correctly`,
+        testCode,
+        type: 'unit',
+        description: `Basic unit test for ${funcName}`
+      })
+
+      // Edge case test
+      if (params.split(',').length > 0) {
+        tests.push({
+          functionName: funcName,
+          language,
+          testName: `${funcName}_handles_edge_cases`,
+          testCode: `// Edge case test for ${funcName}\n// Test with: null, undefined, empty, boundary values`,
+          type: 'edge-case',
+          description: `Edge case handling for ${funcName}`
+        })
+      }
+    }
+  }
+
+  // Also detect arrow functions
+  const arrowRegex = /(\w+)\s*=\s*(?:async\s*)?\(([^)]*)\)\s*=>/g
+  while ((match = arrowRegex.exec(code)) !== null) {
+    const funcName = match[1]
+    const params = match[2]
+    if (funcName && !tests.some(t => t.functionName === funcName)) {
+      tests.push({
+        functionName: funcName,
+        language,
+        testName: `${funcName}_should_work_correctly`,
+        testCode: getUnitTestCode(funcName, params, language),
+        type: 'unit',
+        description: `Basic unit test for ${funcName}`
+      })
+    }
+  }
+
+  const funcCount = (code.match(/(?:function|def|func)\s+\w+/g) || []).length
+  const coverage = funcCount > 0 ? Math.min(100, (tests.length / funcCount) * 100) : 0
+  const score = Math.min(100, tests.length * 15)
+
+  return {
+    summary: `Generated ${tests.length} test cases for ${funcCount} functions (est. coverage: ${coverage.toFixed(1)}%)`,
+    tests,
+    coverage: parseFloat(coverage.toFixed(1)),
+    score
+  }
+}
+
+function getUnitTestCode(funcName: string, params: string, language: string): string {
+  const firstParam = params.split(',')[0]?.trim() || '/* args */'
+  switch (language) {
+    case 'typescript':
+    case 'javascript':
+      return `test('${funcName} should work correctly', () => {\n  // Arrange\n  \n  // Act\n  const result = ${funcName}(${firstParam});\n  // Assert\n  expect(result).toBe(/* expected */);\n});`
+    case 'python':
+      return `def test_${funcName}_basic():\n    # Arrange\n    \n    # Act\n    result = ${funcName}(${firstParam})\n    # Assert\n    assert result == /* expected */`
+    case 'go':
+      return `func Test${funcName}(t *testing.T) {\n    // Arrange\n    \n    // Act\n    result := ${funcName}(${firstParam})\n    // Assert\n    if result != /* expected */ {\n        t.Errorf("got %v, want /* expected */", result)\n    }\n}`
+    default:
+      return `// Test for ${funcName}\nTestExample(${funcName})`
+  }
+}
+
+function formatTestGenReport(result: TestGenResult): string {
+  const lines: string[] = []
+  lines.push('## Test Generation Report')
+  lines.push('')
+  lines.push(`**Score: ${result.score}/100 | Est. Coverage: ${result.coverage}%**`)
+  lines.push('')
+  lines.push('### Summary')
+  lines.push(result.summary)
+  lines.push('')
+  if (result.tests.length > 0) {
+    lines.push('### Suggested Tests')
+    result.tests.forEach(test => {
+      const icon = test.type === 'unit' ? '🧪' : test.type === 'edge-case' ? '🔍' : '💥'
+      lines.push(`- ${icon} **${test.testName}** (${test.type})`)
+      lines.push(`  - Function: \`${test.functionName}\``)
+      lines.push(`  - ${test.description}`)
+      lines.push('  ```')
+      lines.push(`  ${test.testCode}`)
+      lines.push('  ```')
+    })
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// --- PRO-009: Code complexity metrics ---
+function analyzeComplexity(code: string, _language: string): ComplexityResult {
+  const codeLines = code.split('\n')
+  const linesOfCode = codeLines.length
+  
+  // Calculate cyclomatic complexity
+  const branches = (code.match(/\b(if|else|for|while|switch|case|catch|&&|\?|try)\b/g) || []).length
+  const cyclomaticComplexity = branches + 1
+  
+  // Calculate Halstead metrics (simplified)
+  const operators = (code.match(/[+\-*/%=<>!&|^~?:]+/g) || []).length
+  const operands = (code.match(/\b\w+\b/g) || []).length
+  const uniqueOperators = new Set(code.match(/[+\-*/%=<>!&|^~?:]+/g) || []).size
+  const uniqueOperands = new Set(code.match(/\b\w+\b/g) || []).size
+  
+  const vocabulary = uniqueOperators + uniqueOperands
+  const length = operators + operands
+  const halsteadVolume = length * Math.log2(vocabulary || 1)
+  const halsteadDifficulty = (uniqueOperators / 2) * (uniqueOperands / (uniqueOperands || 1))
+  const halsteadEffort = halsteadDifficulty * halsteadVolume
+  
+  // Comment ratio
+  const commentLines = codeLines.filter(l => l.trim().startsWith('//') || l.trim().startsWith('#') || l.trim().startsWith('*')).length
+  const commentRatio = linesOfCode > 0 ? (commentLines / linesOfCode) * 100 : 0
+  
+  // Nesting depth
+  let maxNesting = 0
+  let currentNesting = 0
+  codeLines.forEach(line => {
+    const opens = (line.match(/{/g) || []).length
+    const closes = (line.match(/}/g) || []).length
+    currentNesting += opens - closes
+    maxNesting = Math.max(maxNesting, currentNesting)
+  })
+  
+  // Per-function complexity
+  const functions: FunctionComplexity[] = []
+  const funcRegex = /(?:function|def|func)\s+(\w+)\s*\(([^)]*)\)/g
+  let match: RegExpExecArray | null
+  while ((match = funcRegex.exec(code)) !== null) {
+    const name = match[1]
+    const params = match[2]
+    const line = code.substring(0, match.index).split('\n').length
+    const funcBody = code.substring(match.index, match.index + 500)
+    const funcBranches = (funcBody.match(/\b(if|else|for|while|switch|case|catch|\?)\b/g) || []).length
+    const funcCyclomatic = funcBranches + 1
+    
+    let risk: 'low' | 'medium' | 'high' | 'critical' = 'low'
+    if (funcCyclomatic > 20) risk = 'critical'
+    else if (funcCyclomatic > 10) risk = 'high'
+    else if (funcCyclomatic > 5) risk = 'medium'
+    
+    functions.push({
+      name,
+      line,
+      cyclomatic: funcCyclomatic,
+      params: params.split(',').filter(p => p.trim()).length,
+      returns: (funcBody.match(/\breturn\b/g) || []).length,
+      risk
+    })
+  }
+  
+  // Risks
+  const risks: string[] = []
+  if (cyclomaticComplexity > 20) risks.push('High overall cyclomatic complexity')
+  if (maxNesting > 5) risks.push('Deep nesting detected')
+  if (halsteadEffort > 1000) risks.push('High Halstead effort - consider simplification')
+  if (commentRatio < 5) risks.push('Low comment ratio')
+  functions.filter(f => f.risk === 'critical' || f.risk === 'high').forEach(f => {
+    risks.push(`Function '${f.name}' has ${f.risk} complexity (${f.cyclomatic})`)
+  })
+  
+  // Score
+  const score = Math.max(0, 100 - (cyclomaticComplexity > 10 ? (cyclomaticComplexity - 10) * 3 : 0) - (maxNesting > 3 ? (maxNesting - 3) * 5 : 0))
+  
+  return {
+    summary: `Complexity: cyclomatic=${cyclomaticComplexity}, volume=${halsteadVolume.toFixed(0)}, effort=${halsteadEffort.toFixed(0)}, nesting=${maxNesting}`,
+    score,
+    metrics: {
+      cyclomaticComplexity,
+      halsteadVolume: Math.round(halsteadVolume),
+      halsteadDifficulty: Math.round(halsteadDifficulty * 100) / 100,
+      halsteadEffort: Math.round(halsteadEffort),
+      linesOfCode,
+      commentRatio: Math.round(commentRatio * 10) / 10,
+      nestingDepth: maxNesting
+    },
+    functions,
+    risks
+  }
+}
+
+function formatComplexityReport(result: ComplexityResult): string {
+  const lines: string[] = []
+  lines.push('## Code Complexity Report')
+  lines.push('')
+  lines.push(`**Score: ${result.score}/100**`)
+  lines.push('')
+  lines.push('### Summary')
+  lines.push(result.summary)
+  lines.push('')
+  lines.push('### Metrics')
+  lines.push(`- Cyclomatic Complexity: \`${result.metrics.cyclomaticComplexity}\``)
+  lines.push(`- Halstead Volume: \`${result.metrics.halsteadVolume}\``)
+  lines.push(`- Halstead Difficulty: \`${result.metrics.halsteadDifficulty}\``)
+  lines.push(`- Halstead Effort: \`${result.metrics.halsteadEffort}\``)
+  lines.push(`- Lines of Code: \`${result.metrics.linesOfCode}\``)
+  lines.push(`- Comment Ratio: \`${result.metrics.commentRatio}%\``)
+  lines.push(`- Max Nesting Depth: \`${result.metrics.nestingDepth}\``)
+  lines.push('')
+  if (result.functions.length > 0) {
+    lines.push('### Function Complexity')
+    result.functions.forEach(f => {
+      const icon = f.risk === 'critical' ? '🔴' : f.risk === 'high' ? '🟠' : f.risk === 'medium' ? '🟡' : '🟢'
+      lines.push(`- ${icon} **${f.name}** (line ${f.line}): cyclomatic=${f.cyclomatic}, params=${f.params}, returns=${f.returns}`)
+    })
+    lines.push('')
+  }
+  if (result.risks.length > 0) {
+    lines.push('### Risks')
+    result.risks.forEach(r => lines.push(`- ⚠️ ${r}`))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// --- PRO-013: Batch file analysis ---
+function analyzeBatch(files: { name: string; content: string }[]): BatchResult {
+  const fileResults: FileResult[] = []
+  const issueCounts: Record<string, number> = {}
+  let totalIssues = 0
+
+  files.forEach(file => {
+    const language = detectLanguage(file.content)
+    const result = analyzeCode(file.content, language)
+    
+    result.issues.forEach(issue => {
+      issueCounts[issue.message] = (issueCounts[issue.message] || 0) + 1
+      totalIssues++
+    })
+
+    fileResults.push({
+      fileName: file.name,
+      language,
+      score: result.score,
+      issues: result.issues,
+      metrics: {
+        lines: file.content.split('\n').length,
+        functions: (file.content.match(/(?:function|def|func)\s+\w+/g) || []).length,
+        classes: (file.content.match(/class\s+\w+/g) || []).length
+      }
+    })
+  })
+
+  const overallScore = fileResults.length > 0 
+    ? Math.round(fileResults.reduce((sum, f) => sum + f.score, 0) / fileResults.length) 
+    : 0
+
+  const commonIssues = Object.entries(issueCounts)
+    .sort(([, a], [, b]) => b - a)
+    .slice(0, 5)
+    .map(([message, count]) => ({ message, count }))
+
+  return {
+    summary: `Analyzed ${files.length} files: ${totalIssues} total issues, avg score ${overallScore}/100`,
+    totalFiles: files.length,
+    analyzedFiles: fileResults.length,
+    files: fileResults,
+    overallScore,
+    totalIssues,
+    commonIssues
+  }
+}
+
+function formatBatchReport(result: BatchResult): string {
+  const lines: string[] = []
+  lines.push('## Batch Analysis Report')
+  lines.push('')
+  lines.push(`**Overall Score: ${result.overallScore}/100 | Files: ${result.analyzedFiles}/${result.totalFiles}**`)
+  lines.push('')
+  lines.push('### Summary')
+  lines.push(result.summary)
+  lines.push('')
+  if (result.files.length > 0) {
+    lines.push('### File Results')
+    result.files.forEach(f => {
+      const icon = f.score >= 80 ? '🟢' : f.score >= 60 ? '🟡' : f.score >= 40 ? '🟠' : '🔴'
+      lines.push(`- ${icon} **${f.fileName}** (${f.language}): ${f.score}/100, ${f.issues.length} issues, ${f.metrics.lines} lines`)
+    })
+    lines.push('')
+  }
+  if (result.commonIssues.length > 0) {
+    lines.push('### Most Common Issues')
+    result.commonIssues.forEach(ci => lines.push(`- **${ci.count}x**: ${ci.message}`))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// --- PRO-008: Monorepo analysis ---
+function analyzeMonorepo(packages: { name: string; path: string; files: { name: string; content: string }[] }[]): MonorepoResult {
+  const packageResults: PackageResult[] = []
+  const dependencies: DepEdge[] = []
+  const cycles: string[][] = []
+
+  packages.forEach(pkg => {
+    let totalIssues = 0
+    let totalScore = 0
+    let fileCount = 0
+
+    pkg.files.forEach(file => {
+      const language = detectLanguage(file.content)
+      const result = analyzeCode(file.content, language)
+      totalIssues += result.issues.length
+      totalScore += result.score
+      fileCount++
+    })
+
+    const avgScore = fileCount > 0 ? Math.round(totalScore / fileCount) : 0
+
+    packageResults.push({
+      name: pkg.name,
+      path: pkg.path,
+      language: pkg.files.length > 0 ? detectLanguage(pkg.files[0].content) : 'unknown',
+      score: avgScore,
+      fileCount,
+      issues: totalIssues
+    })
+
+    // Detect dependencies from imports
+    pkg.files.forEach(file => {
+      const imports = file.content.match(/(?:import|from|require)\s+['"]([^'"]+)['"]/g) || []
+      imports.forEach(imp => {
+        const depName = imp.replace(/^(?:import|from|require)\s+['"]/, "").replace(/['"]$/, "")
+        if (depName.startsWith('.') || depName.startsWith('/')) return // Skip relative imports
+        const targetPkg = packages.find(p => depName.includes(p.name))
+        if (targetPkg && targetPkg.name !== pkg.name) {
+          dependencies.push({
+            from: pkg.name,
+            to: targetPkg.name,
+            type: 'dependency'
+          })
+        }
+      })
+    })
+  })
+
+  // Detect cycles (simplified)
+  const visited = new Set<string>()
+  const recursionStack = new Set<string>()
+  
+  function hasCycle(node: string, path: string[]): boolean {
+    visited.add(node)
+    recursionStack.add(node)
+    
+    const deps = dependencies.filter(d => d.from === node)
+    for (const dep of deps) {
+      if (!visited.has(dep.to)) {
+        if (hasCycle(dep.to, [...path, dep.to])) return true
+      } else if (recursionStack.has(dep.to)) {
+        cycles.push([...path, dep.to])
+        return true
+      }
+    }
+    
+    recursionStack.delete(node)
+    return false
+  }
+  
+  packageResults.forEach(pkg => {
+    if (!visited.has(pkg.name)) {
+      hasCycle(pkg.name, [pkg.name])
+    }
+  })
+
+  const overallScore = packageResults.length > 0 
+    ? Math.round(packageResults.reduce((sum, p) => sum + p.score, 0) / packageResults.length) 
+    : 0
+
+  return {
+    summary: `Monorepo: ${packages.length} packages, ${dependencies.length} dependencies, ${cycles.length} cycles`,
+    packages: packageResults,
+    dependencies,
+    cycles,
+    score: overallScore
+  }
+}
+
+function formatMonorepoReport(result: MonorepoResult): string {
+  const lines: string[] = []
+  lines.push('## Monorepo Analysis Report')
+  lines.push('')
+  lines.push(`**Overall Score: ${result.score}/100 | Packages: ${result.packages.length}**`)
+  lines.push('')
+  lines.push('### Summary')
+  lines.push(result.summary)
+  lines.push('')
+  if (result.packages.length > 0) {
+    lines.push('### Packages')
+    result.packages.forEach(p => {
+      const icon = p.score >= 80 ? '🟢' : p.score >= 60 ? '🟡' : p.score >= 40 ? '🟠' : '🔴'
+      lines.push(`- ${icon} **${p.name}** (${p.path}): ${p.score}/100, ${p.fileCount} files, ${p.issues} issues`)
+    })
+    lines.push('')
+  }
+  if (result.dependencies.length > 0) {
+    lines.push('### Dependencies')
+    result.dependencies.forEach(d => lines.push(`- ${d.from} → ${d.to} (${d.type})`))
+    lines.push('')
+  }
+  if (result.cycles.length > 0) {
+    lines.push('### ⚠️ Circular Dependencies')
+    result.cycles.forEach(c => lines.push(`- ${c.join(' → ')}`))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
 function formatStyleReport(result: StyleCheckResult): string {
   const lines: string[] = []
   lines.push('## Style Check Report')
@@ -2142,6 +2767,105 @@ export function apply(ctx: Context) {
       return formatDiffPreviewReport(result)
     }
   }))
+
+  // Tool 17: Config File Support (v0.6.0 - PRO-004)
+  ctx.tools.register(defineTool({
+    name: 'config_load',
+    description: 'Load and validate .dshcoderc configuration file. Supports severity thresholds, ignored rules, custom rules, and output format.',
+    parameters: {
+      configContent: { type: 'string', description: 'The .dshcoderc JSON content to load' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { configContent?: string }) {
+      const result = loadDshConfig(args.configContent)
+      return formatConfigLoadReport(result)
+    }
+  }))
+
+  // Tool 18: Test Generation (v0.6.0 - PRO-007)
+  ctx.tools.register(defineTool({
+    name: 'test_generate',
+    description: 'Generate test case templates based on function signatures. Supports unit tests, edge cases, and error cases.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code to generate tests for' },
+      language: { type: 'string', description: 'Programming language' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string; language?: string }) {
+      const language = args.language || detectLanguage(args.code)
+      const result = generateTestSuggestions(args.code, language)
+      return formatTestGenReport(result)
+    }
+  }))
+
+  // Tool 19: Complexity Metrics (v0.6.0 - PRO-009)
+  ctx.tools.register(defineTool({
+    name: 'complexity_metrics',
+    description: 'Calculate code complexity metrics: cyclomatic complexity, Halstead volume/difficulty/effort, nesting depth, comment ratio.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code to analyze' },
+      language: { type: 'string', description: 'Programming language' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string; language?: string }) {
+      const language = args.language || detectLanguage(args.code)
+      const result = analyzeComplexity(args.code, language)
+      return formatComplexityReport(result)
+    }
+  }))
+
+  // Tool 20: Batch Analysis (v0.6.0 - PRO-013)
+  ctx.tools.register(defineTool({
+    name: 'batch_analyze',
+    description: 'Analyze multiple files at once. Returns per-file results, overall score, and most common issues.',
+    parameters: {
+      files: { 
+        type: 'array', 
+        required: true, 
+        description: 'Array of files to analyze, each with name and content',
+        items: {
+          type: 'object',
+          properties: {
+            name: { type: 'string' },
+            content: { type: 'string' }
+          },
+          additionalProperties: true
+        }
+      }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { files: { name: string; content: string }[] }) {
+      const result = analyzeBatch(args.files)
+      return formatBatchReport(result)
+    }
+  }))
+
+  // Tool 21: Monorepo Analysis (v0.6.0 - PRO-008)
+  ctx.tools.register(defineTool({
+    name: 'monorepo_analyze',
+    description: 'Analyze monorepo structure: packages, dependencies, circular dependency detection, per-package scores.',
+    parameters: {
+      packages: {
+        type: 'array',
+        required: true,
+        description: 'Array of packages, each with name, path, and files',
+        items: {
+          type: 'object',
+          properties: {
+            name: { type: 'string' },
+            path: { type: 'string' },
+            files: { type: 'array' }
+          },
+          additionalProperties: true
+        }
+      }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { packages: { name: string; path: string; files: { name: string; content: string }[] }[] }) {
+      const result = analyzeMonorepo(args.packages)
+      return formatMonorepoReport(result)
+    }
+  }))
   
-  console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview`)
+  console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze`)
 }

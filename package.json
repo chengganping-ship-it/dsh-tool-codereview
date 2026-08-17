@@ -1,7 +1,7 @@
 {
   "name": "dsh-tool-codereview",
-  "version": "0.5.0",
-  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 16 tools, SARIF export, Code Smell Detection, TypeScript Strict Mode, Auto-Fix Diff Preview, Breaking Change Detection",
+  "version": "0.6.0",
+  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 21 tools, SARIF export, Complexity Metrics, Test Generation, Batch Analysis, Monorepo Analysis",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
