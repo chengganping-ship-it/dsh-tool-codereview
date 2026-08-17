@@ -42,7 +42,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 export const name = 'dsh-tool-codereview'
 export const inject = ['tools']
 
-const VERSION = '0.11.0'
+const VERSION = '0.12.0'
 
 // ==================== TYPES ====================
 
@@ -6868,6 +6868,854 @@ function formatPRReviewCommentReport(result: PRCommentResult): string {
   return lines.join('\n')
 }
 
+// ==================== v0.12.0 NEW TOOLS ====================
+
+// ---- Tool 58: Variable Scope Analysis ----
+
+interface ScopeResult {
+  scopes: { name: string; type: 'global' | 'function' | 'block'; line: number; variables: string[] }[]
+  hoistingIssues: { name: string; line: number; issue: string }[]
+  shadowingIssues: { name: string; line: number; outerScope: string; innerScope: string }[]
+  summary: string
+  scopeDepth: number
+}
+
+function analyzeScope(code: string): ScopeResult {
+  const result: ScopeResult = {
+    scopes: [],
+    hoistingIssues: [],
+    shadowingIssues: [],
+    summary: '',
+    scopeDepth: 0
+  }
+
+  const lines = code.split('\n')
+  const scopeStack: { name: string; type: string; vars: string[]; line: number }[] = []
+  let maxDepth = 0
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim()
+
+    // Detect function scope
+    const funcMatch = line.match(/(?:function\s+([a-zA-Z_$][a-zA-Z0-9_$]*)|(?:const|let|var)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*=\s*(?:async\s*)?\([^)]*\)\s*=>)/)
+    if (funcMatch) {
+      const name = funcMatch[1] || funcMatch[2] || `anonymous_${i}`
+      scopeStack.push({ name, type: 'function', vars: [], line: i + 1 })
+      maxDepth = Math.max(maxDepth, scopeStack.length)
+    }
+
+    // Detect block scope (if/for/while/switch/catch)
+    if (/(?:if|for|while|switch|catch|try)\s*[\({]/.test(line) || line === '{') {
+      if (!funcMatch) {
+        scopeStack.push({ name: `block_${i}`, type: 'block', vars: [], line: i + 1 })
+        maxDepth = Math.max(maxDepth, scopeStack.length)
+      }
+    }
+
+    // Detect variable declarations
+    const varMatch = line.match(/(?:const|let|var)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)/g)
+    if (varMatch && scopeStack.length > 0) {
+      varMatch.forEach(v => {
+        const name = v.replace(/^(?:const|let|var)\s+/, '')
+        scopeStack[scopeStack.length - 1].vars.push(name)
+
+        // Check shadowing
+        for (let s = scopeStack.length - 2; s >= 0; s--) {
+          if (scopeStack[s].vars.includes(name)) {
+            result.shadowingIssues.push({
+              name,
+              line: i + 1,
+              outerScope: scopeStack[s].name,
+              innerScope: scopeStack[scopeStack.length - 1].name
+            })
+          }
+        }
+      })
+    }
+
+    // Detect hoisting issues: using var before declaration
+    if (/\bvar\s+/.test(line)) {
+      const varName = line.match(/var\s+([a-zA-Z_$][a-zA-Z0-9_$]*)/)?.[1]
+      if (varName) {
+        // var is hoisted but not the assignment
+        result.hoistingIssues.push({
+          name: varName,
+          line: i + 1,
+          issue: `var '${varName}' is hoisted — consider using let/const for block scoping`
+        })
+      }
+    }
+
+    // Pop scope on closing brace
+    if (line === '}' || line.startsWith('}')) {
+      if (scopeStack.length > 0) {
+        const closed = scopeStack.pop()!
+        result.scopes.push({ name: closed.name, type: closed.type as 'global' | 'function' | 'block', line: closed.line, variables: closed.vars })
+      }
+    }
+  }
+
+  result.scopeDepth = maxDepth
+  result.summary = `${result.scopes.length} scopes, ${result.shadowingIssues.length} shadowing, ${result.hoistingIssues.length} hoisting issues. Max depth: ${maxDepth}.`
+
+  return result
+}
+
+function formatScopeReport(result: ScopeResult): string {
+  const lines: string[] = []
+  lines.push('## Variable Scope Analysis')
+  lines.push('')
+  lines.push(`**Summary:** ${result.summary}`)
+  lines.push(`**Max scope depth:** ${result.scopeDepth}`)
+  lines.push('')
+
+  if (result.shadowingIssues.length > 0) {
+    lines.push('### Variable Shadowing')
+    result.shadowingIssues.forEach(s => {
+      lines.push(`- Line ${s.line}: '${s.name}' in '${s.innerScope}' shadows '${s.outerScope}'`)
+    })
+    lines.push('')
+  }
+
+  if (result.hoistingIssues.length > 0) {
+    lines.push('### Hoisting Issues')
+    result.hoistingIssues.forEach(h => {
+      lines.push(`- Line ${h.line}: ${h.issue}`)
+    })
+    lines.push('')
+  }
+
+  if (result.scopeDepth > 4) {
+    lines.push('### Recommendations')
+    lines.push('- Deep nesting detected — consider extracting functions to reduce scope depth')
+    lines.push('- Use block scoping (let/const) instead of var to avoid hoisting surprises')
+  }
+
+  return lines.join('\n')
+}
+
+// ---- Tool 59: Immutability Checker ----
+
+interface ImmutableResult {
+  mutablePatterns: { line: number; pattern: string; suggestion: string }[]
+  immutablePatterns: { line: number; pattern: string }[]
+  summary: string
+  immutableScore: number
+}
+
+function checkImmutability(code: string): ImmutableResult {
+  const result: ImmutableResult = {
+    mutablePatterns: [],
+    immutablePatterns: [],
+    summary: '',
+    immutableScore: 100
+  }
+
+  const lines = code.split('\n')
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim()
+
+    // Detect mutable patterns
+    if (/\.(?:push|pop|shift|unshift|splice|sort|reverse|fill|copyWithin)\s*\(/.test(line)) {
+      result.mutablePatterns.push({
+        line: i + 1,
+        pattern: line.trim().substring(0, 60),
+        suggestion: 'Use immutable alternatives: [...arr, item] instead of push, filter instead of splice'
+      })
+    }
+
+    if (/\.(?:set|add|delete|clear)\s*\(/.test(line) && /(?:Map|Set)\b/.test(code)) {
+      result.mutablePatterns.push({
+        line: i + 1,
+        pattern: line.trim().substring(0, 60),
+        suggestion: 'Consider immutable Map/Set operations or use a library like Immutable.js'
+      })
+    }
+
+    // Object/Array mutation via index assignment
+    if (/\[\s*\w+\s*\]\s*=/.test(line) && !line.includes('const') && !line.includes('let')) {
+      result.mutablePatterns.push({
+        line: i + 1,
+        pattern: line.trim().substring(0, 60),
+        suggestion: 'Use spread or Object.assign for immutable updates'
+      })
+    }
+
+    // Detect immutable patterns
+    if (/\.\.\.(?:Array|Object|Map|Set)\s*\(/.test(line) || /Object\.freeze\s*\(/.test(line)) {
+      result.immutablePatterns.push({ line: i + 1, pattern: line.trim().substring(0, 60) })
+    }
+
+    if (/const\s+\w+\s*=\s*(?:Object\.freeze|Object\.assign)\s*\(/.test(line)) {
+      result.immutablePatterns.push({ line: i + 1, pattern: line.trim().substring(0, 60) })
+    }
+  }
+
+  const penalty = Math.min(100, result.mutablePatterns.length * 8)
+  result.immutableScore = 100 - penalty
+
+  result.summary = `${result.mutablePatterns.length} mutable pattern(s), ${result.immutablePatterns.length} immutable pattern(s). Score: ${result.immutableScore}/100.`
+
+  return result
+}
+
+function formatImmutableReport(result: ImmutableResult): string {
+  const lines: string[] = []
+  lines.push('## Immutability Check')
+  lines.push('')
+  lines.push(`**Summary:** ${result.summary}`)
+  lines.push(`**Immutability Score:** ${result.immutableScore}/100`)
+  lines.push('')
+
+  if (result.mutablePatterns.length > 0) {
+    lines.push('### Mutable Patterns')
+    result.mutablePatterns.forEach(m => {
+      lines.push(`- Line ${m.line}: \`${m.pattern}\``)
+      lines.push(`  - ${m.suggestion}`)
+    })
+    lines.push('')
+  }
+
+  if (result.immutablePatterns.length > 0) {
+    lines.push('### Immutable Patterns (Good)')
+    result.immutablePatterns.forEach(p => {
+      lines.push(`- Line ${p.line}: \`${p.pattern}\``)
+    })
+    lines.push('')
+  }
+
+  return lines.join('\n')
+}
+
+// ---- Tool 60: Null Safety Analysis ----
+
+interface NullSafetyResult {
+  nullableAccess: { line: number; expression: string; risk: string }[]
+  safePatterns: { line: number; pattern: string }[]
+  nullChecks: { line: number; variable: string }[]
+  summary: string
+  safetyScore: number
+}
+
+function analyzeNullSafety(code: string): NullSafetyResult {
+  const result: NullSafetyResult = {
+    nullableAccess: [],
+    safePatterns: [],
+    nullChecks: [],
+    summary: '',
+    safetyScore: 100
+  }
+
+  const lines = code.split('\n')
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim()
+
+    // Detect optional chaining (safe)
+    if (/\?\.(?:[\w]|\()/.test(line)) {
+      result.safePatterns.push({ line: i + 1, pattern: line.trim().substring(0, 60) })
+    }
+
+    // Detect nullish coalescing (safe)
+    if (/\?\?/.test(line)) {
+      result.safePatterns.push({ line: i + 1, pattern: line.trim().substring(0, 60) })
+    }
+
+    // Detect null/undefined checks
+    if (/(?:===|!==|!=|==)\s*(?:null|undefined)/.test(line) || /(?:if|while)\s*\(\s*\w+\s*\)/.test(line)) {
+      const varMatch = line.match(/(?:if|while)\s*\(\s*(\w+)/)
+      result.nullChecks.push({ line: i + 1, variable: varMatch ? varMatch[1] : 'unknown' })
+    }
+
+    // Detect risky property access (no optional chaining)
+    const propAccess = line.match(/(\w+(?:\.\w+)+)/g)
+    if (propAccess) {
+      propAccess.forEach(expr => {
+        const parts = expr.split('.')
+        if (parts.length >= 3 && !line.includes('?.') && !line.includes('if') && !line.includes('&&')) {
+          result.nullableAccess.push({
+            line: i + 1,
+            expression: expr,
+            risk: `Deep property access without null check — use optional chaining: ${expr.replace(/\./g, '?.')}`
+          })
+        }
+      })
+    }
+
+    // Detect function calls that might return null
+    if (/(?:find|findFirst|get|lookup|fetch|request)\s*\(/.test(line) && !line.includes('?.') && !line.includes('if')) {
+      result.nullableAccess.push({
+        line: i + 1,
+        expression: line.trim().substring(0, 60),
+        risk: 'Function may return null/undefined — add null check or optional chaining'
+      })
+    }
+  }
+
+  const penalty = Math.min(100, result.nullableAccess.length * 10)
+  result.safetyScore = 100 - penalty
+
+  result.summary = `${result.nullableAccess.length} risky access(es), ${result.safePatterns.length} safe pattern(s), ${result.nullChecks.length} null check(s). Score: ${result.safetyScore}/100.`
+
+  return result
+}
+
+function formatNullSafetyReport(result: NullSafetyResult): string {
+  const lines: string[] = []
+  lines.push('## Null Safety Analysis')
+  lines.push('')
+  lines.push(`**Summary:** ${result.summary}`)
+  lines.push(`**Safety Score:** ${result.safetyScore}/100`)
+  lines.push('')
+
+  if (result.nullableAccess.length > 0) {
+    lines.push('### Risky Null Access')
+    result.nullableAccess.forEach(n => {
+      lines.push(`- Line ${n.line}: \`${n.expression}\``)
+      lines.push(`  - ${n.risk}`)
+    })
+    lines.push('')
+  }
+
+  if (result.safePatterns.length > 0) {
+    lines.push('### Safe Patterns')
+    result.safePatterns.forEach(s => {
+      lines.push(`- Line ${s.line}: \`${s.pattern}\``)
+    })
+    lines.push('')
+  }
+
+  lines.push('### Recommendations')
+  lines.push('- Use optional chaining (?.) for potentially null/undefined values')
+  lines.push('- Use nullish coalescing (??) for default values')
+  lines.push('- Add explicit null checks before deep property access')
+
+  return lines.join('\n')
+}
+
+// ---- Tool 61: Concurrency Issue Detection ----
+
+interface ConcurrencyResult {
+  issues: { line: number; issue: string; severity: 'warning' | 'error'; suggestion: string }[]
+  safePatterns: { line: number; pattern: string }[]
+  summary: string
+  concurrencyScore: number
+}
+
+function detectConcurrencyIssues(code: string): ConcurrencyResult {
+  const result: ConcurrencyResult = {
+    issues: [],
+    safePatterns: [],
+    summary: '',
+    concurrencyScore: 100
+  }
+
+  const lines = code.split('\n')
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim()
+
+    // Detect shared mutable state
+    if (/(?:let|var)\s+\w+\s*=\s*(?:\[|\{)/.test(line) && /(?:async|Promise|setTimeout|setInterval|fetch)/.test(code)) {
+      result.issues.push({
+        line: i + 1,
+        issue: 'Mutable variable declared in async context — potential race condition',
+        severity: 'warning',
+        suggestion: 'Use const or immutable data structures in concurrent code'
+      })
+    }
+
+    // Detect missing await
+    if (/(?:const|let|var)\s+\w+\s*=\s*(?!await)(?:fetch|Promise|\w+\.(?:find|save|update|delete|get|query))/.test(line)) {
+      result.issues.push({
+        line: i + 1,
+        issue: 'Async call without await — result is a Promise, not the resolved value',
+        severity: 'error',
+        suggestion: 'Add await or handle the Promise with .then()'
+      })
+    }
+
+    // Detect promise without catch
+    if (/\.then\s*\(/.test(line) && !/\.catch\s*\(/.test(code.substring(code.indexOf(line), code.indexOf(line) + 500))) {
+      result.issues.push({
+        line: i + 1,
+        issue: 'Promise chain without .catch() — unhandled rejection possible',
+        severity: 'warning',
+        suggestion: 'Add .catch() or wrap in try/catch'
+      })
+    }
+
+    // Detect safe patterns
+    if (/await\s+/.test(line)) {
+      result.safePatterns.push({ line: i + 1, pattern: line.trim().substring(0, 60) })
+    }
+    if (/Promise\.(?:all|allSettled|race)\s*\(/.test(line)) {
+      result.safePatterns.push({ line: i + 1, pattern: line.trim().substring(0, 60) })
+    }
+    if (/try\s*\{/.test(line)) {
+      result.safePatterns.push({ line: i + 1, pattern: line.trim().substring(0, 60) })
+    }
+  }
+
+  const penalty = Math.min(100, result.issues.filter(i => i.severity === 'error').length * 20 + result.issues.filter(i => i.severity === 'warning').length * 10)
+  result.concurrencyScore = 100 - penalty
+
+  result.summary = `${result.issues.length} concurrency issue(s), ${result.safePatterns.length} safe pattern(s). Score: ${result.concurrencyScore}/100.`
+
+  return result
+}
+
+function formatConcurrencyReport(result: ConcurrencyResult): string {
+  const lines: string[] = []
+  lines.push('## Concurrency Issue Detection')
+  lines.push('')
+  lines.push(`**Summary:** ${result.summary}`)
+  lines.push(`**Concurrency Score:** ${result.concurrencyScore}/100`)
+  lines.push('')
+
+  if (result.issues.length > 0) {
+    lines.push('### Issues')
+    result.issues.forEach(issue => {
+      const icon = issue.severity === 'error' ? '🔴' : '🟡'
+      lines.push(`${icon} Line ${issue.line} [${issue.severity.toUpperCase()}] ${issue.issue}`)
+      lines.push(`  - ${issue.suggestion}`)
+    })
+    lines.push('')
+  }
+
+  if (result.safePatterns.length > 0) {
+    lines.push('### Safe Patterns')
+    result.safePatterns.forEach(s => {
+      lines.push(`- Line ${s.line}: \`${s.pattern}\``)
+    })
+    lines.push('')
+  }
+
+  return lines.join('\n')
+}
+
+// ---- Tool 62: Documentation-Code Sync Check ----
+
+interface DocSyncResult {
+  outOfSync: { function: string; line: number; issue: string }[]
+  missingDocs: { function: string; line: number }[]
+  summary: string
+  syncScore: number
+}
+
+function checkDocSync(code: string): DocSyncResult {
+  const result: DocSyncResult = {
+    outOfSync: [],
+    missingDocs: [],
+    summary: '',
+    syncScore: 100
+  }
+
+  // Find documented functions
+  const jsdocPattern = /\/\*\*\s*\n(?:\s*\*\s*.*\n)*\s*\*\/\s*(?:export\s+)?(?:async\s+)?function\s+([a-zA-Z_$][a-zA-Z0-9_$]*)/g
+  let m: RegExpExecArray | null
+
+  while ((m = jsdocPattern.exec(code)) !== null) {
+    const funcName = m[1]
+    const docBlock = m[0].substring(0, m[0].indexOf('*/') + 2)
+    const lineNum = code.substring(0, m.index).split('\n').length
+
+    // Extract documented params
+    const docParams = new Set<string>()
+    const paramPattern = /@param\s+\{[^}]+\}\s+(\w+)/g
+    let pm: RegExpExecArray | null
+    while ((pm = paramPattern.exec(docBlock)) !== null) {
+      docParams.add(pm[1])
+    }
+
+    // Find actual function params
+    const funcStart = m.index + m[0].length
+    const funcSig = code.substring(funcStart, funcStart + 200)
+    const actualParams = new Set<string>()
+    const actualParamPattern = /\(([^)]*)\)/.exec(funcSig)
+    if (actualParamPattern) {
+      actualParamPattern[1].split(',').forEach(p => {
+        const name = p.trim().replace(/[=:].*/, '').trim()
+        if (name) actualParams.add(name)
+      })
+    }
+
+    // Check for mismatches
+    const missingInDoc = [...actualParams].filter(p => !docParams.has(p))
+    const extraInDoc = [...docParams].filter(p => !actualParams.has(p))
+
+    if (missingInDoc.length > 0 || extraInDoc.length > 0) {
+      result.outOfSync.push({
+        function: funcName,
+        line: lineNum,
+        issue: `Missing params: ${missingInDoc.join(', ') || 'none'}. Extra params: ${extraInDoc.join(', ') || 'none'}`
+      })
+    }
+  }
+
+  // Find undocumented public functions
+  const publicFuncPattern = /export\s+(?:async\s+)?function\s+([a-zA-Z_$][a-zA-Z0-9_$]*)/g
+  while ((m = publicFuncPattern.exec(code)) !== null) {
+    const funcName = m[1]
+    const lineNum = code.substring(0, m.index).split('\n').length
+    const beforeFunc = code.substring(Math.max(0, m.index - 200), m.index)
+
+    if (!/\/\*\*[\s\S]*\*\//.test(beforeFunc)) {
+      result.missingDocs.push({ function: funcName, line: lineNum })
+    }
+  }
+
+  const penalty = Math.min(100, result.outOfSync.length * 10 + result.missingDocs.length * 5)
+  result.syncScore = 100 - penalty
+
+  result.summary = `${result.outOfSync.length} out-of-sync doc(s), ${result.missingDocs.length} undocumented function(s). Score: ${result.syncScore}/100.`
+
+  return result
+}
+
+function formatDocSyncReport(result: DocSyncResult): string {
+  const lines: string[] = []
+  lines.push('## Documentation-Code Sync')
+  lines.push('')
+  lines.push(`**Summary:** ${result.summary}`)
+  lines.push(`**Sync Score:** ${result.syncScore}/100`)
+  lines.push('')
+
+  if (result.outOfSync.length > 0) {
+    lines.push('### Out of Sync')
+    result.outOfSync.forEach(o => {
+      lines.push(`- \`${o.function}\` (line ${o.line}): ${o.issue}`)
+    })
+    lines.push('')
+  }
+
+  if (result.missingDocs.length > 0) {
+    lines.push('### Missing Documentation')
+    result.missingDocs.forEach(m => {
+      lines.push(`- \`${m.function}\` (line ${m.line})`)
+    })
+    lines.push('')
+  }
+
+  return lines.join('\n')
+}
+
+// ---- Tool 63: Test Quality Analysis ----
+
+interface TestQualityResult {
+  testFunctions: { name: string; line: number; assertions: number; quality: 'good' | 'fair' | 'poor' }[]
+  issues: { line: number; issue: string; suggestion: string }[]
+  summary: string
+  qualityScore: number
+}
+
+function analyzeTestQuality(code: string): TestQualityResult {
+  const result: TestQualityResult = {
+    testFunctions: [],
+    issues: [],
+    summary: '',
+    qualityScore: 100
+  }
+
+  const lines = code.split('\n')
+
+  // Find test/it blocks
+  const testPattern = /(?:test|it|describe)\s*\(\s*['"`]([^'"`]+)['"`]/g
+  let m: RegExpExecArray | null
+
+  while ((m = testPattern.exec(code)) !== null) {
+    const testName = m[1]
+    const lineNum = code.substring(0, m.index).split('\n').length
+    const testStart = m.index + m[0].length
+
+    // Find the test body
+    let braceCount = 0
+    let testEnd = testStart
+    let started = false
+    for (let i = testStart; i < code.length; i++) {
+      if (code[i] === '{') { braceCount++; started = true }
+      if (code[i] === '}') { braceCount-- }
+      if (started && braceCount <= 0) { testEnd = i; break }
+    }
+
+    const testBody = code.substring(testStart, testEnd)
+
+    // Count assertions
+    const assertionCount = (testBody.match(/(?:expect|assert|should|toEqual|toBe|toThrow|toBeTruthy|toContain)/g) || []).length
+
+    let quality: 'good' | 'fair' | 'poor' = 'good'
+    if (assertionCount === 0) quality = 'poor'
+    else if (assertionCount === 1) quality = 'fair'
+
+    result.testFunctions.push({ name: testName, line: lineNum, assertions: assertionCount, quality })
+
+    if (assertionCount === 0) {
+      result.issues.push({
+        line: lineNum,
+        issue: `Test '${testName}' has no assertions`,
+        suggestion: 'Add at least one expect/assert statement'
+      })
+    }
+  }
+
+  // Detect common anti-patterns
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim()
+    if (/console\.(?:log|debug)\s*\(/.test(line) && /(?:test|it|describe)/.test(code)) {
+      result.issues.push({
+        line: i + 1,
+        issue: 'console.log in test — use assertions instead',
+        suggestion: 'Replace console.log with expect() assertions'
+      })
+    }
+    if (/try\s*\{[\s\S]*catch[\s\S]*\/\/\s*(?:ignore|skip|pass)/.test(line + (lines[i+1] || ''))) {
+      result.issues.push({
+        line: i + 1,
+        issue: 'Empty catch block in test — silent failure risk',
+        suggestion: 'Use expect().toThrow() or fail explicitly'
+      })
+    }
+  }
+
+  const penalty = Math.min(100, result.issues.length * 10)
+  result.qualityScore = 100 - penalty
+
+  result.summary = `${result.testFunctions.length} test(s), ${result.issues.length} issue(s). Quality: ${result.qualityScore}/100.`
+
+  return result
+}
+
+function formatTestQualityReport(result: TestQualityResult): string {
+  const lines: string[] = []
+  lines.push('## Test Quality Analysis')
+  lines.push('')
+  lines.push(`**Summary:** ${result.summary}`)
+  lines.push(`**Quality Score:** ${result.qualityScore}/100`)
+  lines.push('')
+
+  if (result.testFunctions.length > 0) {
+    lines.push('### Tests Found')
+    result.testFunctions.forEach(t => {
+      const icon = t.quality === 'good' ? '✅' : t.quality === 'fair' ? '🟡' : '🔴'
+      lines.push(`${icon} \`${t.name}\` (line ${t.line}): ${t.assertions} assertion(s)`)
+    })
+    lines.push('')
+  }
+
+  if (result.issues.length > 0) {
+    lines.push('### Issues')
+    result.issues.forEach(issue => {
+      lines.push(`- Line ${issue.line}: ${issue.issue}`)
+      lines.push(`  - ${issue.suggestion}`)
+    })
+    lines.push('')
+  }
+
+  return lines.join('\n')
+}
+
+// ---- Tool 64: Change Impact Estimator ----
+
+interface ImpactResult {
+  changeType: 'breaking' | 'feature' | 'fix' | 'refactor'
+  affectedAreas: { area: string; impact: 'high' | 'medium' | 'low'; reason: string }[]
+  riskLevel: 'high' | 'medium' | 'low'
+  testingRecommendations: string[]
+  summary: string
+}
+
+function estimateChangeImpact(code: string): ImpactResult {
+  const result: ImpactResult = {
+    changeType: 'refactor',
+    affectedAreas: [],
+    riskLevel: 'low',
+    testingRecommendations: [],
+    summary: ''
+  }
+
+  // Determine change type
+  if (/(?:BREAKING|REMOVED|DELETED|DEPRECATED)/.test(code)) {
+    result.changeType = 'breaking'
+    result.riskLevel = 'high'
+    result.affectedAreas.push({ area: 'Public API', impact: 'high', reason: 'Breaking changes affect consumers' })
+  } else if (/(?:new|add|create|implement|feature)/i.test(code)) {
+    result.changeType = 'feature'
+    result.riskLevel = 'medium'
+    result.affectedAreas.push({ area: 'New functionality', impact: 'medium', reason: 'New code paths need testing' })
+  } else if (/(?:fix|bug|patch|hotfix|resolve)/i.test(code)) {
+    result.changeType = 'fix'
+    result.riskLevel = 'low'
+    result.affectedAreas.push({ area: 'Bug fix', impact: 'low', reason: 'Targeted change with limited scope' })
+  }
+
+  // Analyze affected areas
+  if (/export\s+(?:function|class|interface|type)/.test(code)) {
+    result.affectedAreas.push({ area: 'Exports', impact: 'high', reason: 'Public interface modified' })
+  }
+  if (/(?:import|require)\s*\(/.test(code)) {
+    result.affectedAreas.push({ area: 'Dependencies', impact: 'medium', reason: 'Import changes may affect module resolution' })
+  }
+  if (/(?:config|settings|env|environment)/i.test(code)) {
+    result.affectedAreas.push({ area: 'Configuration', impact: 'high', reason: 'Config changes can affect runtime behavior' })
+  }
+  if (/(?:database|db|schema|migration|model)/i.test(code)) {
+    result.affectedAreas.push({ area: 'Data layer', impact: 'high', reason: 'Data model changes require migration' })
+  }
+  if (/(?:auth|login|session|token|password|permission)/i.test(code)) {
+    result.affectedAreas.push({ area: 'Security', impact: 'high', reason: 'Security-related changes need careful review' })
+  }
+
+  // Testing recommendations
+  if (result.riskLevel === 'high') {
+    result.testingRecommendations.push('Run full regression test suite')
+    result.testingRecommendations.push('Add tests for new behavior')
+    result.testingRecommendations.push('Verify backward compatibility')
+  } else if (result.riskLevel === 'medium') {
+    result.testingRecommendations.push('Run tests for affected modules')
+    result.testingRecommendations.push('Add tests for new code paths')
+  } else {
+    result.testingRecommendations.push('Run targeted unit tests')
+  }
+
+  result.summary = `Change type: ${result.changeType}, Risk: ${result.riskLevel}, ${result.affectedAreas.length} affected area(s).`
+
+  return result
+}
+
+function formatImpactReport(result: ImpactResult): string {
+  const lines: string[] = []
+  lines.push('## Change Impact Estimation')
+  lines.push('')
+  lines.push(`**Summary:** ${result.summary}`)
+  lines.push('')
+
+  if (result.affectedAreas.length > 0) {
+    lines.push('### Affected Areas')
+    result.affectedAreas.forEach(a => {
+      const icon = a.impact === 'high' ? '🔴' : a.impact === 'medium' ? '🟡' : '🟢'
+      lines.push(`${icon} **${a.area}** (${a.impact}): ${a.reason}`)
+    })
+    lines.push('')
+  }
+
+  lines.push('### Testing Recommendations')
+  result.testingRecommendations.forEach(r => lines.push(`- ${r}`))
+  lines.push('')
+
+  return lines.join('\n')
+}
+
+// ---- Tool 65: Performance Regression Patterns ----
+
+interface PerfRegressionResult {
+  patterns: { line: number; pattern: string; issue: string; suggestion: string }[]
+  complexityIssues: { line: number; complexity: string; suggestion: string }[]
+  summary: string
+  perfScore: number
+}
+
+function detectPerfRegression(code: string): PerfRegressionResult {
+  const result: PerfRegressionResult = {
+    patterns: [],
+    complexityIssues: [],
+    summary: '',
+    perfScore: 100
+  }
+
+  const lines = code.split('\n')
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim()
+
+    // N+1 query pattern
+    if (/(?:for|forEach|map)\s*\([^)]*\)\s*\{[\s\S]*?(?:find|query|select|where|execute)/.test(line + '\n' + (lines[i+1] || ''))) {
+      result.patterns.push({
+        line: i + 1,
+        pattern: 'Loop with query inside',
+        issue: 'N+1 query pattern — database call inside loop',
+        suggestion: 'Batch queries or use JOINs to reduce database round-trips'
+      })
+    }
+
+    // Inefficient string concatenation in loop
+    if (/(?:for|while)\s*[\s\S]*?\w+\s*\+=/.test(line)) {
+      result.patterns.push({
+        line: i + 1,
+        pattern: 'String concatenation in loop',
+        issue: 'Repeated string concatenation is O(n²)',
+        suggestion: 'Use array join() or template literals'
+      })
+    }
+
+    // Nested loops (O(n²) or worse)
+    if (/for\s*\([^)]*\)\s*\{[\s\S]*?for\s*\(/.test(line + '\n' + (lines[i+1] || '') + '\n' + (lines[i+2] || ''))) {
+      result.complexityIssues.push({
+        line: i + 1,
+        complexity: 'O(n²)',
+        suggestion: 'Consider using a Map/Set for O(1) lookup instead of nested iteration'
+      })
+    }
+
+    // Unnecessary re-renders / computations
+    if (/(?:useMemo|useCallback|React\.memo)\s*\(/.test(line)) {
+      // Good pattern — memoization used
+    } else if (/(?:map|filter|reduce)\s*\(/.test(line) && /(?:render|return\s*\(|jsx)/.test(code)) {
+      result.patterns.push({
+        line: i + 1,
+        pattern: 'Array operation in render',
+        issue: 'Expensive computation on every render',
+        suggestion: 'Memoize with useMemo or compute outside render'
+      })
+    }
+
+    // Large array operations without pagination
+    if (/\.(?:map|filter|sort)\s*\(/.test(line) && !/slice|limit|take/.test(code.substring(code.indexOf(line) - 100, code.indexOf(line)))) {
+      result.patterns.push({
+        line: i + 1,
+        pattern: 'Full array operation',
+        issue: 'Processing entire array — may be slow for large datasets',
+        suggestion: 'Consider pagination, lazy loading, or streaming'
+      })
+    }
+  }
+
+  const penalty = Math.min(100, result.patterns.length * 8 + result.complexityIssues.length * 12)
+  result.perfScore = 100 - penalty
+
+  result.summary = `${result.patterns.length} performance pattern(s), ${result.complexityIssues.length} complexity issue(s). Score: ${result.perfScore}/100.`
+
+  return result
+}
+
+function formatPerfRegressionReport(result: PerfRegressionResult): string {
+  const lines: string[] = []
+  lines.push('## Performance Regression Patterns')
+  lines.push('')
+  lines.push(`**Summary:** ${result.summary}`)
+  lines.push(`**Performance Score:** ${result.perfScore}/100`)
+  lines.push('')
+
+  if (result.patterns.length > 0) {
+    lines.push('### Performance Patterns')
+    result.patterns.forEach(p => {
+      lines.push(`- Line ${p.line}: ${p.issue}`)
+      lines.push(`  - ${p.suggestion}`)
+    })
+    lines.push('')
+  }
+
+  if (result.complexityIssues.length > 0) {
+    lines.push('### Complexity Issues')
+    result.complexityIssues.forEach(c => {
+      lines.push(`- Line ${c.line}: ${c.complexity} complexity — ${c.suggestion}`)
+    })
+    lines.push('')
+  }
+
+  return lines.join('\n')
+}
+
 // ==================== PLUGIN REGISTRATION ====================
 
 export function apply(ctx: Context) {
@@ -7782,5 +8630,117 @@ export function apply(ctx: Context) {
     }
   }))
 
-  console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment`)
+  // Tool 58: Variable Scope Analysis (v0.12.0)
+  ctx.tools.register(defineTool({
+    name: 'scope_analysis',
+    description: 'Analyze variable scope: hoisting, shadowing, scope depth, var vs let/const issues.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeScope(args.code)
+      return formatScopeReport(result)
+    }
+  }))
+
+  // Tool 59: Immutability Checker (v0.12.0)
+  ctx.tools.register(defineTool({
+    name: 'immutable_check',
+    description: 'Check immutability: mutable patterns (push, splice) vs immutable alternatives (spread, freeze).',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code to check' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = checkImmutability(args.code)
+      return formatImmutableReport(result)
+    }
+  }))
+
+  // Tool 60: Null Safety Analysis (v0.12.0)
+  ctx.tools.register(defineTool({
+    name: 'null_safety',
+    description: 'Analyze null safety: risky property access, missing optional chaining, null checks.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeNullSafety(args.code)
+      return formatNullSafetyReport(result)
+    }
+  }))
+
+  // Tool 61: Concurrency Issue Detection (v0.12.0)
+  ctx.tools.register(defineTool({
+    name: 'concurrency_check',
+    description: 'Detect concurrency issues: missing await, shared state, unhandled promise rejections.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = detectConcurrencyIssues(args.code)
+      return formatConcurrencyReport(result)
+    }
+  }))
+
+  // Tool 62: Documentation-Code Sync (v0.12.0)
+  ctx.tools.register(defineTool({
+    name: 'doc_sync',
+    description: 'Check documentation-code sync: JSDoc params vs actual params, undocumented functions.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code to check' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = checkDocSync(args.code)
+      return formatDocSyncReport(result)
+    }
+  }))
+
+  // Tool 63: Test Quality Analysis (v0.12.0)
+  ctx.tools.register(defineTool({
+    name: 'test_quality',
+    description: 'Analyze test quality: assertion count, anti-patterns, test naming, coverage indicators.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The test code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeTestQuality(args.code)
+      return formatTestQualityReport(result)
+    }
+  }))
+
+  // Tool 64: Change Impact Estimation (v0.12.0)
+  ctx.tools.register(defineTool({
+    name: 'change_impact',
+    description: 'Estimate change impact: breaking/feature/fix classification, affected areas, testing recommendations.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = estimateChangeImpact(args.code)
+      return formatImpactReport(result)
+    }
+  }))
+
+  // Tool 65: Performance Regression Patterns (v0.12.0)
+  ctx.tools.register(defineTool({
+    name: 'performance_regression',
+    description: 'Detect performance regression patterns: N+1 queries, nested loops, unnecessary re-renders.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = detectPerfRegression(args.code)
+      return formatPerfRegressionReport(result)
+    }
+  }))
+
+  console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression`)
 }
