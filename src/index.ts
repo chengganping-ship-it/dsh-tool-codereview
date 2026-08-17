@@ -72,7 +72,7 @@
  * - API gateway (BFF pattern, service routing)
  * 
  * @module dsh-tool-codereview
- * @version 0.24.0
+ * @version 0.25.0
  * @license MIT
  */
 
@@ -82,7 +82,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 export const name = 'dsh-tool-codereview'
 export const inject = ['tools']
 
-const VERSION = '0.24.0'
+const VERSION = '0.25.0'
 
 // ==================== TYPES ====================
 
@@ -15927,6 +15927,526 @@ function formatDiPatternReport(r: DiPatternResult): string {
   return lines.join('\n')
 }
 
+// ==================== V0.25.0: API VERSIONING SEMANTICS ====================
+
+interface ApiVersioningResult {
+  totalIssues: number
+  severity: Severity
+  versioning: { line: number; issue: string; suggestion: string }[]
+  changelog: { line: number; issue: string; suggestion: string }[]
+  versioningScore: number
+  summary: string
+}
+
+function analyzeApiVersioning(code: string): ApiVersioningResult {
+  const lines = code.split('\n')
+  const versioning: ApiVersioningResult['versioning'] = []
+  const changelog: ApiVersioningResult['changelog'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/version|Version|v\d+|semver/i) && line.match(/bump|increment|major|minor|patch/) && !line.match(/breaking|change|compatible|deprecat/)) {
+      versioning.push({ line: i + 1, issue: 'Version bump without breaking change analysis', suggestion: 'Document breaking changes and compatibility impact in version bump' })
+    }
+
+    if (line.match(/deprecated|DEPRECATED|@deprecated/i) && !line.match(/since|remove|alternative|migration|replacement/)) {
+      changelog.push({ line: i + 1, issue: 'Deprecation without migration guidance', suggestion: 'Add @deprecated with since version, replacement, and migration path' })
+    }
+
+    if (line.match(/CHANGELOG|changelog|HISTORY|release.?note/i) && !line.match(/added|changed|fixed|removed|breaking|deprecated/)) {
+      changelog.push({ line: i + 1, issue: 'Changelog without conventional commit categories', suggestion: 'Use Conventional Commits categories: Added, Changed, Fixed, Removed, Breaking' })
+    }
+
+    if (line.match(/API.*version|api.*v[123]|endpoint.*version|route.*version/i) && !line.match(/header|accept|content.?type|path|query/)) {
+      versioning.push({ line: i + 1, issue: 'API versioning without strategy specification', suggestion: 'Define versioning strategy: URL path (/v1/), header (Accept), or query param' })
+    }
+  })
+
+  const totalIssues = versioning.length + changelog.length
+  const versioningScore = Math.max(0, 100 - versioning.length * 12 - changelog.length * 10)
+  const severity: Severity = versioning.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, versioning, changelog, versioningScore,
+    summary: versioning.length + ' versioning issue(s), ' + changelog.length + ' changelog gap(s)' }
+}
+
+function formatApiVersioningReport(r: ApiVersioningResult): string {
+  const lines: string[] = []
+  lines.push('# API Versioning Semantics Analysis')
+  lines.push('')
+  lines.push('**Versioning Score:** ' + r.versioningScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.versioning.length > 0) {
+    lines.push('## Versioning (' + r.versioning.length + ')')
+    r.versioning.forEach(v => lines.push('- Line ' + v.line + ': ' + v.suggestion))
+    lines.push('')
+  }
+  if (r.changelog.length > 0) {
+    lines.push('## Changelog (' + r.changelog.length + ')')
+    r.changelog.forEach(c => lines.push('- Line ' + c.line + ': ' + c.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.25.0: SERIALIZATION PERFORMANCE ====================
+
+interface SerializationPerfResult {
+  totalIssues: number
+  severity: Severity
+  circular: { line: number; issue: string; suggestion: string }[]
+  deepClone: { line: number; issue: string; suggestion: string }[]
+  serializationScore: number
+  summary: string
+}
+
+function analyzeSerializationPerf(code: string): SerializationPerfResult {
+  const lines = code.split('\n')
+  const circular: SerializationPerfResult['circular'] = []
+  const deepClone: SerializationPerfResult['deepClone'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/JSON\.stringify|JSON\.parse|serialize|deserialize/i) && line.match(/circular|cycle|recursive|parent.*child|self.*reference/) && !line.match(/replacer|catch|try|handle|weakSet|visited/)) {
+      circular.push({ line: i + 1, issue: 'JSON.stringify with circular reference — will throw', suggestion: 'Use replacer with WeakSet visited tracker or library (flatted) for circular structures' })
+    }
+
+    if (line.match(/structuredClone|_.cloneDeep|lodash.*clone|deep.?copy/i) && !line.match(/lazy|shallow|partial|selective|field.*list/)) {
+      deepClone.push({ line: i + 1, issue: 'Deep clone without performance consideration', suggestion: 'Use shallow clone + selective deep copy for hot paths; consider immutable.js structural sharing' })
+    }
+
+    if (line.match(/JSON\.parse|JSON\.stringify/) && line.match(/large|bulk|batch|many|loop/) && !line.match(/stream|chunk|partial|async|worker/)) {
+      deepClone.push({ line: i + 1, issue: 'Bulk JSON serialization without streaming', suggestion: 'Use streaming JSON (JSONStream) for large payloads to reduce memory pressure' })
+    }
+
+    if (line.match(/protobuf|msgpack|avro|cbor|bson/i) && !line.match(/schema|encode|decode|serialize/)) {
+      circular.push({ line: i + 1, issue: 'Binary serialization format without schema definition', suggestion: 'Define .proto/.avsc schema for type safety and backward compatibility' })
+    }
+  })
+
+  const totalIssues = circular.length + deepClone.length
+  const serializationScore = Math.max(0, 100 - circular.length * 12 - deepClone.length * 10)
+  const severity: Severity = circular.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, circular, deepClone, serializationScore,
+    summary: circular.length + ' circular ref risk(s), ' + deepClone.length + ' deep clone issue(s)' }
+}
+
+function formatSerializationPerfReport(r: SerializationPerfResult): string {
+  const lines: string[] = []
+  lines.push('# Serialization Performance Analysis')
+  lines.push('')
+  lines.push('**Serialization Score:** ' + r.serializationScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.circular.length > 0) {
+    lines.push('## Circular Reference (' + r.circular.length + ')')
+    r.circular.forEach(c => lines.push('- Line ' + c.line + ': ' + c.suggestion))
+    lines.push('')
+  }
+  if (r.deepClone.length > 0) {
+    lines.push('## Deep Clone (' + r.deepClone.length + ')')
+    r.deepClone.forEach(d => lines.push('- Line ' + d.line + ': ' + d.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.25.0: MEMORY ALLOCATION PATTERNS ====================
+
+interface MemoryAllocResult {
+  totalIssues: number
+  severity: Severity
+  pooling: { line: number; issue: string; suggestion: string }[]
+  prealloc: { line: number; issue: string; suggestion: string }[]
+  memoryScore: number
+  summary: string
+}
+
+function analyzeMemoryAllocation(code: string): MemoryAllocResult {
+  const lines = code.split('\n')
+  const pooling: MemoryAllocResult['pooling'] = []
+  const prealloc: MemoryAllocResult['prealloc'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/new\s+(?:Array|Object|Map|Set)\(\)/) && line.match(/loop|for|while|forEach|map|reduce/) && !line.match(/pool|reuse|recycle|preallocate/)) {
+      pooling.push({ line: i + 1, issue: 'Object allocation inside loop — GC pressure', suggestion: 'Hoist allocation outside loop or use object pooling for hot paths' })
+    }
+
+    if (line.match(/Array\.from|\.split\(|Array\(.*\)/) && !line.match(/length|size|capacity|Buffer\.alloc|preallocate/)) {
+      prealloc.push({ line: i + 1, issue: 'Array creation without size hint', suggestion: 'Preallocate array with known size to avoid dynamic resizing overhead' })
+    }
+
+    if (line.match(/\+\=|concat|template.*string|\$\{.*\}/) && line.match(/loop|for|while/) && !line.match(/join|StringBuilder|array\.join|Buffer/)) {
+      prealloc.push({ line: i + 1, issue: 'String concatenation in loop — O(n²) performance', suggestion: 'Use array.join() or StringBuilder pattern for loop string building' })
+    }
+
+    if (line.match(/Buffer\.alloc|Buffer\.from|ArrayBuffer|TypedArray|DataView/i) && !line.match(/pool|free|release|dispose|transfer/)) {
+      pooling.push({ line: i + 1, issue: 'Buffer allocation without pooling — frequent alloc/free cycle', suggestion: 'Use Buffer pooling for high-frequency binary operations' })
+    }
+  })
+
+  const totalIssues = pooling.length + prealloc.length
+  const memoryScore = Math.max(0, 100 - pooling.length * 12 - prealloc.length * 10)
+  const severity: Severity = pooling.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, pooling, prealloc, memoryScore,
+    summary: pooling.length + ' allocation issue(s), ' + prealloc.length + ' preallocation gap(s)' }
+}
+
+function formatMemoryAllocReport(r: MemoryAllocResult): string {
+  const lines: string[] = []
+  lines.push('# Memory Allocation Patterns Analysis')
+  lines.push('')
+  lines.push('**Memory Score:** ' + r.memoryScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.pooling.length > 0) {
+    lines.push('## Object Pooling (' + r.pooling.length + ')')
+    r.pooling.forEach(p => lines.push('- Line ' + p.line + ': ' + p.suggestion))
+    lines.push('')
+  }
+  if (r.prealloc.length > 0) {
+    lines.push('## Preallocation (' + r.prealloc.length + ')')
+    r.prealloc.forEach(p => lines.push('- Line ' + p.line + ': ' + p.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.25.0: BUILD PIPELINE OPTIMIZATION ====================
+
+interface BuildPipelineResult {
+  totalIssues: number
+  severity: Severity
+  incremental: { line: number; issue: string; suggestion: string }[]
+  cache: { line: number; issue: string; suggestion: string }[]
+  buildScore: number
+  summary: string
+}
+
+function analyzeBuildPipeline(code: string): BuildPipelineResult {
+  const lines = code.split('\n')
+  const incremental: BuildPipelineResult['incremental'] = []
+  const cache: BuildPipelineResult['cache'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/webpack|rollup|esbuild|vite|turbopack|swc|babel/i) && !line.match(/cache|incremental|parallel|thread|worker|lazy/)) {
+      incremental.push({ line: i + 1, issue: 'Build tool without cache or incremental config', suggestion: 'Enable incremental builds and persistent cache for faster CI/CD' })
+    }
+
+    if (line.match(/\.gitignore|node_modules|dist|build\/|output/i) && !line.match(/cache|artifact|turbo|nx|remote.?cache/)) {
+      cache.push({ line: i + 1, issue: 'Build output without remote cache configuration', suggestion: 'Configure remote build cache (Nx Cloud, Turborepo Remote Cache) for CI speed' })
+    }
+
+    if (line.match(/npm\s+run|yarn\s+run|pnpm\s+run|build.*script/) && !line.match(/parallel|concurrent|--parallel|affected|since/)) {
+      incremental.push({ line: i + 1, issue: 'Build script without parallelization or filtering', suggestion: 'Use --affected or --since to build only changed packages' })
+    }
+
+    if (line.match(/test.*build|build.*test|lint.*build|build.*lint/i) && !line.match(/stage|phase|parallel|pipeline|ci.?cd/)) {
+      cache.push({ line: i + 1, issue: 'Sequential build:test:lint without pipeline orchestration', suggestion: 'Run independent stages (lint+test) in parallel within CI pipeline' })
+    }
+  })
+
+  const totalIssues = incremental.length + cache.length
+  const buildScore = Math.max(0, 100 - incremental.length * 12 - cache.length * 10)
+  const severity: Severity = incremental.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, incremental, cache, buildScore,
+    summary: incremental.length + ' incremental build gap(s), ' + cache.length + ' cache gap(s)' }
+}
+
+function formatBuildPipelineReport(r: BuildPipelineResult): string {
+  const lines: string[] = []
+  lines.push('# Build Pipeline Optimization Analysis')
+  lines.push('')
+  lines.push('**Build Score:** ' + r.buildScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.incremental.length > 0) {
+    lines.push('## Incremental Build (' + r.incremental.length + ')')
+    r.incremental.forEach(inc => lines.push('- Line ' + inc.line + ': ' + inc.suggestion))
+    lines.push('')
+  }
+  if (r.cache.length > 0) {
+    lines.push('## Build Cache (' + r.cache.length + ')')
+    r.cache.forEach(c => lines.push('- Line ' + c.line + ': ' + c.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.25.0: ERROR MESSAGE QUALITY ====================
+
+interface ErrorMessageResult {
+  totalIssues: number
+  severity: Severity
+  actionability: { line: number; issue: string; suggestion: string }[]
+  context: { line: number; issue: string; suggestion: string }[]
+  errorScore: number
+  summary: string
+}
+
+function analyzeErrorMessages(code: string): ErrorMessageResult {
+  const lines = code.split('\n')
+  const actionability: ErrorMessageResult['actionability'] = []
+  const context: ErrorMessageResult['context'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/throw|new Error|raise|reject|Exception/i) && line.match(/generic|failed|error|unknown|invalid/i) && !line.match(/code|detail|context|expected|actual|how.?to.?fix/)) {
+      actionability.push({ line: i + 1, issue: 'Generic error message without actionable guidance', suggestion: 'Include expected value, actual value, and how to fix in error message' })
+    }
+
+    if (line.match(/catch|error.*handler|onError|errorHandler/i) && !line.match(/log|report|track|notify|metric/)) {
+      context.push({ line: i + 1, issue: 'Catch block without error reporting/observability', suggestion: 'Log or report caught errors for debugging and monitoring' })
+    }
+
+    if (line.match(/Error\(.*\)|throw.*new/i) && !line.match(/E_[A-Z]+|ERR_|error.*code|Status|statusCode/)) {
+      actionability.push({ line: i + 1, issue: 'Error without error code for programmatic handling', suggestion: 'Use error codes (e.g., E_AUTH_FAILED, E_VALIDATION) for client-side error handling' })
+    }
+
+    if (line.match(/console\.error|console\.warn.*error/i) && !line.match(/structured|json|JSON|log|logger/)) {
+      context.push({ line: i + 1, issue: 'Console.error without structured logging', suggestion: 'Use structured logging (JSON format) for log aggregation and search' })
+    }
+  })
+
+  const totalIssues = actionability.length + context.length
+  const errorScore = Math.max(0, 100 - actionability.length * 12 - context.length * 10)
+  const severity: Severity = actionability.length > 1 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, actionability, context, errorScore,
+    summary: actionability.length + ' actionable issue(s), ' + context.length + ' context gap(s)' }
+}
+
+function formatErrorMessageReport(r: ErrorMessageResult): string {
+  const lines: string[] = []
+  lines.push('# Error Message Quality Analysis')
+  lines.push('')
+  lines.push('**Error Score:** ' + r.errorScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.actionability.length > 0) {
+    lines.push('## Actionability (' + r.actionability.length + ')')
+    r.actionability.forEach(a => lines.push('- Line ' + a.line + ': ' + a.suggestion))
+    lines.push('')
+  }
+  if (r.context.length > 0) {
+    lines.push('## Context & Observability (' + r.context.length + ')')
+    r.context.forEach(c => lines.push('- Line ' + c.line + ': ' + c.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.25.0: LOGGING DISCIPLINE ====================
+
+interface LoggingDisciplineResult {
+  totalIssues: number
+  severity: Severity
+  structure: { line: number; issue: string; suggestion: string }[]
+  level: { line: number; issue: string; suggestion: string }[]
+  loggingScore: number
+  summary: string
+}
+
+function analyzeLoggingDiscipline(code: string): LoggingDisciplineResult {
+  const lines = code.split('\n')
+  const structure: LoggingDisciplineResult['structure'] = []
+  const level: LoggingDisciplineResult['level'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/log|console|logger|winston|pino|bunyan/i) && line.match(/info|debug|log\(/i) && !line.match(/json|structured|format|timestamp|level|context/)) {
+      structure.push({ line: i + 1, issue: 'Unstructured logging — hard to search/filter', suggestion: 'Use structured JSON logging with timestamp, level, and context fields' })
+    }
+
+    if (line.match(/console\.log|console\.info|print\(|debug\(/i) && line.match(/password|token|secret|credit.?card|ssn|email/) && !line.match(/mask|redact|hash|\*\*\*|REMOVED|HASHED/)) {
+      level.push({ line: i + 1, issue: 'Sensitive data in log statement — security risk', suggestion: 'Redact/mask sensitive data (passwords, tokens, PII) before logging' })
+    }
+
+    if (line.match(/log.*level|logLevel|LOG_LEVEL/i) && !line.match(/debug|info|warn|error|fatal|silent/)) {
+      level.push({ line: i + 1, issue: 'Log level configuration without clear severity mapping', suggestion: 'Define 5-level mapping: DEBUG < INFO < WARN < ERROR < FATAL' })
+    }
+
+    if (line.match(/catch.*log|error.*\)|exception.*log/i) && !line.match(/stack|trace|error.*object|err\.stack|log\.error/)) {
+      structure.push({ line: i + 1, issue: 'Logging error without stack trace', suggestion: 'Pass error object (with stack) to logger, not just error.message' })
+    }
+  })
+
+  const totalIssues = structure.length + level.length
+  const loggingScore = Math.max(0, 100 - structure.length * 10 - level.length * 12)
+  const severity: Severity = level.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, structure, level, loggingScore,
+    summary: structure.length + ' structure issue(s), ' + level.length + ' level/security issue(s)' }
+}
+
+function formatLoggingDisciplineReport(r: LoggingDisciplineResult): string {
+  const lines: string[] = []
+  lines.push('# Logging Discipline Analysis')
+  lines.push('')
+  lines.push('**Logging Score:** ' + r.loggingScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.structure.length > 0) {
+    lines.push('## Structure (' + r.structure.length + ')')
+    r.structure.forEach(s => lines.push('- Line ' + s.line + ': ' + s.suggestion))
+    lines.push('')
+  }
+  if (r.level.length > 0) {
+    lines.push('## Level & Security (' + r.level.length + ')')
+    r.level.forEach(l => lines.push('- Line ' + l.line + ': ' + l.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.25.0: CONFIGURATION AS CODE ====================
+
+interface ConfigAsCodeResult {
+  totalIssues: number
+  severity: Severity
+  validation: { line: number; issue: string; suggestion: string }[]
+  secrets: { line: number; issue: string; suggestion: string }[]
+  configScore: number
+  summary: string
+}
+
+function analyzeConfigAsCode(code: string): ConfigAsCodeResult {
+  const lines = code.split('\n')
+  const validation: ConfigAsCodeResult['validation'] = []
+  const secrets: ConfigAsCodeResult['secrets'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/process\.env|env\[|getenv|ENV\[|dotenv/i) && !line.match(/zod|joi|validate|schema|required|check|assert/)) {
+      validation.push({ line: i + 1, issue: 'Environment variable access without schema validation', suggestion: 'Use Zod/Joi to validate env vars at startup for fail-fast behavior' })
+    }
+
+    if (line.match(/password|secret|api.?key|token|credential|private.?key/) && line.match(/config|settings|env/i) && !line.match(/vault|aws.*secret|hashi|encrypted|KMS|sealed/)) {
+      secrets.push({ line: i + 1, issue: 'Secret in config without vault/secret manager', suggestion: 'Use secret manager (AWS Secrets Manager, HashiCorp Vault) for sensitive config' })
+    }
+
+    if (line.match(/config\.json|config\.yaml|config\.toml|\.env|settings\.json/i) && !line.match(/schema|validate|type|interface|zod|joi/)) {
+      validation.push({ line: i + 1, issue: 'Config file without schema definition', suggestion: 'Define config schema (Zod/interface) for type-safe configuration' })
+    }
+
+    if (line.match(/feature.*toggle|feature.*flag|featureFlag/i) && line.match(/config|remoteConfig/i) && !line.match(/cache|ttl|refresh|polling|webhook/)) {
+      secrets.push({ line: i + 1, issue: 'Remote config without refresh strategy', suggestion: 'Add TTL-based polling or webhook for dynamic config updates' })
+    }
+  })
+
+  const totalIssues = validation.length + secrets.length
+  const configScore = Math.max(0, 100 - validation.length * 10 - secrets.length * 12)
+  const severity: Severity = secrets.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, validation, secrets, configScore,
+    summary: validation.length + ' validation gap(s), ' + secrets.length + ' secret management gap(s)' }
+}
+
+function formatConfigAsCodeReport(r: ConfigAsCodeResult): string {
+  const lines: string[] = []
+  lines.push('# Configuration as Code Analysis')
+  lines.push('')
+  lines.push('**Config Score:** ' + r.configScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.validation.length > 0) {
+    lines.push('## Validation (' + r.validation.length + ')')
+    r.validation.forEach(v => lines.push('- Line ' + v.line + ': ' + v.suggestion))
+    lines.push('')
+  }
+  if (r.secrets.length > 0) {
+    lines.push('## Secret Management (' + r.secrets.length + ')')
+    r.secrets.forEach(s => lines.push('- Line ' + s.line + ': ' + s.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.25.0: COMPONENT INTERFACE DESIGN ====================
+
+interface ComponentInterfaceResult {
+  totalIssues: number
+  severity: Severity
+  props: { line: number; issue: string; suggestion: string }[]
+  composition: { line: number; issue: string; suggestion: string }[]
+  interfaceScore: number
+  summary: string
+}
+
+function analyzeComponentInterface(code: string): ComponentInterfaceResult {
+  const lines = code.split('\n')
+  const props: ComponentInterfaceResult['props'] = []
+  const composition: ComponentInterfaceResult['composition'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/props|Properties<|Props<|interface.*Props/) && !line.match(/optional|required|default|type|generic|extends/)) {
+      props.push({ line: i + 1, issue: 'Component props without type annotations or defaults', suggestion: 'Define props with TypeScript types, mark optional(?) and defaults' })
+    }
+
+    if (line.match(/children|slot|Slot|Outlet|render.?prop|renderProp/i) && !line.match(/ReactNode|ReactElement|JSX|function|component|element/)) {
+      composition.push({ line: i + 1, issue: 'Slot/children prop without type annotation', suggestion: 'Type children as ReactNode or render prop as (data: T) => ReactNode' })
+    }
+
+    if (line.match(/onChange|onSubmit|onClick|handle.*?Change|handle.*?Submit/) && !line.match(/event\.|e\.|event:|SyntheticEvent|ChangeEvent|MouseEvent/)) {
+      props.push({ line: i + 1, issue: 'Callback prop without event type annotation', suggestion: 'Type callbacks: (e: ChangeEvent<HTMLInputElement>) => void' })
+    }
+
+    if (line.match(/HOC|withAuth|withRouter|withLayout|higher.?order/i) && !line.match(/compose|pipe|generic|injected/)) {
+      composition.push({ line: i + 1, issue: 'HOC pattern — consider hooks or composition', suggestion: 'Prefer custom hooks or component composition over HOC for reusability' })
+    }
+  })
+
+  const totalIssues = props.length + composition.length
+  const interfaceScore = Math.max(0, 100 - props.length * 12 - composition.length * 10)
+  const severity: Severity = props.length > 1 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, props, composition, interfaceScore,
+    summary: props.length + ' prop type gap(s), ' + composition.length + ' composition issue(s)' }
+}
+
+function formatComponentInterfaceReport(r: ComponentInterfaceResult): string {
+  const lines: string[] = []
+  lines.push('# Component Interface Design Analysis')
+  lines.push('')
+  lines.push('**Interface Score:** ' + r.interfaceScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.props.length > 0) {
+    lines.push('## Props (' + r.props.length + ')')
+    r.props.forEach(p => lines.push('- Line ' + p.line + ': ' + p.suggestion))
+    lines.push('')
+  }
+  if (r.composition.length > 0) {
+    lines.push('## Composition (' + r.composition.length + ')')
+    r.composition.forEach(c => lines.push('- Line ' + c.line + ': ' + c.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
 // ==================== PLUGIN REGISTRATION ====================
 
 export function apply(ctx: Context) {
@@ -18303,5 +18823,119 @@ ctx.tools.register(defineTool({
   }
 }))
 
-console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design, container_security, ml_pipeline, api_deprecation, design_system, pwa_compliance, type_system, green_computing, realtime_collab, a11y_deep, i18n_deep, css_architecture, state_machine, web_components, resilience, module_federation, review_automation, observability, migration_safety, edge_computing, api_versioning, wasm_advanced, feature_toggles, email_deliverability, seo_analysis, monorepo_boundaries, ddd_patterns, mf_runtime, realtime_protocols, data_pipeline, gateway_deep, test_rigor, quality_gate, graphql_schema, event_sourcing_integrity, rate_limiting, migration_safety, auth_hardening, distributed_tracing, infrastructure_as_code, review_automation, contract_testing, sec_headers_deep, privacy_compliance, concurrency_patterns, cloud_native, error_recovery, system_design, dependency_injection`)
+// ==================== V0.25.0 REGISTRATIONS (Tools 162-169) ====================
+
+// Tool 162: API Versioning Semantics
+ctx.tools.register(defineTool({
+  name: 'api_versioning',
+  description: 'Analyze API versioning: semver compliance, breaking change detection, changelog discipline.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The versioning/changelog code to analyze' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeApiVersioning(args.code)
+    return formatApiVersioningReport(result)
+  }
+}))
+
+// Tool 163: Serialization Performance
+ctx.tools.register(defineTool({
+  name: 'serialization_perf',
+  description: 'Analyze serialization: circular reference risk, deep clone cost, bulk JSON streaming, binary schema.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The serialization code to analyze' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeSerializationPerf(args.code)
+    return formatSerializationPerfReport(result)
+  }
+}))
+
+// Tool 164: Memory Allocation Patterns
+ctx.tools.register(defineTool({
+  name: 'memory_allocation',
+  description: 'Analyze memory allocation: object pooling, array preallocation, string concat in loop, Buffer pooling.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The memory allocation code to analyze' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeMemoryAllocation(args.code)
+    return formatMemoryAllocReport(result)
+  }
+}))
+
+// Tool 165: Build Pipeline Optimization
+ctx.tools.register(defineTool({
+  name: 'build_pipeline',
+  description: 'Analyze build pipeline: incremental builds, remote cache, parallel stages, affected-only builds.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The build config/code to analyze' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeBuildPipeline(args.code)
+    return formatBuildPipelineReport(result)
+  }
+}))
+
+// Tool 166: Error Message Quality
+ctx.tools.register(defineTool({
+  name: 'error_messages',
+  description: 'Analyze error message quality: actionable guidance, error codes, catch block observability.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The error handling code to analyze' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeErrorMessages(args.code)
+    return formatErrorMessageReport(result)
+  }
+}))
+
+// Tool 167: Logging Discipline
+ctx.tools.register(defineTool({
+  name: 'logging_discipline',
+  description: 'Analyze logging discipline: structured JSON, PII redaction, log level mapping, stack trace inclusion.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The logging code to analyze' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeLoggingDiscipline(args.code)
+    return formatLoggingDisciplineReport(result)
+  }
+}))
+
+// Tool 168: Configuration as Code
+ctx.tools.register(defineTool({
+  name: 'config_as_code',
+  description: 'Analyze config as code: env var schema validation, secret manager usage, config refresh strategy.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The configuration code to analyze' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeConfigAsCode(args.code)
+    return formatConfigAsCodeReport(result)
+  }
+}))
+
+// Tool 169: Component Interface Design
+ctx.tools.register(defineTool({
+  name: 'component_interface',
+  description: 'Analyze component interface: prop types, slot/children typing, callback event types, HOC vs hooks.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The component code to analyze' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeComponentInterface(args.code)
+    return formatComponentInterfaceReport(result)
+  }
+}))
+
+console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design, container_security, ml_pipeline, api_deprecation, design_system, pwa_compliance, type_system, green_computing, realtime_collab, a11y_deep, i18n_deep, css_architecture, state_machine, web_components, resilience, module_federation, review_automation, observability, migration_safety, edge_computing, api_versioning, wasm_advanced, feature_toggles, email_deliverability, seo_analysis, monorepo_boundaries, ddd_patterns, mf_runtime, realtime_protocols, data_pipeline, gateway_deep, test_rigor, quality_gate, graphql_schema, event_sourcing_integrity, rate_limiting, migration_safety, auth_hardening, distributed_tracing, infrastructure_as_code, review_automation, contract_testing, sec_headers_deep, privacy_compliance, concurrency_patterns, cloud_native, error_recovery, system_design, dependency_injection, api_versioning, serialization_perf, memory_allocation, build_pipeline, error_messages, logging_discipline, config_as_code, component_interface`)
 }
