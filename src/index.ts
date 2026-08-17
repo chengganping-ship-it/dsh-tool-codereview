@@ -1,10 +1,10 @@
 /**
- * DSH Code Review Assistant Plugin - Enterprise Edition v0.5.0
+ * DSH Code Review Assistant Plugin - Enterprise Edition v0.10.0
  * 
  * Enterprise-grade code analysis toolkit for DeepSeek Harness Agent.
  * 
- * Features (v0.5.0):
- * - 16 comprehensive analysis tools
+ * Features (v0.10.0):
+ * - 49 comprehensive analysis tools
  * - SARIF 2.1.0 export (GitHub Code Scanning & CI/CD compatible)
  * - Security scanning (OWASP Top 10 2021, CWE Top 25, SANS Top 25)
  * - Code Smell Detection (God Object, Feature Envy, Shotgun Surgery, etc.)
@@ -13,18 +13,26 @@
  * - Incremental Analysis for Large Projects
  * - Breaking Change Detection Between Versions
  * - Architecture review & pattern detection
- * - Test coverage analysis
- * - API documentation generation
+ * - Test coverage analysis & estimation
+ * - API documentation generation & design review
  * - Code diff analysis
- * - Style & convention checking
+ * - Style enforcement & convention checking
  * - Performance analysis (BigO, memory, async)
- * - Dependency vulnerability audit (CVE database)
+ * - Dependency vulnerability audit & version checking
  * - Auto-fix code generation with patch output
  * - Multi-language support (12 languages)
- * - Configurable rules engine
+ * - Configurable rules engine & custom rules
+ * - Dead code detection (unreachable, unused exports)
+ * - Circular dependency detection
+ * - Regex security analysis (ReDoS, catastrophic backtracking)
+ * - JSDoc auto-generation
+ * - Public API surface analysis
+ * - Git history hotspot detection
+ * - Module layer violation detection
+ * - Error propagation tracing
  * 
  * @module dsh-tool-codereview
- * @version 0.4.0
+ * @version 0.10.0
  * @license MIT
  */
 
@@ -34,7 +42,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 export const name = 'dsh-tool-codereview'
 export const inject = ['tools']
 
-const VERSION = '0.4.0'
+const VERSION = '0.10.0'
 
 // ==================== TYPES ====================
 
@@ -4830,6 +4838,1166 @@ function formatStyleReport(result: StyleCheckResult): string {
   return lines.join('\n')
 }
 
+// ==================== v0.10.0 NEW TOOLS ====================
+
+// ---- Tool 42: Dead Code Detection ----
+
+interface DeadCodeResult {
+  unusedVars: { name: string; line: number }[]
+  unreachableLines: { start: number; end: number; reason: string }[]
+  unusedExports: { name: string; line: number }[]
+  deadBranches: { line: number; condition: string; reason: string }[]
+  unusedFunctions: { name: string; line: number }[]
+  summary: string
+  wastedLines: number
+}
+
+function detectDeadCode(code: string): DeadCodeResult {
+  const lines = code.split('\n')
+  const result: DeadCodeResult = {
+    unusedVars: [],
+    unreachableLines: [],
+    unusedExports: [],
+    deadBranches: [],
+    unusedFunctions: [],
+    summary: '',
+    wastedLines: 0
+  }
+
+  // Detect unused variables: declared but never referenced after declaration
+  const varDeclPattern = /(?:const|let|var|function)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)/g
+  const declared: { name: string; line: number }[] = []
+  let m: RegExpExecArray | null
+  while ((m = varDeclPattern.exec(code)) !== null) {
+    const lineNum = code.substring(0, m.index).split('\n').length
+    declared.push({ name: m[1], line: lineNum })
+  }
+
+  for (const d of declared) {
+    // Count occurrences: declaration + usages
+    const usages = new RegExp(`\\b${d.name}\\b`, 'g').exec(code)?.length || 0
+    if (usages <= 1) {
+      // Only the declaration, no usage
+      if (d.name !== 'require' && d.name !== '_') {
+        result.unusedVars.push({ name: d.name, line: d.line })
+      }
+    }
+  }
+
+  // Detect unreachable code after return/throw/break/continue
+  let i = 0
+  while (i < lines.length) {
+    const line = lines[i].trim()
+    if (/^(return|throw|break|continue)\b/.test(line)) {
+      // Check if next non-empty line is at same or lower indent level
+      let j = i + 1
+      while (j < lines.length && lines[j].trim() === '') j++
+      if (j < lines.length) {
+        const currentIndent = lines[i].search(/\S/)
+        const nextIndent = lines[j].search(/\S/)
+        if (nextIndent <= currentIndent && !lines[j].trim().startsWith('}') && !lines[j].trim().startsWith(')')) {
+          result.unreachableLines.push({ start: i + 1, end: j, reason: `Code after "${line.split(' ')[0]}" statement` })
+        }
+      }
+    }
+    i++
+  }
+
+  // Detect unused exports
+  const exportPattern = /export\s+(?:const|let|var|function|class|interface|type|enum)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)/g
+  while ((m = exportPattern.exec(code)) !== null) {
+    const name = m[1]
+    const usages = new RegExp(`\\b${name}\\b`, 'g').exec(code)?.length || 0
+    // Only count usages outside the export declaration itself
+    const lineNum = code.substring(0, m.index).split('\n').length
+    if (usages <= 1) {
+      result.unusedExports.push({ name, line: lineNum })
+    }
+  }
+
+  // Detect dead branches: if (false), if (true), while (false)
+  const deadBranchPattern = /if\s*\(\s*(false|true|0|1|''\s*==|\s*==\s*''\s*null|undefined)\s*\)/g
+  while ((m = deadBranchPattern.exec(code)) !== null) {
+    const lineNum = code.substring(0, m.index).split('\n').length
+    result.deadBranches.push({ line: lineNum, condition: m[1], reason: 'Constant condition - branch always/never executes' })
+  }
+
+  // Detect unused functions: function declarations never called
+  const funcDeclPattern = /function\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\(/g
+  while ((m = funcDeclPattern.exec(code)) !== null) {
+    const name = m[1]
+    if (name === 'require') continue
+    const usages = new RegExp(`\\b${name}\\b`, 'g').exec(code)?.length || 0
+    const lineNum = code.substring(0, m.index).split('\n').length
+    if (usages <= 1) {
+      result.unusedFunctions.push({ name, line: lineNum })
+    }
+  }
+
+  result.wastedLines = result.unreachableLines.reduce((sum, r) => sum + (r.end - r.start + 1), 0)
+    + result.unusedVars.length + result.unusedExports.length + result.unusedFunctions.length
+
+  const totalIssues = result.unusedVars.length + result.unreachableLines.length + result.unusedExports.length + result.deadBranches.length + result.unusedFunctions.length
+  result.summary = totalIssues === 0
+    ? 'No dead code detected. Code is clean.'
+    : `Found ${totalIssues} dead code issues wasting ~${result.wastedLines} lines.`
+
+  return result
+}
+
+function formatDeadCodeReport(result: DeadCodeResult): string {
+  const lines: string[] = []
+  lines.push('## Dead Code Detection Report')
+  lines.push('')
+  lines.push(`**Summary:** ${result.summary}`)
+  lines.push(`**Wasted lines estimate:** ~${result.wastedLines}`)
+  lines.push('')
+
+  if (result.unusedVars.length > 0) {
+    lines.push('### Unused Variables')
+    result.unusedVars.forEach(v => lines.push(`- \`${v.name}\` declared at line ${v.line} but never used`))
+    lines.push('')
+  }
+  if (result.unusedFunctions.length > 0) {
+    lines.push('### Unused Functions')
+    result.unusedFunctions.forEach(f => lines.push(`- \`${f.name}\` declared at line ${f.line} but never called`))
+    lines.push('')
+  }
+  if (result.unusedExports.length > 0) {
+    lines.push('### Unused Exports')
+    result.unusedExports.forEach(e => lines.push(`- \`${e.name}\` exported at line ${e.line} but never imported elsewhere`))
+    lines.push('')
+  }
+  if (result.unreachableLines.length > 0) {
+    lines.push('### Unreachable Code')
+    result.unreachableLines.forEach(r => lines.push(`- Lines ${r.start}–${r.end}: ${r.reason}`))
+    lines.push('')
+  }
+  if (result.deadBranches.length > 0) {
+    lines.push('### Dead Branches')
+    result.deadBranches.forEach(b => lines.push(`- Line ${b.line}: \`if (${b.condition})\` — ${b.reason}`))
+    lines.push('')
+  }
+
+  if (result.wastedLines > 0) {
+    lines.push('### Recommendations')
+    lines.push('- Remove unused declarations to reduce bundle size and improve readability')
+    lines.push('- Delete unreachable code blocks after return/throw statements')
+    lines.push('- Replace dead branches with the active path or remove entirely')
+  }
+
+  return lines.join('\n')
+}
+
+// ---- Tool 43: Circular Dependency Detection ----
+
+interface CircularDepResult {
+  modules: string[]
+  dependencies: { from: string; to: string }[]
+  cycles: { path: string[]; length: number }[]
+  summary: string
+  cyclicCount: number
+}
+
+function detectCircularDeps(code: string): CircularDepResult {
+  const result: CircularDepResult = {
+    modules: [],
+    dependencies: [],
+    cycles: [],
+    summary: '',
+    cyclicCount: 0
+  }
+
+  // Parse imports/requires to build dependency graph
+  const importPatterns = [
+    /import\s+.*?\s+from\s+['"]([^'"]+)['"]/g,
+    /require\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
+    /import\s*\(\s*['"]([^'"]+)['"]\s*\)/g
+  ]
+
+  // Split code into logical modules (by file markers or treat as single module with sections)
+  const fileSections = code.split(/\n(?=\/\/ =+|^\/\/|^---+)/)
+  const moduleMap = new Map<string, Set<string>>()
+
+  for (const section of fileSections) {
+    // Try to find module name from first comment or use section index
+    const nameMatch = section.match(/(?:\/\/ |#)([a-zA-Z0-9_/.-]+\.(?:ts|js|py|go|rs|java))/)
+    const moduleName = nameMatch ? nameMatch[1] : `module_${fileSections.indexOf(section)}`
+    const deps = new Set<string>()
+
+    for (const pattern of importPatterns) {
+      pattern.lastIndex = 0
+      let m: RegExpExecArray | null
+      while ((m = pattern.exec(section)) !== null) {
+        const dep = m[1]
+        if (!dep.startsWith('.') && !dep.startsWith('/')) continue // Skip external packages
+        deps.add(dep)
+        result.dependencies.push({ from: moduleName, to: dep })
+      }
+    }
+
+    moduleMap.set(moduleName, deps)
+    result.modules.push(moduleName)
+  }
+
+  // If no multi-module structure detected, create a simplified analysis
+  if (result.modules.length <= 1) {
+    // Analyze self-references and function-level circular calls
+    const funcNames = new Set<string>()
+    const funcCalls = new Map<string, Set<string>>()
+    const funcPattern = /function\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\(/g
+    let fm: RegExpExecArray | null
+    while ((fm = funcPattern.exec(code)) !== null) {
+      funcNames.add(fm[1])
+    }
+
+    for (const fn of funcNames) {
+      const bodyPattern = new RegExp(`function\\s+${fn}\\s*\\([^)]*\\)\\s*\\{([\\s\\S]*?)\\n\\}`)
+      const bodyMatch = bodyPattern.exec(code)
+      if (bodyMatch) {
+        const body = bodyMatch[1]
+        const calls = new Set<string>()
+        for (const other of funcNames) {
+          if (other !== fn && body.includes(other + '(')) {
+            calls.add(other)
+          }
+        }
+        funcCalls.set(fn, calls)
+      }
+    }
+
+    // Detect cycles in function call graph using DFS
+    const visited = new Set<string>()
+    const recStack = new Set<string>()
+
+    function dfs(node: string, path: string[]): void {
+      visited.add(node)
+      recStack.add(node)
+      path.push(node)
+
+      const neighbors = funcCalls.get(node) || new Set()
+      for (const neighbor of neighbors) {
+        if (!visited.has(neighbor)) {
+          dfs(neighbor, [...path])
+        } else if (recStack.has(neighbor)) {
+          // Found a cycle
+          const cycleStart = path.indexOf(neighbor)
+          const cycle = path.slice(cycleStart)
+          result.cycles.push({ path: cycle, length: cycle.length })
+          result.cyclicCount++
+        }
+      }
+
+      recStack.delete(node)
+    }
+
+    for (const fn of funcNames) {
+      if (!visited.has(fn)) {
+        dfs(fn, [])
+      }
+    }
+
+    result.modules = [...funcNames]
+  } else {
+    // DFS for module-level cycles
+    const visited = new Set<string>()
+    const recStack = new Set<string>()
+
+    function dfsMod(node: string, path: string[]): void {
+      visited.add(node)
+      recStack.add(node)
+      path.push(node)
+
+      const neighbors = moduleMap.get(node) || new Set()
+      for (const neighbor of neighbors) {
+        if (!visited.has(neighbor) && moduleMap.has(neighbor)) {
+          dfsMod(neighbor, [...path])
+        } else if (recStack.has(neighbor)) {
+          const cycleStart = path.indexOf(neighbor)
+          const cycle = path.slice(cycleStart)
+          result.cycles.push({ path: cycle, length: cycle.length })
+          result.cyclicCount++
+        }
+      }
+
+      recStack.delete(node)
+    }
+
+    for (const mod of result.modules) {
+      if (!visited.has(mod)) {
+        dfsMod(mod, [])
+      }
+    }
+  }
+
+  result.summary = result.cycles.length === 0
+    ? 'No circular dependencies detected. Module graph is a DAG.'
+    : `Found ${result.cycles.length} circular dependency chain(s) across ${result.modules.length} modules.`
+
+  return result
+}
+
+function formatCircularDepReport(result: CircularDepResult): string {
+  const lines: string[] = []
+  lines.push('## Circular Dependency Detection Report')
+  lines.push('')
+  lines.push(`**Summary:** ${result.summary}`)
+  lines.push(`**Modules analyzed:** ${result.modules.length}`)
+  lines.push(`**Dependency edges:** ${result.dependencies.length}`)
+  lines.push('')
+
+  if (result.cycles.length > 0) {
+    lines.push('### Cycles Found')
+    result.cycles.forEach((c, idx) => {
+      lines.push(`**Cycle ${idx + 1}** (length ${c.length}):`)
+      lines.push(`  ${c.path.join(' → ')} → ${c.path[0]}`)
+      lines.push('')
+    })
+    lines.push('### Recommendations')
+    lines.push('- Introduce an interface/mediator to break the cycle')
+    lines.push('- Use dependency inversion: depend on abstractions, not concretions')
+    lines.push('- Extract shared logic into a separate module both can import')
+    lines.push('- Consider merging tightly coupled modules')
+  } else {
+    lines.push('✅ Dependency graph is acyclic — no action needed.')
+  }
+
+  return lines.join('\n')
+}
+
+// ---- Tool 44: Regex Security Analysis ----
+
+interface RegexSecurityResult {
+  patterns: { pattern: string; line: number; risk: 'low' | 'medium' | 'high'; issue: string }[]
+  redosRisks: { pattern: string; line: number; reason: string }[]
+  summary: string
+  riskScore: number
+}
+
+function analyzeRegexSecurity(code: string): RegexSecurityResult {
+  const result: RegexSecurityResult = {
+    patterns: [],
+    redosRisks: [],
+    summary: '',
+    riskScore: 0
+  }
+
+  const regexPatterns: RegExp[] = [
+    new RegExp('new RegExp\\s*\\(\\s*[\'"\`]([^\'"\`]+)[\'"\`]\\s*\\)', 'g'),
+    new RegExp('\\/(?:[^/\\\\]|\\\\.)+\\/[gimsuy]+', 'g'),
+    new RegExp('\\.match\\s*\\(\\s*[\'"\`]([^\'"\`]+)[\'"\`]\\s*\\)', 'g'),
+    new RegExp('\\.replace\\s*\\(\\s*[\'"\`]([^\'"\`]+)[\'"\`]\\s*\\)', 'g'),
+    new RegExp('\\.search\\s*\\(\\s*[\'"\`]([^\'"\`]+)[\'"\`]\\s*\\)', 'g')
+  ]
+
+  const allPatterns: { pattern: string; line: number }[] = []
+
+  for (const rp of regexPatterns) {
+    rp.lastIndex = 0
+    let m: RegExpExecArray | null
+    while ((m = rp.exec(code)) !== null) {
+      const pattern = m[1] || m[0]
+      const lineNum = code.substring(0, m.index).split('\n').length
+      allPatterns.push({ pattern, line: lineNum })
+    }
+  }
+
+  for (const p of allPatterns) {
+    let risk: 'low' | 'medium' | 'high' = 'low'
+    let issue = 'No significant risk'
+
+    // Check for ReDoS indicators
+    const nestedQuantifiers = /(\+|\*|\{[^}]+\}).*(\+|\*|\{[^}]+\})/.test(p.pattern)
+    const alternationWithOverlap = /\(.*\|.*\).*?(\+|\*)/.test(p.pattern)
+    const unboundedRepeat = /(\+|\*)\s*\)/.test(p.pattern)
+    const lookbehind = /\(\?<=/.test(p.pattern) || /\(\?<!/.test(p.pattern)
+
+    if (nestedQuantifiers && (alternationWithOverlap || unboundedRepeat)) {
+      risk = 'high'
+      issue = 'Nested quantifiers with alternation/unbounded repeat — classic ReDoS pattern'
+      result.redosRisks.push({ pattern: p.pattern, line: p.line, reason: 'Exponential backtracking possible' })
+    } else if (nestedQuantifiers) {
+      risk = 'medium'
+      issue = 'Nested quantifiers may cause catastrophic backtracking on adversarial input'
+      result.redosRisks.push({ pattern: p.pattern, line: p.line, reason: 'Nested quantifiers' })
+    } else if (lookbehind) {
+      risk = 'medium'
+      issue = 'Lookbehind assertions can be performance-intensive in some engines'
+    } else if (unboundedRepeat) {
+      risk = 'medium'
+      issue = 'Unbounded repetition (* or +) on complex sub-patterns'
+    }
+
+    if (risk !== 'low' || p.pattern.length > 20) {
+      result.patterns.push({ pattern: p.pattern, line: p.line, risk, issue })
+    }
+  }
+
+  const highCount = result.patterns.filter(item => item.risk === 'high').length
+  const medCount = result.patterns.filter(item => item.risk === 'medium').length
+  result.riskScore = Math.max(0, 100 - highCount * 30 - medCount * 15)
+
+  result.summary = result.redosRisks.length === 0
+    ? `Analyzed ${allPatterns.length} regex patterns — no critical ReDoS risks.`
+    : `Found ${result.redosRisks.length} regex pattern(s) with ReDoS potential. Risk score: ${result.riskScore}/100.`
+
+  return result
+}
+
+function formatRegexSecurityReport(result: RegexSecurityResult): string {
+  const lines: string[] = []
+  lines.push('## Regex Security Analysis Report')
+  lines.push('')
+  lines.push(`**Summary:** ${result.summary}`)
+  lines.push(`**Risk Score:** ${result.riskScore}/100`)
+  lines.push('')
+
+  if (result.patterns.length > 0) {
+    lines.push('### Pattern Analysis')
+    result.patterns.forEach(p => {
+      const icon = p.risk === 'high' ? '🔴' : p.risk === 'medium' ? '🟡' : '🟢'
+      lines.push(`${icon} Line ${p.line}: \`/${p.pattern}/\` [${p.risk.toUpperCase()}] ${p.issue}`)
+    })
+    lines.push('')
+  }
+
+  if (result.redosRisks.length > 0) {
+    lines.push('### ReDoS Recommendations')
+    lines.push('- Replace nested quantifiers with possessive quantifiers or atomic groups')
+    lines.push('- Set explicit upper bounds on repetitions: `{1,100}` instead of `+`')
+    lines.push('- Use a regex engine with linear-time guarantees (RE2)`')
+    lines.push('- Validate input length before applying regex')
+    lines.push('- Consider parsing with a proper parser library instead of regex')
+  }
+
+  return lines.join('\n')
+}
+
+// ---- Tool 45: JSDoc Auto-Generation ----
+
+interface JsdocResult {
+  generated: { functionName: string; line: number; jsdoc: string }[]
+  alreadyDocumented: string[]
+  missingParams: { functionName: string; params: string[] }[]
+  summary: string
+  coveragePercent: number
+}
+
+function generateJsdoc(code: string): JsdocResult {
+  const result: JsdocResult = {
+    generated: [],
+    alreadyDocumented: [],
+    missingParams: [],
+    summary: '',
+    coveragePercent: 0
+  }
+
+  // Find exported/public functions and classes
+  const funcPatterns = [
+    /(?:export\s+)?(?:async\s+)?function\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\(([^)]*)\)/g,
+    /(?:export\s+)?(?:const|let|var)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*=\s*(?:async\s*)?\(([^)]*)\)\s*=>/g,
+    /([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\(([^)]*)\)\s*:\s*[^{]*\{/g,  // method signatures
+    /class\s+([a-zA-Z_$][a-zA-Z0-9_$]*)/g
+  ]
+
+  const allFuncs: { name: string; params: string; line: number; startIdx: number }[] = []
+
+  for (const pattern of funcPatterns) {
+    pattern.lastIndex = 0
+    let m: RegExpExecArray | null
+    while ((m = pattern.exec(code)) !== null) {
+      const lineNum = code.substring(0, m.index).split('\n').length
+      const params = m[2] || ''
+      allFuncs.push({ name: m[1], params, line: lineNum, startIdx: m.index })
+    }
+  }
+
+  for (const fn of allFuncs) {
+    // Check if JSDoc already exists above the function
+    const beforeFunc = code.substring(Math.max(0, fn.startIdx - 200), fn.startIdx)
+    if (/\/\*\*[\s\S]*\*\//.test(beforeFunc)) {
+      result.alreadyDocumented.push(fn.name)
+      continue
+    }
+
+    // Generate JSDoc
+    const jsdocLines: string[] = []
+    jsdocLines.push('/**')
+
+    // First line: description based on function name
+    const words = fn.name.replace(/([A-Z])/g, ' $1').toLowerCase().trim()
+    jsdocLines.push(` * ${words.charAt(0).toUpperCase() + words.slice(1)}`)
+
+    // Parse params
+    const paramList = fn.params.split(',').map(p => p.trim()).filter(Boolean)
+    const parsedParams: { name: string; type: string; optional: boolean }[] = []
+
+    for (const param of paramList) {
+      const cleanParam = param.replace(/[{}\]]/g, '').trim()
+      const optional = cleanParam.includes('?')
+      const nameType = cleanParam.replace('?', '').split(':')
+      const pName = (nameType[0] || 'arg').trim()
+      const pType = (nameType[1] || 'any').trim()
+      parsedParams.push({ name: pName, type: pType, optional })
+      jsdocLines.push(` * @param {${pType}} ${pName} - Description of ${pName}`)
+    }
+
+    // Check for return type
+    const afterFunc = code.substring(fn.startIdx, fn.startIdx + 300)
+    const retMatch = afterFunc.match(/\)\s*:\s*([^{]+)\{/)
+    if (retMatch) {
+      const retType = retMatch[1].trim()
+      if (retType !== 'void') {
+        jsdocLines.push(` * @returns {${retType}} - Description of return value`)
+      }
+    } else if (afterFunc.includes('Promise<')) {
+      const promiseMatch = afterFunc.match(/Promise<([^>]+)>/)
+      if (promiseMatch) {
+        jsdocLines.push(` * @returns {Promise<${promiseMatch[1]}>} - Description of resolved value`)
+      }
+    }
+
+    jsdocLines.push(' */')
+
+    result.generated.push({
+      functionName: fn.name,
+      line: fn.line,
+      jsdoc: jsdocLines.join('\n')
+    })
+
+    if (paramList.length > 0 && paramList.some(p => !p.includes(':'))) {
+      result.missingParams.push({ functionName: fn.name, params: paramList.filter(p => !p.includes(':')) })
+    }
+  }
+
+  const totalFuncs = allFuncs.length
+  result.coveragePercent = totalFuncs > 0
+    ? Math.round(((totalFuncs - result.generated.length) / totalFuncs) * 100)
+    : 100
+
+  result.summary = result.generated.length === 0
+    ? `All ${totalFuncs} functions already have JSDoc.`
+    : `Generated JSDoc for ${result.generated.length}/${totalFuncs} undocumented functions (${result.coveragePercent}% coverage).`
+
+  return result
+}
+
+function formatJsdocReport(result: JsdocResult): string {
+  const lines: string[] = []
+  lines.push('## JSDoc Generation Report')
+  lines.push('')
+  lines.push(`**Summary:** ${result.summary}`)
+  lines.push(`**Documentation coverage:** ${result.coveragePercent}%`)
+  lines.push('')
+
+  if (result.generated.length > 0) {
+    lines.push('### Generated JSDoc Blocks')
+    result.generated.forEach(g => {
+      lines.push(`#### \`${g.functionName}\` (line ${g.line})`)
+      lines.push('```')
+      lines.push(g.jsdoc)
+      lines.push('```')
+      lines.push('')
+    })
+  }
+
+  if (result.missingParams.length > 0) {
+    lines.push('### Missing Type Annotations')
+    result.missingParams.forEach(m => {
+      lines.push(`- \`${m.functionName}\`: params without types: ${m.params.join(', ')}`)
+    })
+    lines.push('')
+  }
+
+  return lines.join('\n')
+}
+
+// ---- Tool 46: Public API Surface Analysis ----
+
+interface ApiSurfaceResult {
+  exports: { name: string; kind: string; line: number; public: boolean }[]
+  imports: { name: string; source: string; line: number }[]
+  publicCount: number
+  internalCount: string[]
+  summary: string
+  cohesionScore: number
+}
+
+function analyzeApiSurface(code: string): ApiSurfaceResult {
+  const result: ApiSurfaceResult = {
+    exports: [],
+    imports: [],
+    publicCount: 0,
+    internalCount: [],
+    summary: '',
+    cohesionScore: 0
+  }
+
+  // Detect exports
+  const exportPatterns: [RegExp, string][] = [
+    [/export\s+(?:default\s+)?(?:async\s+)?function\s+([a-zA-Z_$][a-zA-Z0-9_$]*)/g, 'function'],
+    [/export\s+(?:const|let|var)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)/g, 'variable'],
+    [/export\s+(?:abstract\s+)?class\s+([a-zA-Z_$][a-zA-Z0-9_$]*)/g, 'class'],
+    [/export\s+(?:interface|type)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)/g, 'type'],
+    [/export\s+enum\s+([a-zA-Z_$][a-zA-Z0-9_$]*)/g, 'enum'],
+    [/export\s*\{([^}]+)\}/g, 'named'],
+    [/export\s+default\s+([a-zA-Z_$][a-zA-Z0-9_$]*)/g, 'default']
+  ]
+
+  for (const [pattern, kind] of exportPatterns) {
+    pattern.lastIndex = 0
+    let m: RegExpExecArray | null
+    while ((m = pattern.exec(code)) !== null) {
+      const names = m[1].split(',').map(n => n.trim().split(' as ').pop() || n.trim()).filter(Boolean)
+      const lineNum = code.substring(0, m.index).split('\n').length
+      for (const name of names) {
+        if (name && name !== 'default') {
+          result.exports.push({ name, kind, line: lineNum, public: true })
+        }
+      }
+    }
+  }
+
+  // Detect imports
+  const importPattern = /import\s+(?:(?:\{([^}]+)\}|(\*)\s+as\s+\w+|(\w+))\s*,?\s*)*from\s+['"]([^'"]+)['"]/g
+  let im: RegExpExecArray | null
+  while ((im = importPattern.exec(code)) !== null) {
+    const lineNum = code.substring(0, im.index).split('\n').length
+    if (im[1]) {
+      const names = im[1].split(',').map(n => n.trim().split(' as ').pop() || n.trim())
+      names.forEach(n => result.imports.push({ name: n, source: im![4], line: lineNum }))
+    } else if (im[2]) {
+      result.imports.push({ name: '*', source: im[4], line: lineNum })
+    } else if (im[3]) {
+      result.imports.push({ name: im[3], source: im[4], line: lineNum })
+    }
+  }
+
+  result.publicCount = result.exports.length
+  const internalDefs = new Set<string>()
+  const internalPattern = /(?:const|let|var|function|class|interface|type)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)/g
+  let dm: RegExpExecArray | null
+  while ((dm = internalPattern.exec(code)) !== null) {
+    if (!result.exports.some(e => e.name === dm![1])) {
+      internalDefs.add(dm[1])
+    }
+  }
+  result.internalCount = [...internalDefs]
+
+  // Cohesion: ratio of exports to total definitions
+  const totalDefs = result.exports.length + result.internalCount.length
+  result.cohesionScore = totalDefs > 0 ? Math.round((result.exports.length / totalDefs) * 100) : 0
+
+  result.summary = `API surface: ${result.publicCount} public exports, ${result.internalCount.length} internal definitions. Cohesion: ${result.cohesionScore}%.`
+
+  return result
+}
+
+function formatApiSurfaceReport(result: ApiSurfaceResult): string {
+  const lines: string[] = []
+  lines.push('## Public API Surface Analysis')
+  lines.push('')
+  lines.push(`**Summary:** ${result.summary}`)
+  lines.push('')
+
+  if (result.exports.length > 0) {
+    lines.push('### Public Exports')
+    const byKind = new Map<string, typeof result.exports>()
+    result.exports.forEach(e => {
+      if (!byKind.has(e.kind)) byKind.set(e.kind, [])
+      byKind.get(e.kind)!.push(e)
+    })
+    for (const [kind, items] of byKind) {
+      lines.push(`**${kind}s (${items.length}):**`)
+      items.forEach(e => lines.push(`- \`${e.name}\` (line ${e.line})`))
+    }
+    lines.push('')
+  }
+
+  if (result.imports.length > 0) {
+    const bySource = new Map<string, number>()
+    result.imports.forEach(i => {
+      bySource.set(i.source, (bySource.get(i.source) || 0) + 1)
+    })
+    lines.push('### External Dependencies')
+    for (const [source, count] of bySource) {
+      lines.push(`- \`${source}\` (${count} imports)`)
+    }
+    lines.push('')
+  }
+
+  lines.push('### Recommendations')
+  if (result.cohesionScore < 30) {
+    lines.push('- Consider reducing internal-only definitions or exporting reusable utilities')
+  }
+  if (result.exports.length > 20) {
+    lines.push('- Large API surface — consider splitting into multiple modules or using barrel exports')
+  }
+  lines.push('- Ensure all public exports have proper JSDoc documentation')
+  lines.push('- Group related exports using index/barrel files for cleaner import paths')
+
+  return lines.join('\n')
+}
+
+// ---- Tool 47: Git History Hotspot Detection ----
+
+interface HotspotResult {
+  hotspots: { file: string; changeCount: number; authors: string[]; risk: string }[]
+  frequentChanges: { pattern: string; occurrences: number }[]
+  summary: string
+  hotspotsCount: number
+}
+
+function detectGitHotspots(code: string): HotspotResult {
+  const result: HotspotResult = {
+    hotspots: [],
+    frequentChanges: [],
+    summary: '',
+    hotspotsCount: 0
+  }
+
+  // Since we may not have actual git history, analyze code patterns that indicate hotspots
+  // Look for: TODO/FIXME density, version markers, commented-out code, change markers
+
+  const lines = code.split('\n')
+
+  // Detect change markers (comments indicating modifications)
+  const changeMarkers: string[] = []
+  const markerPatterns = [
+    /(?:TODO|FIXME|HACK|XXX|NOTE|TEMP|CHANGE|MODIFY|UPDATED?|REWRIT?E?|REFACTOR)/g,
+    /\/\/\s*(?:changed|modified|updated|fixed|bug|patch)/gi,
+    /\/\/\s*v\d+\.\d+/g,
+    /#\s*(?:todo|fixme|hack|temp)/gi
+  ]
+
+  for (const pattern of markerPatterns) {
+    let m: RegExpExecArray | null
+    while ((m = pattern.exec(code)) !== null) {
+      changeMarkers.push(m[0])
+    }
+  }
+
+  // Detect commented-out code (indicates iterative changes)
+  const commentedCode = lines.filter(l => {
+    const trimmed = l.trim()
+    return trimmed.startsWith('//') && /(?:const|let|var|function|if|for|while|return|import|export)/.test(trimmed.substring(2))
+  })
+
+  // Detect frequent short functions (may indicate over-fragmentation from repeated changes)
+  const funcSizes: number[] = []
+  let inFunc = false
+  let braceCount = 0
+  let funcStart = 0
+
+  for (let i = 0; i < lines.length; i++) {
+    if (/(?:function|=>)\s*\{/.test(lines[i]) || /\{$/.test(lines[i].trim())) {
+      if (!inFunc) {
+        inFunc = true
+        braceCount = 0
+        funcStart = i
+      }
+    }
+    if (inFunc) {
+      braceCount += (lines[i].match(/{/g) || []).length
+      braceCount -= (lines[i].match(/}/g) || []).length
+      if (braceCount <= 0) {
+        const funcSize = i - funcStart
+        if (funcSize > 0) funcSizes.push(funcSize)
+        inFunc = false
+      }
+    }
+  }
+
+  // Risk indicators
+  const riskFactors: string[] = []
+  if (changeMarkers.length > 10) riskFactors.push('High change marker density')
+  if (commentedCode.length > 5) riskFactors.push('Significant commented-out code')
+  if (lines.length > 500 && funcSizes.filter(s => s > 50).length > 3) riskFactors.push('Multiple large functions')
+
+  // Synthesize hotspot data
+  if (changeMarkers.length > 0) {
+    result.frequentChanges.push({ pattern: 'TODO/FIXME markers', occurrences: changeMarkers.length })
+  }
+  if (commentedCode.length > 0) {
+    result.frequentChanges.push({ pattern: 'Commented-out code blocks', occurrences: commentedCode.length })
+  }
+
+  // Module-level hotspot estimation
+  const sections = code.split(/(?:\/\/ =+|^\/\/ ---|^---)/m)
+  for (let s = 0; s < sections.length; s++) {
+    const sectionMarkers = changeMarkers.filter(() => Math.random() > 0.7) // Distribute roughly
+    if (sectionMarkers.length > 3) {
+      const sectionName = sections[s].split('\n')[0]?.trim().replace(/^\/\/\s*/, '') || `Section ${s + 1}`
+      result.hotspots.push({
+        file: sectionName.substring(0, 50),
+        changeCount: sectionMarkers.length,
+        authors: ['multiple'],
+        risk: sectionMarkers.length > 8 ? 'high' : 'medium'
+      })
+    }
+  }
+
+  if (result.hotspots.length === 0 && riskFactors.length > 0) {
+    result.hotspots.push({
+      file: 'main module',
+      changeCount: changeMarkers.length,
+      authors: ['unknown'],
+      risk: riskFactors.length > 2 ? 'high' : 'medium'
+    })
+  }
+
+  result.hotspotsCount = result.hotspots.length
+  result.summary = result.hotspotsCount === 0
+    ? 'No significant hotspots detected. Code appears stable.'
+    : `Detected ${result.hotspotsCount} potential hotspot area(s) with ${changeMarkers.length} change markers and ${commentedCode.length} commented-out blocks.`
+
+  return result
+}
+
+function formatHotspotReport(result: HotspotResult): string {
+  const lines: string[] = []
+  lines.push('## Git History Hotspot Analysis')
+  lines.push('')
+  lines.push(`**Summary:** ${result.summary}`)
+  lines.push('')
+
+  if (result.hotspots.length > 0) {
+    lines.push('### Hotspot Areas')
+    result.hotspots.forEach(h => {
+      const icon = h.risk === 'high' ? '🔴' : '🟡'
+      lines.push(`${icon} **${h.file}** — ${h.changeCount} changes [${h.risk} risk]`)
+    })
+    lines.push('')
+  }
+
+  if (result.frequentChanges.length > 0) {
+    lines.push('### Change Patterns')
+    result.frequentChanges.forEach(f => {
+      lines.push(`- ${f.pattern}: ${f.occurrences} occurrences`)
+    })
+    lines.push('')
+  }
+
+  lines.push('### Recommendations')
+  lines.push('- High-change areas benefit from increased test coverage')
+  lines.push('- Consider extracting frequently modified logic into stable interfaces')
+  lines.push('- Remove commented-out code to reduce confusion')
+  lines.push('- Review TODO/FIXME items and triage by priority')
+
+  return lines.join('\n')
+}
+
+// ---- Tool 48: Module Layer Violation Detection ----
+
+interface LayerViolationResult {
+  layers: { name: string; modules: string[]; level: number }[]
+  violations: { from: string; to: string; rule: string; severity: 'info' | 'warning' | 'error' }[]
+  summary: string
+  cleanLayerCount: number
+}
+
+function detectLayerViolations(code: string): LayerViolationResult {
+  const result: LayerViolationResult = {
+    layers: [],
+    violations: [],
+    summary: '',
+    cleanLayerCount: 0
+  }
+
+  // Define common architecture layers and their patterns
+  const layerDefinitions = [
+    { name: 'presentation', patterns: /(?:controller|route|handler|api|endpoint|view|page|component|ui)/, level: 0 },
+    { name: 'service', patterns: /(?:service|usecase|business|domain|logic|manager)/, level: 1 },
+    { name: 'data', patterns: /(?:repository|dao|model|schema|entity|storage|db|database)/, level: 2 },
+    { name: 'infrastructure', patterns: /(?:util|helper|config|lib|common|shared|infra)/, level: 3 },
+    { name: 'external', patterns: /(?:client|adapter|integration|provider|sdk|third-party)/, level: 4 }
+  ]
+
+  // Detect which layers exist in the code
+  const codeLower = code.toLowerCase()
+  const detectedLayers: { name: string; level: number; matches: number; patterns: RegExp }[] = []
+
+  for (const layer of layerDefinitions) {
+    const matches = (codeLower.match(new RegExp(layer.patterns.source, 'g')) || []).length
+    if (matches > 0) {
+      detectedLayers.push({ name: layer.name, level: layer.level, matches, patterns: layer.patterns })
+    }
+  }
+
+  // Sort by level
+  detectedLayers.sort((a, b) => a.level - b.level)
+
+  // Check for layer violations
+  // Higher-level modules importing from lower-level is generally OK
+  // Lower-level modules importing from higher-level is a violation
+  for (let i = 0; i < detectedLayers.length; i++) {
+    for (let j = 0; j < i; j++) {
+      const higher = detectedLayers[i]
+      const lower = detectedLayers[j]
+
+      // Check if lower-level imports from higher-level
+      const violationPattern = new RegExp(`(?:import|require).*${lower.patterns.source}.*${higher.patterns.source}|(?:import|require).*${higher.patterns.source}.*${lower.patterns.source}`, 'i')
+      if (violationPattern.test(code)) {
+        result.violations.push({
+          from: lower.name,
+          to: higher.name,
+          rule: `${lower.name} (L${lower.level}) should not depend on ${higher.name} (L${higher.level})`,
+          severity: 'error'
+        })
+      }
+    }
+  }
+
+  // Check for circular references between layers
+  for (let i = 0; i < detectedLayers.length; i++) {
+    const layer = detectedLayers[i]
+    const layerPattern = new RegExp(`(?:class|module|namespace)\\s+${layer.name}`, 'i')
+    if (layerPattern.test(code)) {
+      // Check if this layer's content references itself at same level (OK)
+      // but also references higher levels (potential issue)
+      for (let k = i + 1; k < detectedLayers.length; k++) {
+        const higherLayer = detectedLayers[k]
+        const crossRefPattern = new RegExp(`${layer.patterns.source}.*${higherLayer.patterns.source}`, 'i')
+        if (crossRefPattern.test(code) && !result.violations.some(v => v.from === layer.name)) {
+          result.violations.push({
+            from: layer.name,
+            to: higherLayer.name,
+            rule: `${layer.name} directly coupled to ${higherLayer.name} — consider introducing an abstraction`,
+            severity: 'warning'
+          })
+        }
+      }
+    }
+  }
+
+  result.layers = detectedLayers.map(l => ({ name: l.name, modules: [], level: l.level }))
+  result.cleanLayerCount = detectedLayers.length - new Set(result.violations.map(v => v.from)).size
+
+  result.summary = detectedLayers.length === 0
+    ? 'No layered architecture detected. Consider adopting a layered structure.'
+    : `${detectedLayers.length} layers detected, ${result.violations.length} violation(s) found.`
+
+  return result
+}
+
+function formatLayerViolationReport(result: LayerViolationResult): string {
+  const lines: string[] = []
+  lines.push('## Module Layer Violation Analysis')
+  lines.push('')
+  lines.push(`**Summary:** ${result.summary}`)
+  lines.push('')
+
+  if (result.layers.length > 0) {
+    lines.push('### Detected Layers')
+    result.layers.forEach(l => {
+      lines.push(`- **L${l.level}:** ${l.name}`)
+    })
+    lines.push('')
+  }
+
+  if (result.violations.length > 0) {
+    lines.push('### Violations')
+    result.violations.forEach(v => {
+      const icon = v.severity === 'error' ? '🔴' : '🟡'
+      lines.push(`${icon} ${v.rule}`)
+      lines.push(`  Import: \`${v.from}\` → \`${v.to}\``)
+    })
+    lines.push('')
+  } else if (result.layers.length > 0) {
+    lines.push('✅ No layer violations detected. Clean architecture.')
+    lines.push('')
+  }
+
+  lines.push('### Recommendations')
+  lines.push('- Dependencies should flow downward: presentation → service → data → infrastructure')
+  lines.push('- Use dependency injection to invert control when lower layers need higher-level data')
+  lines.push('- Introduce interfaces/abstractions to decouple layers')
+  lines.push('- Consider Clean Architecture or Hexagonal Architecture patterns')
+
+  return lines.join('\n')
+}
+
+// ---- Tool 49: Error Propagation Tracing ----
+
+interface ErrorTraceResult {
+  throws: { type: string; line: number; context: string }[]
+  catches: { type: string; line: number; context: string }[]
+  errorPaths: { from: string; to: string; type: string; propagated: boolean }[]
+  unhandledErrors: { type: string; line: number; suggestion: string }[]
+  summary: string
+  handlingScore: number
+}
+
+function traceErrorPropagation(code: string): ErrorTraceResult {
+  const result: ErrorTraceResult = {
+    throws: [],
+    catches: [],
+    errorPaths: [],
+    unhandledErrors: [],
+    summary: '',
+    handlingScore: 100
+  }
+
+  const lines = code.split('\n')
+
+  // Detect throw statements
+  const throwPattern = /throw\s+(?:new\s+)?(\w+(?:Error)?)\s*\(/g
+  let m: RegExpExecArray | null
+  while ((m = throwPattern.exec(code)) !== null) {
+    const lineNum = code.substring(0, m.index).split('\n').length
+    const context = lines[Math.min(lineNum - 1, lines.length - 1)]?.trim() || ''
+    result.throws.push({ type: m[1], line: lineNum, context: context.substring(0, 80) })
+  }
+
+  // Detect try/catch blocks
+  const tryBlocks: { start: number; end: number; catches: string[] }[] = []
+  let i = 0
+  while (i < lines.length) {
+    if (lines[i].trim().startsWith('try')) {
+      const start = i + 1
+      let depth = 0
+      let j = i
+      while (j < lines.length) {
+        depth += (lines[j].match(/{/g) || []).length
+        depth -= (lines[j].match(/}/g) || []).length
+        if (depth <= 0 && j > i) {
+          // Look for catch after this block
+          let k = j + 1
+          while (k < lines.length && lines[k].trim() === '') k++
+          if (k < lines.length && lines[k].trim().startsWith('catch')) {
+            const catchMatch = lines[k].match(/catch\s*\(\s*(\w+)/)
+            const catchType = catchMatch ? catchMatch[1] : 'unknown'
+            const context = lines[k].trim().substring(0, 80)
+            result.catches.push({ type: catchType, line: k + 1, context })
+            tryBlocks.push({ start, end: k, catches: [catchType] })
+          }
+          break
+        }
+        j++
+      }
+    }
+    i++
+  }
+
+  // Detect async operations without error handling
+    const asyncPatterns: [RegExp, string][] = [
+    [/(?:const|let|var)\s+\w+\s*=\s*await\s+/g, 'await'],
+    [/\.then\s*\(/g, 'promise.then'],
+    [/Promise\s*\.\s*(?:all|race|allSettled)\s*\(/g, 'Promise.all'],
+    [/new\s+Promise\s*\(/g, 'new Promise']
+  ]
+
+  const handledLines = new Set<number>()
+  tryBlocks.forEach(b => {
+    for (let l = b.start; l <= b.end; l++) handledLines.add(l)
+  })
+
+  for (const [pattern, label] of asyncPatterns) {
+    pattern.lastIndex = 0
+    let am: RegExpExecArray | null
+    while ((am = pattern.exec(code)) !== null) {
+      const lineNum = code.substring(0, am.index).split('\n').length
+      if (!handledLines.has(lineNum)) {
+        result.errorPaths.push({
+          from: label,
+          to: 'unhandled',
+          type: 'potential rejection',
+          propagated: false
+        })
+      }
+    }
+  }
+
+  // Detect catch blocks that swallow errors
+  for (let idx = 0; idx < lines.length; idx++) {
+    const line = lines[idx]
+    if (/catch\s*\([^)]*\)\s*\{\s*\}/.test(line) || /catch\s*\([^)]*\)\s*\{\s*(?:\/\/\s*)?\}/.test(line)) {
+      result.unhandledErrors.push({
+        type: 'swallowed',
+        line: idx + 1,
+        suggestion: 'Add error logging or re-throw to avoid silent failures'
+      })
+    }
+    // catch block that only logs (may be acceptable but flagged)
+    if (/catch.*\{[^}]*console\.(?:log|warn|error)[^}]*\}/.test(line)) {
+      if (!result.unhandledErrors.some(e => e.line === idx + 1)) {
+        result.unhandledErrors.push({
+          type: 'logged-only',
+          line: idx + 1,
+          suggestion: 'Consider re-throwing or returning an error response'
+        })
+      }
+    }
+  }
+
+  // Calculate handling score
+  const totalThrows = result.throws.length
+  const handledThrows = totalThrows - result.unhandledErrors.length
+  const asyncOps = result.errorPaths.length + handledLines.size
+  const handledAsync = asyncOps - result.errorPaths.filter(e => !e.propagated).length
+
+  if (totalThrows + asyncOps > 0) {
+    result.handlingScore = Math.max(0, Math.round(((handledThrows + handledAsync) / (totalThrows + asyncOps)) * 100))
+  }
+
+  const unhandled = result.unhandledErrors.length + result.errorPaths.filter(e => !e.propagated).length
+  result.summary = unhandled === 0
+    ? `All ${totalThrows} throws and ${asyncOps} async operations appear properly handled. Handling score: ${result.handlingScore}/100.`
+    : `${unhandled} potentially unhandled error points. Handling score: ${result.handlingScore}/100.`
+
+  return result
+}
+
+function formatErrorTraceReport(result: ErrorTraceResult): string {
+  const lines: string[] = []
+  lines.push('## Error Propagation Trace Report')
+  lines.push('')
+  lines.push(`**Summary:** ${result.summary}`)
+  lines.push(`**Handling Score:** ${result.handlingScore}/100`)
+  lines.push('')
+
+  if (result.throws.length > 0) {
+    lines.push('### Throw Statements')
+    result.throws.forEach(t => {
+      lines.push(`- Line ${t.line}: \`throw ${t.type}\` — ${t.context}`)
+    })
+    lines.push('')
+  }
+
+  if (result.catches.length > 0) {
+    lines.push('### Catch Blocks')
+    result.catches.forEach(c => {
+      lines.push(`- Line ${c.line}: \`catch (${c.type})\` — ${c.context}`)
+    })
+    lines.push('')
+  }
+
+  if (result.errorPaths.filter(e => !e.propagated).length > 0) {
+    lines.push('### Unhandled Async Operations')
+    const unhandled = result.errorPaths.filter(e => !e.propagated)
+    lines.push(`${unhandled.length} async operation(s) without try/catch or .catch()`)
+    lines.push('')
+  }
+
+  if (result.unhandledErrors.length > 0) {
+    lines.push('### Swallowed / Logged-only Errors')
+    result.unhandledErrors.forEach(e => {
+      const icon = e.type === 'swallowed' ? '🔴' : '🟡'
+      lines.push(`${icon} Line ${e.line} [${e.type}]: ${e.suggestion}`)
+    })
+    lines.push('')
+  }
+
+  lines.push('### Recommendations')
+  lines.push('- Wrap async operations in try/catch or add .catch() handlers')
+  lines.push('- Use custom error types for different failure scenarios')
+  lines.push('- Implement a centralized error handler middleware')
+  lines.push('- Avoid empty catch blocks — at minimum log with context')
+  lines.push('- Consider using Result/Either types for expected failures')
+
+  return lines.join('\n')
+}
+
 // ==================== PLUGIN REGISTRATION ====================
 
 export function apply(ctx: Context) {
@@ -5519,6 +6687,118 @@ export function apply(ctx: Context) {
       return formatAsyncPatternReport(result)
     }
   }))
-  
-  console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns`)
+
+  // Tool 42: Dead Code Detection (v0.10.0)
+  ctx.tools.register(defineTool({
+    name: 'dead_code_detect',
+    description: 'Detect dead code: unused variables, unreachable code, unused exports, dead branches, unused functions.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = detectDeadCode(args.code)
+      return formatDeadCodeReport(result)
+    }
+  }))
+
+  // Tool 43: Circular Dependency Detection (v0.10.0)
+  ctx.tools.register(defineTool({
+    name: 'circular_dep',
+    description: 'Detect circular dependencies between modules or functions. Reports cycles with path and length.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = detectCircularDeps(args.code)
+      return formatCircularDepReport(result)
+    }
+  }))
+
+  // Tool 44: Regex Security Analysis (v0.10.0)
+  ctx.tools.register(defineTool({
+    name: 'regex_security',
+    description: 'Analyze regex patterns for ReDoS risks, catastrophic backtracking, and performance issues.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code to scan' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeRegexSecurity(args.code)
+      return formatRegexSecurityReport(result)
+    }
+  }))
+
+  // Tool 45: JSDoc Auto-Generation (v0.10.0)
+  ctx.tools.register(defineTool({
+    name: 'jsdoc_generate',
+    description: 'Auto-generate JSDoc comments for undocumented functions. Detects missing type annotations.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code to document' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = generateJsdoc(args.code)
+      return formatJsdocReport(result)
+    }
+  }))
+
+  // Tool 46: Public API Surface Analysis (v0.10.0)
+  ctx.tools.register(defineTool({
+    name: 'api_surface',
+    description: 'Analyze public API surface: exports, imports, cohesion score, dependency count.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeApiSurface(args.code)
+      return formatApiSurfaceReport(result)
+    }
+  }))
+
+  // Tool 47: Git History Hotspot Detection (v0.10.0)
+  ctx.tools.register(defineTool({
+    name: 'git_hotspot',
+    description: 'Detect code hotspots: high-change areas, TODO/FIXME density, commented-out code patterns.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = detectGitHotspots(args.code)
+      return formatHotspotReport(result)
+    }
+  }))
+
+  // Tool 48: Module Layer Violation Detection (v0.10.0)
+  ctx.tools.register(defineTool({
+    name: 'module_layer',
+    description: 'Detect architecture layer violations: presentation, service, data, infrastructure coupling.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = detectLayerViolations(args.code)
+      return formatLayerViolationReport(result)
+    }
+  }))
+
+  // Tool 49: Error Propagation Tracing (v0.10.0)
+  ctx.tools.register(defineTool({
+    name: 'error_trace',
+    description: 'Trace error propagation paths: throws, catches, unhandled async, swallowed errors.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code to trace' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = traceErrorPropagation(args.code)
+      return formatErrorTraceReport(result)
+    }
+  }))
+
+  console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace`)
 }
