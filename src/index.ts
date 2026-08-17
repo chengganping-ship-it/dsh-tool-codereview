@@ -1,10 +1,10 @@
 /**
- * DSH Code Review Assistant Plugin - Enterprise Edition v0.10.0
+ * DSH Code Review Assistant Plugin - Enterprise Edition v0.13.0
  * 
  * Enterprise-grade code analysis toolkit for DeepSeek Harness Agent.
  * 
- * Features (v0.10.0):
- * - 49 comprehensive analysis tools
+ * Features (v0.13.0):
+ * - 73 comprehensive analysis tools
  * - SARIF 2.1.0 export (GitHub Code Scanning & CI/CD compatible)
  * - Security scanning (OWASP Top 10 2021, CWE Top 25, SANS Top 25)
  * - Code Smell Detection (God Object, Feature Envy, Shotgun Surgery, etc.)
@@ -30,9 +30,17 @@
  * - Git history hotspot detection
  * - Module layer violation detection
  * - Error propagation tracing
+ * - Memory leak detection (listeners, timers, caches)
+ * - i18n readiness checks
+ * - Logging quality analysis
+ * - Configuration file validation
+ * - Bundle size estimation
+ * - Accessibility (a11y) scanning
+ * - Design pattern detection
+ * - Error boundary analysis
  * 
  * @module dsh-tool-codereview
- * @version 0.10.0
+ * @version 0.13.0
  * @license MIT
  */
 
@@ -42,7 +50,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 export const name = 'dsh-tool-codereview'
 export const inject = ['tools']
 
-const VERSION = '0.12.0'
+const VERSION = '0.13.0'
 
 // ==================== TYPES ====================
 
@@ -7716,6 +7724,969 @@ function formatPerfRegressionReport(result: PerfRegressionResult): string {
   return lines.join('\n')
 }
 
+// ==================== V0.13.0 NEW TOOLS ====================
+
+// ---- Tool 66: Memory Leak Detection ----
+
+interface MemoryLeakResult {
+  totalIssues: number
+  severity: Severity
+  listenerLeaks: { line: number; event: string; issue: string; suggestion: string }[]
+  timerLeaks: { line: number; timerType: string; issue: string; suggestion: string }[]
+  closureLeaks: { line: number; variable: string; issue: string; suggestion: string }[]
+  cacheLeaks: { line: number; pattern: string; issue: string; suggestion: string }[]
+  cleanupScore: number
+  summary: string
+}
+
+function detectMemoryLeaks(code: string): MemoryLeakResult {
+  const lines = code.split('\n')
+  const listenerLeaks: MemoryLeakResult['listenerLeaks'] = []
+  const timerLeaks: MemoryLeakResult['timerLeaks'] = []
+  const closureLeaks: MemoryLeakResult['closureLeaks'] = []
+  const cacheLeaks: MemoryLeakResult['cacheLeaks'] = []
+
+  // Detect addEventListener without removeEventListener
+  const eventListeners: { line: number; event: string; target: string }[] = []
+  const eventRemovals: Set<string> = new Set()
+  lines.forEach((line, i) => {
+    const addMatch = line.match(/(\w+)\.\s*addEventListener\s*\(\s*['"]([^'"]+)['"]/)
+    if (addMatch) {
+      eventListeners.push({ line: i + 1, event: addMatch[2], target: addMatch[1].trim() })
+    }
+    const removeMatch = line.match(/(\w+)\.\s*removeEventListener\s*\(\s*['"]([^'"]+)['"]/)
+    if (removeMatch) {
+      eventRemovals.add(`${removeMatch[1].trim()}:${removeMatch[2]}`)
+    }
+  })
+  eventListeners.forEach(l => {
+    const key = `${l.target}:${l.event}`
+    if (!eventRemovals.has(key)) {
+      listenerLeaks.push({ line: l.line, event: l.event, issue: `addEventListener('${l.event}') without matching removeEventListener`, suggestion: `Call removeEventListener('${l.event}', handler) in cleanup/unmount` })
+    }
+  })
+
+  // Detect setInterval/setTimeout without clearInterval/clearTimeout
+  const timers: { line: number; timerType: string }[] = []
+  const timerClears: Set<string> = new Set()
+  lines.forEach((line, i) => {
+    if (line.match(/\bsetInterval\s*\(/)) {
+      timers.push({ line: i + 1, timerType: 'setInterval' })
+    }
+    if (line.match(/\bsetTimeout\s*\(/)) {
+      timers.push({ line: i + 1, timerType: 'setTimeout' })
+    }
+    if (line.match(/\bclearInterval\s*\(/)) timerClears.add('setInterval')
+    if (line.match(/\bclearTimeout\s*\(/)) timerClears.add('setTimeout')
+  })
+  if (timers.length > 0 && timerClears.size === 0) {
+    timers.forEach(t => {
+      timerLeaks.push({ line: t.line, timerType: t.timerType, issue: `${t.timerType}() without cleanup`, suggestion: `Store timer ID and call ${t.timerType === 'setInterval' ? 'clearInterval' : 'clearTimeout'}() on unmount` })
+    })
+  }
+
+  // Detect potential closure leaks (large objects in closures)
+  lines.forEach((line, i) => {
+    if (line.match(/(?:const|let|var)\s+(\w+)\s*=\s*(?:req|request|response|res|ctx|context|db|database|pool|connection)\b/)) {
+      const varMatch = line.match(/(?:const|let|var)\s+(\w+)\s*=/)
+      if (varMatch && line.includes('=>') && !line.includes(') =>')) {
+        closureLeaks.push({ line: i + 1, variable: varMatch[1], issue: 'Potential closure leak: large object captured in arrow function', suggestion: 'Destructure only needed properties or nullify after use' })
+      }
+    }
+  })
+
+  // Detect unbounded caches/maps
+  lines.forEach((line, i) => {
+    if (line.match(/(?:const|let|var)\s+(\w+)\s*=\s*(?:new\s+Map|new\s+WeakMap|\{\s*\})/)) {
+      const varName = line.match(/(?:const|let|var)\s+(\w+)/)?.[1] || ''
+      const hasClear = lines.some((l, j) => j > i && l.includes(`${varName}.clear()`) || l.includes(`${varName}.delete(`) || l.includes(`${varName}.size`))
+      if (!hasClear) {
+        cacheLeaks.push({ line: i + 1, pattern: `Unbounded ${line.includes('WeakMap') ? 'WeakMap' : line.includes('Map') ? 'Map' : 'object'} \`${varName}\``, issue: 'Cache without eviction policy may grow unbounded', suggestion: 'Implement LRU eviction or use WeakMap for automatic GC' })
+      }
+    }
+  })
+
+  const totalIssues = listenerLeaks.length + timerLeaks.length + closureLeaks.length + cacheLeaks.length
+  const cleanupScore = Math.max(0, 100 - totalIssues * 15)
+  const severity: Severity = totalIssues >= 5 ? 'critical' : totalIssues >= 3 ? 'error' : totalIssues >= 1 ? 'warning' : 'info'
+
+  return {
+    totalIssues, severity, listenerLeaks, timerLeaks, closureLeaks, cacheLeaks, cleanupScore,
+    summary: totalIssues === 0 ? 'No obvious memory leaks found' : `${totalIssues} potential memory leak(s) detected — cleanup score: ${cleanupScore}/100`
+  }
+}
+
+function formatMemoryLeakReport(r: MemoryLeakResult): string {
+  const lines: string[] = []
+  lines.push(`# Memory Leak Analysis`)
+  lines.push(``)
+  lines.push(`**Cleanup Score:** ${r.cleanupScore}/100 | **Issues:** ${r.totalIssues} | **Severity:** ${r.severity.toUpperCase()}`)
+  lines.push(``)
+  lines.push(`> ${r.summary}`)
+  lines.push(``)
+
+  if (r.listenerLeaks.length > 0) {
+    lines.push(`## Event Listener Leaks (${r.listenerLeaks.length})`)
+    r.listenerLeaks.forEach(l => {
+      lines.push(`- Line ${l.line}: ${l.issue}`)
+      lines.push(`  - Fix: ${l.suggestion}`)
+    })
+    lines.push(``)
+  }
+
+  if (r.timerLeaks.length > 0) {
+    lines.push(`## Timer Leaks (${r.timerLeaks.length})`)
+    r.timerLeaks.forEach(t => {
+      lines.push(`- Line ${t.line}: ${t.issue}`)
+      lines.push(`  - Fix: ${t.suggestion}`)
+    })
+    lines.push(``)
+  }
+
+  if (r.closureLeaks.length > 0) {
+    lines.push(`## Closure Leaks (${r.closureLeaks.length})`)
+    r.closureLeaks.forEach(c => {
+      lines.push(`- Line ${c.line}: ${c.issue} (\`${c.variable}\`)`)
+      lines.push(`  - Fix: ${c.suggestion}`)
+    })
+    lines.push(``)
+  }
+
+  if (r.cacheLeaks.length > 0) {
+    lines.push(`## Unbounded Cache (${r.cacheLeaks.length})`)
+    r.cacheLeaks.forEach(c => {
+      lines.push(`- Line ${c.line}: ${c.issue} (\`${c.pattern}\`)`)
+      lines.push(`  - Fix: ${c.suggestion}`)
+    })
+    lines.push(``)
+  }
+
+  return lines.join('\n')
+}
+
+// ---- Tool 67: i18n Readiness Check ----
+
+interface I18nResult {
+  totalIssues: number
+  severity: Severity
+  hardcodedStrings: { line: number; text: string; context: string; suggestion: string }[]
+  hardcodedNumbers: { line: number; value: string; issue: string }[]
+  hardcodedDates: { line: number; pattern: string; issue: string }[]
+  uiStringsWithoutKey: { line: number; text: string; suggestion: string }[]
+  i18nReadyScore: number
+  summary: string
+}
+
+function checkI18n(code: string): I18nResult {
+  const lines = code.split('\n')
+  const hardcodedStrings: I18nResult['hardcodedStrings'] = []
+  const hardcodedNumbers: I18nResult['hardcodedNumbers'] = []
+  const hardcodedDates: I18nResult['hardcodedDates'] = []
+  const uiKeywords = /(?:title|label|placeholder|message|text|heading|description|tooltip|error|warning|success|hint|button|submit|cancel|ok|close|back|next|loading|welcome|greeting|hello|hi|bye|confirm|delete|remove|add|edit|save|cancel)/i
+
+  lines.forEach((line, i) => {
+    // Skip comments, imports, console
+    if (line.match(/^\s*(?:\/\/|\/\*|\*|\*\/)|import\s|console\.|require\(|^\s*[\#]/)) return
+
+    // Detect hardcoded UI strings: 'hello world' or "welcome" in JSX/render/return
+    const strMatch = line.match(/[''"]([^'"']{3,80})[''"]/g)
+    if (strMatch && (line.includes('return') || line.includes('jsx') || line.includes('=>') || line.includes('render'))) {
+      strMatch.forEach(s => {
+        const text = s.slice(1, -1)
+        if (uiKeywords.test(text) && !text.includes('${') && !text.includes('%') && text.length > 2) {
+          hardcodedStrings.push({ line: i + 1, text, context: line.trim().substring(0, 80), suggestion: `Use i18n.t('${text.toLowerCase().replace(/\s+/g, '_')}') instead` })
+        }
+      })
+    }
+
+    // Detect hardcoded numbers in UI context (dimensions, times, counts)
+    const numMatch = line.match(/(?:width|height|size|duration|timeout|delay|interval|max|min|count|limit|threshold)\s*[:=]\s*(\d+)/i)
+    if (numMatch) {
+      hardcodedNumbers.push({ line: i + 1, value: numMatch[1], issue: `Hardcoded numeric value '${numMatch[1]}' — consider configuration for locale-specific formatting` })
+    }
+
+    // Detect hardcoded dates
+    const dateMatch = line.match(/\d{4}[-/]\d{1,2}[-/]\d{1,2}/)
+    if (dateMatch && !line.includes('//')) {
+      hardcodedDates.push({ line: i + 1, pattern: dateMatch[0], issue: 'Hardcoded date pattern — use Intl.DateTimeFormat for locale-aware formatting' })
+    }
+  })
+
+  const totalIssues = hardcodedStrings.length + hardcodedNumbers.length + hardcodedDates.length
+  const i18nReadyScore = Math.max(0, 100 - totalIssues * 8)
+  const severity: Severity = totalIssues >= 10 ? 'warning' : totalIssues >= 5 ? 'warning' : totalIssues >= 1 ? 'info' : 'info'
+
+  return {
+    totalIssues, severity, hardcodedStrings, hardcodedNumbers, hardcodedDates, uiStringsWithoutKey: [], i18nReadyScore,
+    summary: totalIssues === 0 ? 'Code appears i18n-ready: no hardcoded UI strings found' : `${totalIssues} i18n issue(s) found — readiness score: ${i18nReadyScore}/100`
+  }
+}
+
+function formatI18nReport(r: I18nResult): string {
+  const lines: string[] = []
+  lines.push(`# i18n Readiness Analysis`)
+  lines.push(``)
+  lines.push(`**Readiness Score:** ${r.i18nReadyScore}/100 | **Issues:** ${r.totalIssues} | **Severity:** ${r.severity.toUpperCase()}`)
+  lines.push(``)
+  lines.push(`> ${r.summary}`)
+  lines.push(``)
+
+  if (r.hardcodedStrings.length > 0) {
+    lines.push(`## Hardcoded UI Strings (${r.hardcodedStrings.length})`)
+    r.hardcodedStrings.slice(0, 20).forEach(s => {
+      lines.push(`- Line ${s.line}: \`${s.text}\``)
+      lines.push(`  - ${s.suggestion}`)
+    })
+    if (r.hardcodedStrings.length > 20) lines.push(`- ... and ${r.hardcodedStrings.length - 20} more`)
+    lines.push(``)
+  }
+
+  if (r.hardcodedNumbers.length > 0) {
+    lines.push(`## Hardcoded Numbers (${r.hardcodedNumbers.length})`)
+    r.hardcodedNumbers.forEach(n => {
+      lines.push(`- Line ${n.line}: ${n.issue}`)
+    })
+    lines.push(``)
+  }
+
+  if (r.hardcodedDates.length > 0) {
+    lines.push(`## Hardcoded Dates (${r.hardcodedDates.length})`)
+    r.hardcodedDates.forEach(d => {
+      lines.push(`- Line ${d.line}: ${d.issue}`)
+    })
+    lines.push(``)
+  }
+
+  return lines.join('\n')
+}
+
+// ---- Tool 68: Logging Quality Analysis ----
+
+interface LoggingResult {
+  totalIssues: number
+  severity: Severity
+  consoleUsage: { line: number; method: string; issue: string; suggestion: string }[]
+  piiExposure: { line: number; field: string; suggestion: string }[]
+  missingContext: { line: number; issue: string; suggestion: string }[]
+  logLevelIssues: { line: number; issue: string; suggestion: string }[]
+  structuredLoggingScore: number
+  summary: string
+}
+
+function analyzeLogging(code: string): LoggingResult {
+  const lines = code.split('\n')
+  const consoleUsage: LoggingResult['consoleUsage'] = []
+  const piiExposure: LoggingResult['piiExposure'] = []
+  const missingContext: LoggingResult['missingContext'] = []
+  const logLevelIssues: LoggingResult['logLevelIssues'] = []
+  const piiPatterns = /(?:password|ssn|social.security|credit.card|cvv|token|secret|apikey|api.key|auth|email|phone|address|dob|birthdate|name|first_name|last_name)/i
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/\/|\/\*|\*)/)) return
+
+    // Detect console.* usage
+    const consoleMatch = line.match(/console\.(log|warn|error|info|debug|trace)\s*\(/)
+    if (consoleMatch) {
+      const method = consoleMatch[1]
+      let severity_of_issue = 'Replace with structured logger (winston/pino)'
+      if (method === 'log') {
+        consoleUsage.push({ line: i + 1, method: 'log', issue: 'console.log in production code', suggestion: 'Use logger.debug() or remove for production' })
+      }
+      if (method === 'debug') {
+        consoleUsage.push({ line: i + 1, method: 'debug', issue: 'console.debug in production code', suggestion: 'Use logger.debug() with proper log levels' })
+      }
+    }
+
+    // Detect PII in log messages
+    if (piiPatterns.test(line) && (line.includes('console.') || line.includes('logger.') || line.includes('log.'))) {
+      const fieldMatch = line.match(piiPatterns)
+      piiExposure.push({ line: i + 1, field: fieldMatch?.[0] || 'PII', suggestion: `Mask ${fieldMatch?.[0] || 'PII'} value before logging` })
+    }
+
+    // Detect log without context/string literal
+    if (line.match(new RegExp('console\\.\\w+\\s*\\(\\s*\\w+\\s*\\)'))) {
+      missingContext.push({ line: i + 1, issue: 'Logging variable without descriptive context', suggestion: 'Add a message prefix: console.log("User data:", user)' })
+    }
+
+    // Detect excessive console.error without throw
+    if (line.includes('console.error') && !line.includes('throw') && !line.includes('Error(')) {
+      logLevelIssues.push({ line: i + 1, issue: 'console.error without throwing — may silently swallow errors', suggestion: 'Either throw an error or use logger.warn()' })
+    }
+  })
+
+  const totalIssues = consoleUsage.length + piiExposure.length + missingContext.length + logLevelIssues.length
+  const structuredLoggingScore = Math.max(0, 100 - totalIssues * 10)
+  const severity: Severity = piiExposure.length > 0 ? 'critical' : totalIssues >= 5 ? 'error' : totalIssues >= 2 ? 'warning' : 'info'
+
+  return {
+    totalIssues, severity, consoleUsage, piiExposure, missingContext, logLevelIssues, structuredLoggingScore,
+    summary: totalIssues === 0 ? 'Logging practices look clean' : `${totalIssues} logging issue(s) — structured logging score: ${structuredLoggingScore}/100`
+  }
+}
+
+function formatLoggingReport(r: LoggingResult): string {
+  const lines: string[] = []
+  lines.push(`# Logging Quality Analysis`)
+  lines.push(``)
+  lines.push(`**Structured Score:** ${r.structuredLoggingScore}/100 | **Issues:** ${r.totalIssues} | **Severity:** ${r.severity.toUpperCase()}`)
+  lines.push(``)
+  lines.push(`> ${r.summary}`)
+  lines.push(``)
+
+  if (r.piiExposure.length > 0) {
+    lines.push(`## PII Exposure Risk (${r.piiExposure.length}) ⚠️`)
+    r.piiExposure.forEach(p => {
+      lines.push(`- Line ${p.line}: Logging \`${p.field}\` — ${p.suggestion}`)
+    })
+    lines.push(``)
+  }
+
+  if (r.consoleUsage.length > 0) {
+    lines.push(`## Console Statements (${r.consoleUsage.length})`)
+    r.consoleUsage.forEach(c => {
+      lines.push(`- Line ${c.line}: console.${c.method}() — ${c.suggestion}`)
+    })
+    lines.push(``)
+  }
+
+  if (r.missingContext.length > 0) {
+    lines.push(`## Missing Log Context (${r.missingContext.length})`)
+    r.missingContext.forEach(m => {
+      lines.push(`- Line ${m.line}: ${m.suggestion}`)
+    })
+    lines.push(``)
+  }
+
+  if (r.logLevelIssues.length > 0) {
+    lines.push(`## Log Level Issues (${r.logLevelIssues.length})`)
+    r.logLevelIssues.forEach(l => {
+      lines.push(`- Line ${l.line}: ${l.suggestion}`)
+    })
+    lines.push(``)
+  }
+
+  return lines.join('\n')
+}
+
+// ---- Tool 69: Configuration File Validator ----
+
+interface ConfigResult {
+  totalIssues: number
+  severity: Severity
+  missingFields: { field: string; reason: string; suggestion: string }[]
+  typeIssues: { line: number; field: string; expected: string; got: string }[]
+  insecureValues: { field: string; issue: string; suggestion: string }[]
+  deprecatedFields: { field: string; replacement: string }[]
+  validationScore: number
+  summary: string
+}
+
+function validateConfig(code: string): ConfigResult {
+  const lines = code.split('\n')
+  const missingFields: ConfigResult['missingFields'] = []
+  const typeIssues: ConfigResult['typeIssues'] = []
+  const insecureValues: ConfigResult['insecureValues'] = []
+  const deprecatedFields: ConfigResult['deprecatedFields'] = []
+
+  // Required fields for common configs
+  const requiredFields = ['name', 'version']
+  const foundFields: Set<string> = new Set()
+
+  lines.forEach((line, i) => {
+    // Detect field names in JSON/YAML-like config
+    const fieldMatch = line.match(/['"]?(\w+)['"]?\s*[:=]\s*/)
+    if (fieldMatch) {
+      foundFields.add(fieldMatch[1])
+    }
+
+    // Detect insecure values
+    if (line.match(/(?:password|secret|token|apikey|api_key)\s*[:=]\s*['"][^'"]+['"]/i)) {
+      const valMatch = line.match(/(\w+)\s*[:=]\s*['"]([^'"]+)['"]/)
+      if (valMatch && valMatch[2] !== '***' && !valMatch[2].includes('${') && !valMatch[2].includes('process.env')) {
+        insecureValues.push({ field: valMatch[1], issue: 'Hardcoded secret in config', suggestion: 'Use environment variable: process.env.' + valMatch[1].toUpperCase() })
+      }
+    }
+
+    // Detect boolean as string
+    const boolMatch = line.match(/(?:enabled|disabled|debug|verbose|strict|production)\s*[:=]\s*['"](true|false|yes|no|on|off)['"]/i)
+    if (boolMatch) {
+      typeIssues.push({ line: i + 1, field: boolMatch[0].split(/[:=]/)[0].trim(), expected: 'boolean', got: 'string' })
+    }
+
+    // Detect port as string
+    const portMatch = line.match(/port\s*[:=]\s*['"](\d+)['"]/)
+    if (portMatch) {
+      typeIssues.push({ line: i + 1, field: 'port', expected: 'number', got: 'string' })
+    }
+
+    // Detect deprecated fields
+    const deprecated = [{ old: 'compilerOptions.moduleResolution', new: 'moduleResolution: "bundler"' }, { old: 'extends', new: 'Use overrides instead' }]
+    deprecated.forEach(d => {
+      if (line.includes(d.old)) {
+        deprecatedFields.push({ field: d.old, replacement: d.new })
+      }
+    })
+  })
+
+  // Check missing required fields
+  requiredFields.forEach(f => {
+    if (!foundFields.has(f)) {
+      missingFields.push({ field: f, reason: 'Required field missing in config', suggestion: `Add '${f}' field to configuration` })
+    }
+  })
+
+  const totalIssues = missingFields.length + typeIssues.length + insecureValues.length + deprecatedFields.length
+  const validationScore = Math.max(0, 100 - totalIssues * 12)
+  const severity: Severity = insecureValues.length > 0 ? 'critical' : totalIssues >= 5 ? 'error' : totalIssues >= 2 ? 'warning' : 'info'
+
+  return {
+    totalIssues, severity, missingFields, typeIssues, insecureValues, deprecatedFields, validationScore,
+    summary: totalIssues === 0 ? 'Configuration file is valid' : `${totalIssues} config issue(s) — validation score: ${validationScore}/100`
+  }
+}
+
+function formatConfigReport(r: ConfigResult): string {
+  const lines: string[] = []
+  lines.push(`# Configuration Validation`)
+  lines.push(``)
+  lines.push(`**Validation Score:** ${r.validationScore}/100 | **Issues:** ${r.totalIssues} | **Severity:** ${r.severity.toUpperCase()}`)
+  lines.push(``)
+  lines.push(`> ${r.summary}`)
+  lines.push(``)
+
+  if (r.insecureValues.length > 0) {
+    lines.push(`## Insecure Values (${r.insecureValues.length}) ⚠️`)
+    r.insecureValues.forEach(v => {
+      lines.push(`- \`${v.field}\`: ${v.suggestion}`)
+    })
+    lines.push(``)
+  }
+
+  if (r.missingFields.length > 0) {
+    lines.push(`## Missing Required Fields (${r.missingFields.length})`)
+    r.missingFields.forEach(f => {
+      lines.push(`- \`${f.field}\`: ${f.reason}`)
+    })
+    lines.push(``)
+  }
+
+  if (r.typeIssues.length > 0) {
+    lines.push(`## Type Issues (${r.typeIssues.length})`)
+    r.typeIssues.forEach(t => {
+      lines.push(`- Line ${t.line}: \`${t.field}\` should be ${t.expected}, not ${t.got}`)
+    })
+    lines.push(``)
+  }
+
+  if (r.deprecatedFields.length > 0) {
+    lines.push(`## Deprecated Fields (${r.deprecatedFields.length})`)
+    r.deprecatedFields.forEach(d => {
+      lines.push(`- \`${d.field}\` → ${d.replacement}`)
+    })
+    lines.push(``)
+  }
+
+  return lines.join('\n')
+}
+
+// ---- Tool 70: Bundle Size Estimation ----
+
+interface BundleResult {
+  totalIssues: number
+  severity: Severity
+  heavyImports: { line: number; module: string; estimatedSize: string; suggestion: string }[]
+  duplicateModules: { module: string; lines: number[] }[]
+  largeChains: { line: number; chain: string; depth: number; suggestion: string }[]
+  dynamicImportOpportunities: { line: number; module: string; suggestion: string }[]
+  estimatedTotalSize: string
+  summary: string
+}
+
+function estimateBundleSize(code: string): BundleResult {
+  const lines = code.split('\n')
+  const heavyImports: BundleResult['heavyImports'] = []
+  const duplicateModules: Map<string, number[]> = new Map()
+  const largeChains: BundleResult['largeChains'] = []
+  const dynamicImportOpportunities: BundleResult['dynamicImportOpportunities'] = []
+
+  const heavyPackages: Record<string, string> = {
+    lodash: '~70KB', moment: '~67KB', jquery: '~87KB', axios: '~13KB',
+    antd: '~100KB+', '@mui/material': '~90KB+', 'chart.js': '~80KB',
+    'three.js': '~120KB', 'ramda': '~25KB', 'date-fns': '~20KB',
+    'express': '~20KB', 'koa': '~15KB', 'vue': '~40KB', 'react': '~6KB (core)'
+  }
+
+  lines.forEach((line, i) => {
+    // Detect import statements
+    const importMatch = line.match(/(?:import|require)\s*\(?['"]([^'"]+)['"]/)
+    if (importMatch) {
+      const module = importMatch[1]
+      // Check if heavy
+      const heavyKey = Object.keys(heavyPackages).find(k => module.startsWith(k))
+      if (heavyKey) {
+        heavyImports.push({ line: i + 1, module: heavyKey, estimatedSize: heavyPackages[heavyKey], suggestion: `Consider tree-shakeable import: import { specific } from '${heavyKey}'` })
+      }
+      // Track duplicates
+      const baseModule = module.split('/')[0]
+      if (baseModule) {
+        const existing = duplicateModules.get(baseModule) || []
+        existing.push(i + 1)
+        duplicateModules.set(baseModule, existing)
+      }
+      // Detect dynamic import opportunities (large libs used in conditional code)
+      if (line.includes('import') && heavyKey && i > 0) {
+        const prevLine = lines[i - 1] || ''
+        const nextLines = lines.slice(i + 1, i + 5).join('\n')
+        if (prevLine.includes('if') || nextLines.includes('if') || nextLines.includes('lazy') || prevLine.includes('//')) {
+          dynamicImportOpportunities.push({ line: i + 1, module: heavyKey, suggestion: `Use dynamic import() for '${heavyKey}' to reduce initial bundle` })
+        }
+      }
+    }
+
+    // Detect deep property chains: a.b.c.d.e
+    const chainMatch = line.match(/(\w+(?:\.\w+){4,})/)
+    if (chainMatch) {
+      const chain = chainMatch[1]
+      const depth = chain.split('.').length
+      largeChains.push({ line: i + 1, chain, depth, suggestion: `Destructure to reduce property access chain depth` })
+    }
+  })
+
+  const dupModules = Array.from(duplicateModules.entries()).filter(([_, v]) => v.length > 1).map(([m, l]) => ({ module: m, lines: l }))
+  const totalIssues = heavyImports.length + dupModules.length + largeChains.length + dynamicImportOpportunities.length
+  const severity: Severity = totalIssues >= 5 ? 'warning' : totalIssues >= 2 ? 'info' : 'info'
+
+  return {
+    totalIssues, severity, heavyImports, duplicateModules: dupModules, largeChains, dynamicImportOpportunities,
+    estimatedTotalSize: `${heavyImports.length * 30 + 50}KB+ estimated`,
+    summary: `${heavyImports.length} heavy import(s), ${dupModules.length} duplicated module(s)` + (dynamicImportOpportunities.length > 0 ? `, ${dynamicImportOpportunities.length} dynamic import opportunity(ies)` : '')
+  }
+}
+
+function formatBundleReport(r: BundleResult): string {
+  const lines: string[] = []
+  lines.push(`# Bundle Size Estimation`)
+  lines.push(``)
+  lines.push(`**Estimated Base Size:** ${r.estimatedTotalSize} | **Issues:** ${r.totalIssues}`)
+  lines.push(``)
+  lines.push(`> ${r.summary}`)
+  lines.push(``)
+
+  if (r.heavyImports.length > 0) {
+    lines.push(`## Heavy Imports (${r.heavyImports.length})`)
+    r.heavyImports.forEach(h => {
+      lines.push(`- Line ${h.line}: \`${h.module}\` (~${h.estimatedSize})`)
+      lines.push(`  - ${h.suggestion}`)
+    })
+    lines.push(``)
+  }
+
+  if (r.duplicateModules.length > 0) {
+    lines.push(`## Duplicate Modules (${r.duplicateModules.length})`)
+    r.duplicateModules.forEach(d => {
+      lines.push(`- \`${d.module}\` imported on lines: ${d.lines.join(', ')}`)
+    })
+    lines.push(``)
+  }
+
+  if (r.dynamicImportOpportunities.length > 0) {
+    lines.push(`## Dynamic Import Opportunities (${r.dynamicImportOpportunities.length})`)
+    r.dynamicImportOpportunities.forEach(d => {
+      lines.push(`- Line ${d.line}: \`${d.module}\` — ${d.suggestion}`)
+    })
+    lines.push(``)
+  }
+
+  return lines.join('\n')
+}
+
+// ---- Tool 71: Accessibility Scan ----
+
+interface A11yResult {
+  totalIssues: number
+  severity: Severity
+  missingAltText: { line: number; element: string; suggestion: string }[]
+  missingLabels: { line: number; element: string; suggestion: string }[]
+  ariaIssues: { line: number; issue: string; suggestion: string }[]
+  keyboardIssues: { line: number; element: string; issue: string; suggestion: string }[]
+  contrastIssues: { line: number; issue: string; suggestion: string }[]
+  a11yScore: number
+  summary: string
+}
+
+function scanAccessibility(code: string): A11yResult {
+  const lines = code.split('\n')
+  const missingAltText: A11yResult['missingAltText'] = []
+  const missingLabels: A11yResult['missingLabels'] = []
+  const ariaIssues: A11yResult['ariaIssues'] = []
+  const keyboardIssues: A11yResult['keyboardIssues'] = []
+  const contrastIssues: A11yResult['contrastIssues'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/\/|\/\*|\*)/)) return
+
+    // Detect images without alt
+    if (line.match(/<img\b/i) && !line.match(/\balt\s*=/)) {
+      missingAltText.push({ line: i + 1, element: 'img', suggestion: 'Add alt attribute: alt="descriptive text" or alt="" if decorative' })
+    }
+
+    // Detect input without label
+    if (line.match(/<input\b/i) && !line.match(/\bid\s*=|<label|aria-label|placeholder/)) {
+      missingLabels.push({ line: i + 1, element: 'input', suggestion: 'Associate with <label for="id"> or add aria-label' })
+    }
+
+    // Detect div/span used as buttons
+    if (line.match(/<(div|span)\b[^>]*(?:onClick|onclick|onPress)\s*=/i) && !line.match(/\brole\s*=\s*['"]button['"]/)) {
+      keyboardIssues.push({ line: i + 1, element: line.match(/<(div|span)/i)?.[1] || 'div', issue: 'Clickable non-button element', suggestion: 'Add role="button", tabIndex={0}, and onKeyDown for keyboard access' })
+    }
+
+    // Detect missing aria-* on interactive divs
+    if (line.match(/<(div|span|section|article)\b[^>]*role\s*=\s*['"]/i)) {
+      const hasAria = line.match(/\baria-/)
+      if (!hasAria && line.match(/role\s*=\s*['"](?:dialog|alert|tab|checkbox|radio|switch)/)) {
+        ariaIssues.push({ line: i + 1, issue: `Interactive role without ARIA states`, suggestion: 'Add aria-expanded, aria-checked, or appropriate state attribute' })
+      }
+    }
+
+    // Detect autofocus (can confuse screen readers)
+    if (line.match(/\bautofocus\b/i)) {
+      contrastIssues.push({ line: i + 1, issue: 'Autofocus may disorient screen reader users', suggestion: 'Use autofocus sparingly and only on primary action' })
+    }
+  })
+
+  const totalIssues = missingAltText.length + missingLabels.length + ariaIssues.length + keyboardIssues.length + contrastIssues.length
+  const a11yScore = Math.max(0, 100 - totalIssues * 10)
+  const severity: Severity = totalIssues >= 5 ? 'error' : totalIssues >= 2 ? 'warning' : 'info'
+
+  return {
+    totalIssues, severity, missingAltText, missingLabels, ariaIssues, keyboardIssues, contrastIssues, a11yScore,
+    summary: totalIssues === 0 ? 'Basic accessibility checks passed' : `${totalIssues} a11y issue(s) — score: ${a11yScore}/100`
+  }
+}
+
+function formatA11yReport(r: A11yResult): string {
+  const lines: string[] = []
+  lines.push(`# Accessibility (a11y) Scan`)
+  lines.push(``)
+  lines.push(`**A11y Score:** ${r.a11yScore}/100 | **Issues:** ${r.totalIssues} | **Severity:** ${r.severity.toUpperCase()}`)
+  lines.push(``)
+  lines.push(`> ${r.summary}`)
+  lines.push(``)
+
+  if (r.missingAltText.length > 0) {
+    lines.push(`## Missing Alt Text (${r.missingAltText.length})`)
+    r.missingAltText.forEach(a => lines.push(`- Line ${a.line}: <${a.element}> — ${a.suggestion}`))
+    lines.push(``)
+  }
+
+  if (r.missingLabels.length > 0) {
+    lines.push(`## Missing Labels (${r.missingLabels.length})`)
+    r.missingLabels.forEach(l => lines.push(`- Line ${l.line}: <${l.element}> — ${l.suggestion}`))
+    lines.push(``)
+  }
+
+  if (r.keyboardIssues.length > 0) {
+    lines.push(`## Keyboard Navigation (${r.keyboardIssues.length})`)
+    r.keyboardIssues.forEach(k => lines.push(`- Line ${k.line}: ${k.issue} — ${k.suggestion}`))
+    lines.push(``)
+  }
+
+  if (r.ariaIssues.length > 0) {
+    lines.push(`## ARIA Issues (${r.ariaIssues.length})`)
+    r.ariaIssues.forEach(a => lines.push(`- Line ${a.line}: ${a.suggestion}`))
+    lines.push(``)
+  }
+
+  return lines.join('\n')
+}
+
+// ---- Tool 72: Design Pattern Detection ----
+
+interface PatternResult {
+  totalFound: number
+  patterns: { line: number; pattern: string; confidence: string; evidence: string; suggestion: string }[]
+  antiPatterns: { line: number; pattern: string; issue: string; suggestion: string }[]
+  suggestions: { pattern: string; reason: string; example: string }[]
+  patternScore: number
+  summary: string
+}
+
+function detectPatterns(code: string): PatternResult {
+  const lines = code.split('\n')
+  const patterns: PatternResult['patterns'] = []
+  const antiPatterns: PatternResult['antiPatterns'] = []
+  const suggestions: PatternResult['suggestions'] = []
+
+  // Detect Singleton
+  lines.forEach((line, i) => {
+    if (line.match(/static\s+(?:getInstance|getInstance)\s*\(/)) {
+      patterns.push({ line: i + 1, pattern: 'Singleton', confidence: 'high', evidence: 'static getInstance() method', suggestion: 'Consider dependency injection instead for testability' })
+    }
+    if (line.match(/\bprivate\s+constructor\s*\(/)) {
+      patterns.push({ line: i + 1, pattern: 'Singleton (private constructor)', confidence: 'medium', evidence: 'private constructor', suggestion: 'Ensure this is intentional singleton usage' })
+    }
+  })
+
+  // Detect Factory
+  lines.forEach((line, i) => {
+    if (line.match(/\bcreate\w*\s*\(\s*(?:type|kind|name|variant)\s*[,)]/i)) {
+      patterns.push({ line: i + 1, pattern: 'Factory', confidence: 'medium', evidence: 'create* method accepting type parameter', suggestion: 'Factory pattern detected — ensure consistent return types' })
+    }
+  })
+
+  // Detect Observer
+  lines.forEach((line, i) => {
+    if (line.match(/\b(on|emit|subscribe|notify|observe|listener)\b/) && line.match(/\b(function|const|=>|=>\s*\{)/)) {
+      patterns.push({ line: i + 1, pattern: 'Observer/Pub-Sub', confidence: 'medium', evidence: 'Event emission/subscription pattern', suggestion: 'Consider EventTarget or RxJS for complex event flows' })
+    }
+  })
+
+  // Detect Strategy
+  let strategyCount = 0
+  lines.forEach((line, i) => {
+    if (line.match(/(?:strategy|policy|algorithm|handler|processor)\s*[:=]/i)) {
+      strategyCount++
+      if (strategyCount <= 3) {
+        patterns.push({ line: i + 1, pattern: 'Strategy', confidence: 'low', evidence: 'Strategy-named variable/parameter', suggestion: 'Ensure strategies are interchangeable with common interface' })
+      }
+    }
+  })
+
+  // Anti-pattern: God Object (class with many methods)
+  let classStart = -1
+  const methodRegex = /^\s+(?:async\s+)?(?:\w+)\s*\([^)]*\)\s*(?::\s*\w+)?\s*\{/
+  let methodCount = 0
+  let classLine = 0
+  lines.forEach((line, i) => {
+    const classMatch = line.match(/^class\s+\w+/)
+    if (classMatch && classStart === -1) {
+      classStart = i
+      classLine = i + 1
+      methodCount = 0
+    } else if (classStart >= 0 && line.match(methodRegex)) {
+      methodCount++
+      if (methodCount === 15) {
+        antiPatterns.push({ line: classLine, pattern: 'God Object', issue: `Class has ${methodCount}+ methods`, suggestion: 'Split into smaller cohesive classes (SRP)' })
+      }
+    } else if (classStart >= 0 && line.match(/^\s*\}\s*$/) && methodCount > 0) {
+      classStart = -1
+    }
+  })
+
+  // Anti-pattern: Spaghetti Code / Chain
+  lines.forEach((line, i) => {
+    if (line.match(/\w+(?:\.\w+){5,}\(/)) {
+      antiPatterns.push({ line: i + 1, pattern: 'Train Wreck', issue: 'Deep method chaining violates Law of Demeter', suggestion: 'Extract intermediate variables or add a facade method' })
+    }
+  })
+
+  // Suggest patterns based on code structure
+  if (patterns.length === 0 && antiPatterns.length === 0) {
+    suggestions.push({ pattern: 'Module Pattern', reason: 'Code uses plain functions — consider organizing into modules', example: 'export const UserService = { create, find, update }' })
+  }
+  if (antiPatterns.some(a => a.pattern === 'God Object')) {
+    suggestions.push({ pattern: 'Facade Pattern', reason: 'Large class detected — provide a simplified interface', example: 'class UserFacade { constructor(private service: UserService) {} }' })
+  }
+
+  const totalFound = patterns.length + antiPatterns.length
+  const patternScore = Math.min(100, patterns.length * 15 + (antiPatterns.length === 0 ? 50 : 0))
+
+  return {
+    totalFound, patterns, antiPatterns, suggestions, patternScore,
+    summary: `${patterns.length} pattern(s) detected, ${antiPatterns.length} anti-pattern(s) found`
+  }
+}
+
+function formatPatternReport(r: PatternResult): string {
+  const lines: string[] = []
+  lines.push(`# Design Pattern Detection`)
+  lines.push(``)
+  lines.push(`**Patterns Found:** ${r.patterns.length} | **Anti-Patterns:** ${r.antiPatterns.length} | **Score:** ${r.patternScore}/100`)
+  lines.push(``)
+  lines.push(`> ${r.summary}`)
+  lines.push(``)
+
+  if (r.patterns.length > 0) {
+    lines.push(`## Detected Patterns`)
+    r.patterns.forEach(p => {
+      lines.push(`- Line ${p.line}: **${p.pattern}** (${p.confidence})`)
+      lines.push(`  - Evidence: ${p.evidence}`)
+      lines.push(`  - ${p.suggestion}`)
+    })
+    lines.push(``)
+  }
+
+  if (r.antiPatterns.length > 0) {
+    lines.push(`## Anti-Patterns`)
+    r.antiPatterns.forEach(a => {
+      lines.push(`- Line ${a.line}: **${a.pattern}** — ${a.issue}`)
+      lines.push(`  - Fix: ${a.suggestion}`)
+    })
+    lines.push(``)
+  }
+
+  if (r.suggestions.length > 0) {
+    lines.push(`## Suggested Patterns`)
+    r.suggestions.forEach(s => {
+      lines.push(`- **${s.pattern}**: ${s.reason}`)
+      lines.push(`  - Example: \`${s.example}\``)
+    })
+    lines.push(``)
+  }
+
+  return lines.join('\n')
+}
+
+// ---- Tool 73: Error Boundary Analysis ----
+
+interface ErrorBoundaryResult {
+  totalIssues: number
+  severity: Severity
+  uncheckedAsync: { line: number; pattern: string; suggestion: string }[]
+  emptyCatch: { line: number; issue: string; suggestion: string }[]
+  missingFinally: { line: number; resource: string; suggestion: string }[]
+  errorPropagation: { line: number; issue: string; suggestion: string }[]
+  customErrors: { line: number; name: string; extends: string }[]
+  safetyScore: number
+  summary: string
+}
+
+function analyzeErrorBoundaries(code: string): ErrorBoundaryResult {
+  const lines = code.split('\n')
+  const uncheckedAsync: ErrorBoundaryResult['uncheckedAsync'] = []
+  const emptyCatch: ErrorBoundaryResult['emptyCatch'] = []
+  const missingFinally: ErrorBoundaryResult['missingFinally'] = []
+  const errorPropagation: ErrorBoundaryResult['errorPropagation'] = []
+  const customErrors: ErrorBoundaryResult['customErrors'] = []
+
+  let inTryBlock = false
+  let tryStartLine = 0
+  let hasCatch = false
+  let hasFinally = false
+  let catchStartLine = 0
+  let catchContent: string[] = []
+  let braceDepth = 0
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/\/|\/\*|\*)/)) return
+
+    // Detect try blocks
+    if (line.match(/\btry\s*\{/)) {
+      inTryBlock = true; tryStartLine = i + 1; hasCatch = false; hasFinally = false
+      braceDepth = 1; catchContent = []
+    }
+
+    // Detect empty catch blocks
+    if (inTryBlock && line.match(/\bcatch\s*(?:\(\w+\))?\s*\{/)) {
+      hasCatch = true; catchStartLine = i + 1; catchContent = []
+    }
+
+    if (inTryBlock && hasCatch && !hasFinally) {
+      catchContent.push(line.trim())
+      if (line.match(/\bfinally\s*\{/)) hasFinally = true
+    }
+
+    if (inTryBlock && hasCatch && !hasFinally && catchContent.length > 1 && line.match(/^\s*\}\s*$/)) {
+      // Check if catch block is effectively empty
+      if (catchContent.filter(l => l.length > 0 && !l.match(/^\/\/|^\s*\*|^\s*\{|^\s*\}/)).length <= 1) {
+        emptyCatch.push({ line: catchStartLine, issue: 'Empty or no-op catch block swallows errors', suggestion: 'Log error and/or rethrow: catch(e) { logger.error(e); throw e }' })
+      }
+    }
+
+    // Detect async calls without try/catch
+    if (line.match(/\bawait\s+/) && !inTryBlock) {
+      const threeLinesAbove = lines.slice(Math.max(0, i - 3), i).join('\n')
+      if (!threeLinesAbove.includes('try')) {
+        uncheckedAsync.push({ line: i + 1, pattern: line.trim().substring(0, 60), suggestion: 'Wrap in try/catch or add .catch() handler' })
+      }
+    }
+
+    // Detect resource usage without finally
+    if (line.match(/\b(?:open|connect|acquire|lock|start)\s*\(/i) && !line.match(/\bclose|release|unlock|stop/i)) {
+      const resourceName = line.match(/\b(\w+)\s*[:=]/)?.[1] || 'resource'
+      const restOfCode = lines.slice(i + 1, i + 20).join('\n')
+      if (!restOfCode.includes('finally') && !restOfCode.includes('close()') && !restOfCode.includes('.close')) {
+        missingFinally.push({ line: i + 1, resource: resourceName, suggestion: `Use try/finally to ensure ${resourceName} is cleaned up` })
+      }
+    }
+
+    // Detect throw without custom error
+    if (line.match(/\bthrow\s+new\s+(\w+)\s*\(/)) {
+      const throwMatch = line.match(/\bthrow\s+new\s+(\w+)\s*\(/)
+      const errorName = throwMatch?.[1] || 'Error'
+      if (errorName === 'Error') {
+        errorPropagation.push({ line: i + 1, issue: 'Using generic Error class', suggestion: 'Create a domain-specific error class (e.g., ValidationError, NotFoundError)' })
+      }
+    }
+
+    // Detect custom error classes
+    const customErrorMatch = line.match(/class\s+(\w+Error)\s+extends\s+(\w+)/)
+    if (customErrorMatch) {
+      customErrors.push({ line: i + 1, name: customErrorMatch[1], extends: customErrorMatch[2] })
+    }
+  })
+
+  const totalIssues = uncheckedAsync.length + emptyCatch.length + missingFinally.length + errorPropagation.length
+  const safetyScore = Math.max(0, 100 - totalIssues * 10)
+  const severity: Severity = totalIssues >= 5 ? 'error' : totalIssues >= 3 ? 'warning' : totalIssues >= 1 ? 'info' : 'info'
+
+  return {
+    totalIssues, severity, uncheckedAsync, emptyCatch, missingFinally, errorPropagation, customErrors, safetyScore,
+    summary: totalIssues === 0 ? 'Error handling looks robust' : `${totalIssues} error handling issue(s) — safety score: ${safetyScore}/100`
+  }
+}
+
+function formatErrorBoundaryReport(r: ErrorBoundaryResult): string {
+  const lines: string[] = []
+  lines.push(`# Error Boundary Analysis`)
+  lines.push(``)
+  lines.push(`**Safety Score:** ${r.safetyScore}/100 | **Issues:** ${r.totalIssues} | **Severity:** ${r.severity.toUpperCase()}`)
+  lines.push(``)
+  lines.push(`> ${r.summary}`)
+  lines.push(``)
+
+  if (r.uncheckedAsync.length > 0) {
+    lines.push(`## Unchecked Async Operations (${r.uncheckedAsync.length})`)
+    r.uncheckedAsync.forEach(a => {
+      lines.push(`- Line ${a.line}: \`${a.pattern}\``)
+      lines.push(`  - ${a.suggestion}`)
+    })
+    lines.push(``)
+  }
+
+  if (r.emptyCatch.length > 0) {
+    lines.push(`## Empty Catch Blocks (${r.emptyCatch.length})`)
+    r.emptyCatch.forEach(c => {
+      lines.push(`- Line ${c.line}: ${c.suggestion}`)
+    })
+    lines.push(``)
+  }
+
+  if (r.missingFinally.length > 0) {
+    lines.push(`## Resource Cleanup (${r.missingFinally.length})`)
+    r.missingFinally.forEach(f => {
+      lines.push(`- Line ${f.line}: \`${f.resource}\` — ${f.suggestion}`)
+    })
+    lines.push(``)
+  }
+
+  if (r.errorPropagation.length > 0) {
+    lines.push(`## Generic Errors (${r.errorPropagation.length})`)
+    r.errorPropagation.forEach(e => {
+      lines.push(`- Line ${e.line}: ${e.suggestion}`)
+    })
+    lines.push(``)
+  }
+
+  if (r.customErrors.length > 0) {
+    lines.push(`## Custom Error Classes (${r.customErrors.length})`)
+    r.customErrors.forEach(c => lines.push(`- Line ${c.line}: \`${c.name} extends ${c.extends}\``))
+    lines.push(``)
+  }
+
+  return lines.join('\n')
+}
+
 // ==================== PLUGIN REGISTRATION ====================
 
 export function apply(ctx: Context) {
@@ -8742,5 +9713,117 @@ export function apply(ctx: Context) {
     }
   }))
 
-  console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression`)
+  // Tool 66: Memory Leak Detection (v0.13.0)
+  ctx.tools.register(defineTool({
+    name: 'memory_leak_detect',
+    description: 'Detect memory leaks: uncleared listeners, timers, unbounded caches, closure leaks.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = detectMemoryLeaks(args.code)
+      return formatMemoryLeakReport(result)
+    }
+  }))
+
+  // Tool 67: i18n Readiness Check (v0.13.0)
+  ctx.tools.register(defineTool({
+    name: 'i18n_check',
+    description: 'Check i18n readiness: hardcoded UI strings, numbers, dates that need internationalization.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code to check' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = checkI18n(args.code)
+      return formatI18nReport(result)
+    }
+  }))
+
+  // Tool 68: Logging Quality Analysis (v0.13.0)
+  ctx.tools.register(defineTool({
+    name: 'logging_quality',
+    description: 'Analyze logging quality: console statements, PII exposure, missing context, log levels.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeLogging(args.code)
+      return formatLoggingReport(result)
+    }
+  }))
+
+  // Tool 69: Configuration Validator (v0.13.0)
+  ctx.tools.register(defineTool({
+    name: 'config_validate',
+    description: 'Validate configuration files: missing fields, insecure values, type issues, deprecated fields.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The configuration file content to validate' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = validateConfig(args.code)
+      return formatConfigReport(result)
+    }
+  }))
+
+  // Tool 70: Bundle Size Estimation (v0.13.0)
+  ctx.tools.register(defineTool({
+    name: 'bundle_size',
+    description: 'Estimate bundle size: heavy imports, duplicate modules, dynamic import opportunities.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = estimateBundleSize(args.code)
+      return formatBundleReport(result)
+    }
+  }))
+
+  // Tool 71: Accessibility Scan (v0.13.0)
+  ctx.tools.register(defineTool({
+    name: 'accessibility_scan',
+    description: 'Scan accessibility: missing alt text, labels, ARIA attributes, keyboard navigation.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code to scan' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = scanAccessibility(args.code)
+      return formatA11yReport(result)
+    }
+  }))
+
+  // Tool 72: Design Pattern Detection (v0.13.0)
+  ctx.tools.register(defineTool({
+    name: 'design_pattern',
+    description: 'Detect design patterns and anti-patterns: Singleton, Factory, Observer, God Object, etc.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = detectPatterns(args.code)
+      return formatPatternReport(result)
+    }
+  }))
+
+  // Tool 73: Error Boundary Analysis (v0.13.0)
+  ctx.tools.register(defineTool({
+    name: 'error_boundary',
+    description: 'Analyze error handling: unchecked async, empty catch, resource cleanup, custom errors.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeErrorBoundaries(args.code)
+      return formatErrorBoundaryReport(result)
+    }
+  }))
+
+  console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary`)
 }
