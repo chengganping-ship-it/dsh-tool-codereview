@@ -1,10 +1,10 @@
 /**
- * DSH Code Review Assistant Plugin - Enterprise Edition v0.14.0
+ * DSH Code Review Assistant Plugin - Enterprise Edition v0.15.0
  * 
  * Enterprise-grade code analysis toolkit for DeepSeek Harness Agent.
  * 
- * Features (v0.14.0):
- * - 81 comprehensive analysis tools
+ * Features (v0.15.0):
+ * - 89 comprehensive analysis tools
  * - SARIF 2.1.0 export (GitHub Code Scanning & CI/CD compatible)
  * - Security scanning (OWASP Top 10 2021, CWE Top 25, SANS Top 25)
  * - Code Smell Detection (God Object, Feature Envy, Shotgun Surgery, etc.)
@@ -46,9 +46,17 @@
  * - CSS/style analysis (!important, specificity, magic numbers)
  * - Dependency version policy (deprecated, unpinned)
  * - State management (mutations, re-renders, normalization)
+ * - API contract validation (unprotected routes, responses)
+ * - GraphQL analysis (depth, N+1, pagination)
+ * - Infrastructure-as-Code (Docker, K8s, Terraform)
+ * - Browser compatibility (unsupported features, deprecated APIs)
+ * - Microservice patterns (circuit breakers, retries, health checks)
+ * - File organization (deep imports, barrel exports, large files)
+ * - Commit message quality (conventional commits, length, vagueness)
+ * - Code splitting opportunities (heavy imports, lazy-loading)
  * 
  * @module dsh-tool-codereview
- * @version 0.14.0
+ * @version 0.15.0
  * @license MIT
  */
 
@@ -58,7 +66,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 export const name = 'dsh-tool-codereview'
 export const inject = ['tools']
 
-const VERSION = '0.14.0'
+const VERSION = '0.15.0'
 
 // ==================== TYPES ====================
 
@@ -9546,6 +9554,794 @@ function formatStateReport(r: StateResult): string {
   return lines.join('\n')
 }
 
+// ==================== V0.15.0 NEW TOOLS ====================
+
+// ---- Tool 82: API Contract Validation ----
+
+interface ContractResult {
+  totalIssues: number
+  severity: Severity
+  missingEndpoints: { path: string; method: string; issue: string; suggestion: string }[]
+  extraEndpoints: { path: string; method: string; issue: string }[]
+  schemaMismatches: { line: number; field: string; expected: string; got: string; suggestion: string }[]
+  missingResponses: { endpoint: string; status: string; suggestion: string }[]
+  contractScore: number
+  summary: string
+}
+
+function validateApiContract(code: string): ContractResult {
+  const lines = code.split('\n')
+  const missingEndpoints: ContractResult['missingEndpoints'] = []
+  const extraEndpoints: ContractResult['extraEndpoints'] = []
+  const schemaMismatches: ContractResult['schemaMismatches'] = []
+  const missingResponses: ContractResult['missingResponses'] = []
+
+  // Detect route definitions and OpenAPI paths
+  const routePatterns = code.match(/(?:app|router)\.(get|post|put|delete|patch)\s*\(\s*['"]([^'"]+)['"]/gi) || []
+  const openapiPaths = code.match(/paths:\s*\n((?:\s+['"]?\/\w+[^:]*:\s*\n(?:\s+.*\n)*)*)/gi) || []
+
+  // Detect missing error response handling
+  routes: for (const route of routePatterns) {
+    const methodMatch = route.match(/\.(get|post|put|delete|patch)/i)
+    const pathMatch = route.match(/['"](\/[^'"]+)['"]/)
+    if (methodMatch && pathMatch) {
+      const method = methodMatch[1].toUpperCase()
+      const path = pathMatch[1]
+      // Check if route has error handling
+      const routeLine = lines.findIndex(l => l.includes(route))
+      const routeBlock = lines.slice(routeLine, routeLine + 20).join('\n')
+      if (!routeBlock.includes('catch') && !routeBlock.includes('error') && !routeBlock.includes('500')) {
+        missingResponses.push({ endpoint: `${method} ${path}`, status: '500', suggestion: 'Add error handling and 500 response documentation' })
+      }
+      if (!routeBlock.includes('400') && !routeBlock.includes('422') && method !== 'GET') {
+        missingResponses.push({ endpoint: `${method} ${path}`, status: '400/422', suggestion: 'Document validation error responses (400/422)' })
+      }
+    }
+  }
+
+  // Detect missing 201 for POST
+  lines.forEach((line, i) => {
+    if (line.match(/res\.\w+\s*\(\s*200\s*\)/) && lines.slice(Math.max(0, i - 5), i).some(l => l.match(/\.(post|put)/))) {
+      schemaMismatches.push({ line: i + 1, field: 'status', expected: '201 for POST', got: '200', suggestion: 'Use 201 Created for successful resource creation' })
+    }
+  })
+
+  // Detect missing authentication on protected routes
+  lines.forEach((line, i) => {
+    if (line.match(/\.(post|put|delete|patch)\s*\(/) && !lines.slice(i, i + 15).some(l => l.match(/auth|jwt|verify|middleware|token|session/))) {
+      const pathMatch = line.match(/['"](\/[^'"]+)['"]/)
+      if (pathMatch) {
+        missingEndpoints.push({ path: pathMatch[1], method: 'POST/PUT/DEL', issue: 'Route without authentication middleware', suggestion: 'Add authentication middleware (JWT, session, or API key)' })
+      }
+    }
+  })
+
+  const totalIssues = missingEndpoints.length + extraEndpoints.length + schemaMismatches.length + missingResponses.length
+  const contractScore = Math.max(0, 100 - totalIssues * 10)
+  const severity: Severity = missingEndpoints.length > 0 ? 'warning' : totalIssues >= 3 ? 'info' : 'info'
+
+  return {
+    totalIssues, severity, missingEndpoints, extraEndpoints, schemaMismatches, missingResponses, contractScore,
+    summary: `${missingEndpoints.length} unprotected route(s), ${missingResponses.length} missing response(s), ${schemaMismatches.length} status code issue(s)`
+  }
+}
+
+function formatContractReport(r: ContractResult): string {
+  const lines: string[] = []
+  lines.push(`# API Contract Validation`)
+  lines.push(``)
+  lines.push(`**Contract Score:** ${r.contractScore}/100 | **Issues:** ${r.totalIssues} | **Severity:** ${r.severity.toUpperCase()}`)
+  lines.push(``)
+  lines.push(`> ${r.summary}`)
+  lines.push(``)
+
+  if (r.missingEndpoints.length > 0) {
+    lines.push(`## Unprotected Routes (${r.missingEndpoints.length})`)
+    r.missingEndpoints.forEach(e => lines.push(`- \`${e.method} ${e.path}\`: ${e.suggestion}`))
+    lines.push(``)
+  }
+
+  if (r.missingResponses.length > 0) {
+    lines.push(`## Missing Response Documentation (${r.missingResponses.length})`)
+    r.missingResponses.forEach(r => lines.push(`- \`${r.endpoint}\`: Add ${r.status} response handling`))
+    lines.push(``)
+  }
+
+  if (r.schemaMismatches.length > 0) {
+    lines.push(`## Status Code Issues (${r.schemaMismatches.length})`)
+    r.schemaMismatches.forEach(s => lines.push(`- Line ${s.line}: ${s.suggestion}`))
+    lines.push(``)
+  }
+
+  return lines.join('\n')
+}
+
+// ---- Tool 83: GraphQL Analysis ----
+
+interface GraphqlResult {
+  totalIssues: number
+  severity: Severity
+  deepQueries: { line: number; depth: number; suggestion: string }[]
+  nPlusOne: { line: number; field: string; suggestion: string }[]
+  missingFragments: { line: number; typeName: string; suggestion: string }[]
+  noPagination: { line: number; field: string; suggestion: string }[]
+  graphqlScore: number
+  summary: string
+}
+
+function analyzeGraphql(code: string): GraphqlResult {
+  const lines = code.split('\n')
+  const deepQueries: GraphqlResult['deepQueries'] = []
+  const nPlusOne: GraphqlResult['nPlusOne'] = []
+  const missingFragments: GraphqlResult['missingFragments'] = []
+  const noPagination: GraphqlResult['noPagination'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/\/|\/\*|\*)/)) return
+
+    // Detect deep queries (nested braces in GraphQL strings)
+    if (line.match(/gql\s*`/) || line.match(/query\s+\w+\s*\{/) || line.match(/mutation\s+\w+\s*\{/)) {
+      const blockEnd = lines.findIndex((l, j) => j > i && l.includes('}'))
+      const blockLines = lines.slice(i, blockEnd > 0 ? blockEnd + 1 : i + 20)
+      let maxDepth = 0
+      let currentDepth = 0
+      blockLines.forEach(l => {
+        for (const ch of l) {
+          if (ch === '{') { currentDepth++; maxDepth = Math.max(maxDepth, currentDepth) }
+          else if (ch === '}') { currentDepth-- }
+        }
+      })
+      if (maxDepth > 5) {
+        deepQueries.push({ line: i + 1, depth: maxDepth, suggestion: `Query depth ${maxDepth} exceeds recommended limit of 5 — consider query complexity analysis` })
+      }
+    }
+
+    // Detect GraphQL queries without pagination
+    if (line.match(/query\s+\w+/) && lines.slice(i, i + 15).some(l => l.match(/users|items|posts|products|orders/))) {
+      const block = lines.slice(i, i + 15).join('\n')
+      if (!block.match(/first:|last:|limit:|pageSize|skip:|offset:|cursor:|after:/)) {
+        const fieldMatch = block.match(/(\w+)\s*\{/g)
+        noPagination.push({ line: i + 1, field: fieldMatch?.[0] || 'collection', suggestion: 'Add pagination arguments (first/last/limit/cursor) to prevent unbounded results' })
+      }
+    }
+
+    // Detect potential N+1 in resolvers (field resolver without DataLoader)
+    if (line.match(/resolve\s*[:(]/) || line.match(/async\s+resolve/)) {
+      const resolverBlock = lines.slice(i, i + 10).join('\n')
+      if (resolverBlock.match(/(?:find|findOne|findBy|getBy)/) && !resolverBlock.match(/dataloader|DataLoader|batch|cache/)) {
+        nPlusOne.push({ line: i + 1, field: line.trim().substring(0, 50), suggestion: 'Consider DataLoader pattern to batch and cache database queries in resolvers' })
+      }
+    }
+
+    // Detect repeated field selections (opportunity for fragments)
+    if (line.match(/fragment\s*\w+\s+on/)) {
+      // fragment exists — good
+    } else {
+      const fieldMatches = code.match(/\.\w+/g) || []
+      const fieldCounts: Record<string, number> = {}
+      fieldMatches.forEach(f => { fieldCounts[f] = (fieldCounts[f] || 0) + 1 })
+      const repeated = Object.entries(fieldCounts).filter(([_, c]) => c > 3)
+      if (repeated.length > 0 && i === lines.length - 1) {
+        repeated.slice(0, 3).forEach(([field, count]) => {
+          missingFragments.push({ line: 1, typeName: field, suggestion: `Field '${field}' used ${count} times — extract into named fragment for reuse` })
+        })
+      }
+    }
+  })
+
+  const totalIssues = deepQueries.length + nPlusOne.length + missingFragments.length + noPagination.length
+  const graphqlScore = Math.max(0, 100 - deepQueries.length * 15 - nPlusOne.length * 10 - totalIssues * 5)
+  const severity: Severity = nPlusOne.length > 0 ? 'warning' : totalIssues >= 3 ? 'info' : 'info'
+
+  return {
+    totalIssues, severity, deepQueries, nPlusOne, missingFragments, noPagination, graphqlScore,
+    summary: `${deepQueries.length} deep query(ies), ${nPlusOne.length} N+1 risk(s), ${noPagination.length} missing pagination(s)`
+  }
+}
+
+function formatGraphqlReport(r: GraphqlResult): string {
+  const lines: string[] = []
+  lines.push(`# GraphQL Analysis`)
+  lines.push(``)
+  lines.push(`**GraphQL Score:** ${r.graphqlScore}/100 | **Issues:** ${r.totalIssues} | **Severity:** ${r.severity.toUpperCase()}`)
+  lines.push(``)
+  lines.push(`> ${r.summary}`)
+  lines.push(``)
+
+  if (r.deepQueries.length > 0) {
+    lines.push(`## Deep Queries (${r.deepQueries.length})`)
+    r.deepQueries.forEach(q => lines.push(`- Line ${q.line}: depth ${q.depth} — ${q.suggestion}`))
+    lines.push(``)
+  }
+
+  if (r.nPlusOne.length > 0) {
+    lines.push(`## Resolver N+1 (${r.nPlusOne.length})`)
+    r.nPlusOne.forEach(n => lines.push(`- Line ${n.line}: ${n.suggestion}`))
+    lines.push(``)
+  }
+
+  if (r.noPagination.length > 0) {
+    lines.push(`## Missing Pagination (${r.noPagination.length})`)
+    r.noPagination.forEach(p => lines.push(`- Line ${p.line}: \`${p.field}\` — ${p.suggestion}`))
+    lines.push(``)
+  }
+
+  return lines.join('\n')
+}
+
+// ---- Tool 84: Infrastructure-as-Code Analysis ----
+
+interface IacResult {
+  totalIssues: number
+  severity: Severity
+  securityIssues: { line: number; issue: string; suggestion: string }[]
+  bestPracticeViolations: { line: number; issue: string; suggestion: string }[]
+  missingConfigs: { issue: string; suggestion: string }[]
+  tagIssues: { line: number; resource: string; suggestion: string }[]
+  iacScore: number
+  summary: string
+}
+
+function analyzeIac(code: string): IacResult {
+  const lines = code.split('\n')
+  const securityIssues: IacResult['securityIssues'] = []
+  const bestPracticeViolations: IacResult['bestPracticeViolations'] = []
+  const missingConfigs: IacResult['missingConfigs'] = []
+  const tagIssues: IacResult['tagIssues'] = []
+
+  const codeLower = code.toLowerCase()
+
+  // Docker analysis
+  if (codeLower.includes('from ') && codeLower.includes('run ')) {
+    if (code.includes('FROM ') && !code.includes('AS ') && code.split('FROM').length > 1) {
+      bestPracticeViolations.push({ line: 1, issue: 'Multi-stage build recommended for Docker', suggestion: 'Use multi-stage builds to reduce final image size' })
+    }
+    if (code.includes('latest') && code.match(/FROM\s+\w+:latest/)) {
+      securityIssues.push({ line: 1, issue: 'Using :latest tag — unpredictable builds', suggestion: 'Pin image version: FROM node:20.11-alpine instead of :latest' })
+    }
+    if (!codeLower.includes('user ') && !codeLower.includes('adduser')) {
+      securityIssues.push({ line: 1, issue: 'Running as root in container', suggestion: 'Add USER instruction to run as non-root (e.g., USER node)' })
+    }
+    if (!codeLower.includes('healthcheck')) {
+      bestPracticeViolations.push({ line: 1, issue: 'No HEALTHCHECK instruction', suggestion: 'Add HEALTHCHECK for container orchestration monitoring' })
+    }
+  }
+
+  // Kubernetes analysis
+  if (codeLower.includes('kind:') && (codeLower.includes('deployment') || codeLower.includes('pod'))) {
+    if (!codeLower.includes('resources:') && !codeLower.includes('limits:') && !codeLower.includes('requests:')) {
+      bestPracticeViolations.push({ line: 1, issue: 'No resource limits/requests set', suggestion: 'Define CPU and memory limits/requests for predictable scheduling' })
+    }
+    if (!codeLower.includes('livenessprobe') && !codeLower.includes('readinessprobe')) {
+      bestPracticeViolations.push({ line: 1, issue: 'No liveness or readiness probes', suggestion: 'Add livenessProbe and readinessProbe for health monitoring' })
+    }
+    if (codeLower.includes('latest') && code.match(/image:.*:latest/)) {
+      securityIssues.push({ line: 1, issue: 'Container image uses :latest tag', suggestion: 'Pin image tag for reproducible deployments' })
+    }
+  }
+
+  // Terraform analysis
+  if (codeLower.includes('resource "') || codeLower.includes("resource '")) {
+    if (!codeLower.includes('tags') && !codeLower.includes('tag')) {
+      tagIssues.push({ line: 1, resource: 'Terraform resource', suggestion: 'Add tags (Name, Environment, Owner) for resource management' })
+    }
+    if (codeLower.includes('versioning') === false && codeLower.includes('aws_s3_bucket')) {
+      bestPracticeViolations.push({ line: 1, issue: 'S3 bucket without versioning', suggestion: 'Enable versioning for data protection (versioning { enabled = true })' })
+    }
+    if (codeLower.includes('acl = "public-read"') || codeLower.includes('acl = "public"')) {
+      securityIssues.push({ line: 1, issue: 'Public ACL detected on storage resource', suggestion: 'Use private ACL with restricted bucket policies' })
+    }
+  }
+
+  // Check for secrets in code
+  lines.forEach((line, i) => {
+    if (line.match(/password|secret|apikey|api_key|token|credential/i) && line.match(/=\s*['"][^'"]{8,}['"]/) && !line.match(/process\.env|var\.|env\[|config\.get/i)) {
+      securityIssues.push({ line: i + 1, issue: 'Potential hardcoded secret in IaC', suggestion: 'Use environment variables or secret manager (AWS Secrets Manager, Vault)' })
+    }
+  })
+
+  const totalIssues = securityIssues.length + bestPracticeViolations.length + missingConfigs.length + tagIssues.length
+  const iacScore = Math.max(0, 100 - securityIssues.length * 15 - totalIssues * 8)
+  const severity: Severity = securityIssues.length > 0 ? 'warning' : totalIssues >= 3 ? 'info' : 'info'
+
+  return {
+    totalIssues, severity, securityIssues, bestPracticeViolations, missingConfigs, tagIssues, iacScore,
+    summary: `${securityIssues.length} security issue(s), ${bestPracticeViolations.length} best practice violation(s), ${tagIssues.length} tagging issue(s)`
+  }
+}
+
+function formatIacReport(r: IacResult): string {
+  const lines: string[] = []
+  lines.push(`# Infrastructure-as-Code Analysis`)
+  lines.push(``)
+  lines.push(`**IaC Score:** ${r.iacScore}/100 | **Issues:** ${r.totalIssues} | **Severity:** ${r.severity.toUpperCase()}`)
+  lines.push(``)
+  lines.push(`> ${r.summary}`)
+  lines.push(``)
+
+  if (r.securityIssues.length > 0) {
+    lines.push(`## Security Issues (${r.securityIssues.length}) ⚠️`)
+    r.securityIssues.forEach(s => lines.push(`- Line ${s.line}: ${s.suggestion}`))
+    lines.push(``)
+  }
+
+  if (r.bestPracticeViolations.length > 0) {
+    lines.push(`## Best Practice Violations (${r.bestPracticeViolations.length})`)
+    r.bestPracticeViolations.forEach(b => lines.push(`- Line ${b.line}: ${b.suggestion}`))
+    lines.push(``)
+  }
+
+  if (r.tagIssues.length > 0) {
+    lines.push(`## Tagging Issues (${r.tagIssues.length})`)
+    r.tagIssues.forEach(t => lines.push(`- \`${t.resource}\`: ${t.suggestion}`))
+    lines.push(``)
+  }
+
+  return lines.join('\n')
+}
+
+// ---- Tool 85: Browser Compatibility Analysis ----
+
+interface CompatResult {
+  totalIssues: number
+  severity: Severity
+  unsupportedFeatures: { line: number; feature: string; browsers: string; suggestion: string }[]
+  missingPolyfills: { feature: string; suggestion: string }[]
+  deprecatedApis: { line: number; api: string; replacement: string }[]
+  compatScore: number
+  summary: string
+}
+
+function analyzeBrowserCompat(code: string): CompatResult {
+  const lines = code.split('\n')
+  const unsupportedFeatures: CompatResult['unsupportedFeatures'] = []
+  const missingPolyfills: CompatResult['missingPolyfills'] = []
+  const deprecatedApis: CompatResult['deprecatedApis'] = []
+
+  const unsupportedPatterns = [
+    { pattern: /\bPromise\.any\b/, feature: 'Promise.any', browsers: 'Safari <14', suggestion: 'Use Promise.race or add core-js polyfill' },
+    { pattern: /\bglobalThis\b/, feature: 'globalThis', browsers: 'IE, Safari <12.1', suggestion: 'Use self/this fallback or polyfill' },
+    { pattern: /\bstructuredClone\b/, feature: 'structuredClone', browsers: 'Safari <15.4', suggestion: 'Use JSON.parse/JSON.stringify or lodash cloneDeep' },
+    { pattern: /\bArray\.prototype\.at\b/, feature: '.at()', browsers: 'Chrome <92, Safari <15.4', suggestion: 'Use array[length-1] with polyfill' },
+    { pattern: /\bObject\.hasOwn\b/, feature: 'Object.hasOwn', browsers: 'Chrome <93, Safari <15.4', suggestion: 'Use Object.prototype.hasOwnProperty.call(obj, key)' },
+    { pattern: /\bString\.prototype\.replaceAll\b/, feature: '.replaceAll()', browsers: 'Chrome <85, Safari <13.1', suggestion: 'Use .replace(/.../g, ...) or polyfill' },
+    { pattern: /\bAbortSignal\.timeout\b/, feature: 'AbortSignal.timeout', browsers: 'Firefox <100', suggestion: 'Use setTimeout + AbortController' },
+    { pattern: /\bArray\.prototype\.toSorted\b|\.toSorted\b/, feature: '.toSorted()', browsers: 'Chrome <110, Safari <16', suggestion: 'Use [...arr].sort() for compatibility' },
+  ]
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/\/|\/\*|\*)/)) return
+
+    unsupportedPatterns.forEach(up => {
+      if (line.match(up.pattern)) {
+        unsupportedFeatures.push({ line: i + 1, feature: up.feature, browsers: up.browsers, suggestion: up.suggestion })
+      }
+    })
+
+    // Detect deprecated APIs
+    if (line.match(/\bdocument\.execCommand\s*\(/)) {
+      deprecatedApis.push({ line: i + 1, api: 'document.execCommand()', replacement: 'Use modern APIs (Clipboard API, Input Events)' })
+    }
+    if (line.match(/\bwindow\.orientation\b/)) {
+      deprecatedApis.push({ line: i + 1, api: 'window.orientation', replacement: 'Use screen.orientation.angle' })
+    }
+  })
+
+  const totalIssues = unsupportedFeatures.length + missingPolyfills.length + deprecatedApis.length
+  const compatScore = Math.max(0, 100 - unsupportedFeatures.length * 10 - deprecatedApis.length * 15)
+  const severity: Severity = totalIssues >= 3 ? 'warning' : totalIssues >= 1 ? 'info' : 'info'
+
+  return {
+    totalIssues, severity, unsupportedFeatures, missingPolyfills, deprecatedApis, compatScore,
+    summary: `${unsupportedFeatures.length} unsupported feature(s), ${deprecatedApis.length} deprecated API(s)`
+  }
+}
+
+function formatCompatReport(r: CompatResult): string {
+  const lines: string[] = []
+  lines.push(`# Browser Compatibility Analysis`)
+  lines.push(``)
+  lines.push(`**Compat Score:** ${r.compatScore}/100 | **Issues:** ${r.totalIssues} | **Severity:** ${r.severity.toUpperCase()}`)
+  lines.push(``)
+  lines.push(`> ${r.summary}`)
+  lines.push(``)
+
+  if (r.unsupportedFeatures.length > 0) {
+    lines.push(`## Unsupported Features (${r.unsupportedFeatures.length})`)
+    r.unsupportedFeatures.forEach(f => lines.push(`- Line ${f.line}: \`${f.feature}\` — not supported in ${f.browsers}`))
+    lines.push(``)
+  }
+
+  if (r.deprecatedApis.length > 0) {
+    lines.push(`## Deprecated APIs (${r.deprecatedApis.length})`)
+    r.deprecatedApis.forEach(a => lines.push(`- Line ${a.line}: \`${a.api}\` → ${a.replacement}`))
+    lines.push(``)
+  }
+
+  return lines.join('\n')
+}
+
+// ---- Tool 86: Microservice Pattern Analysis ----
+
+interface MicroserviceResult {
+  totalIssues: number
+  severity: Severity
+  missingPatterns: { pattern: string; description: string; suggestion: string }[]
+  missingHealthCheck: { line: number; suggestion: string }[]
+  noCircuitBreaker: { line: number; endpoint: string; suggestion: string }[]
+  serviceScore: number
+  summary: string
+}
+
+function analyzeMicroservice(code: string): MicroserviceResult {
+  const lines = code.split('\n')
+  const missingPatterns: MicroserviceResult['missingPatterns'] = []
+  const missingHealthCheck: MicroserviceResult['missingHealthCheck'] = []
+  const noCircuitBreaker: MicroserviceResult['noCircuitBreaker'] = []
+
+  const codeLower = code.toLowerCase()
+
+  // Check for health check endpoint
+  if ((codeLower.includes('express') || codeLower.includes('app.get') || codeLower.includes('router.get')) &&
+      !codeLower.includes('/health') && !codeLower.includes('/ready') && !codeLower.includes('/live')) {
+    missingHealthCheck.push({ line: 1, suggestion: 'Add health check endpoint (/health, /ready, /live) for orchestrator integration' })
+  }
+
+  // Check for circuit breaker pattern in HTTP calls
+  lines.forEach((line, i) => {
+    if (line.match(/(?:axios|fetch|request|http\.get)\s*[.(]/) || line.match(/fetch\s*\(/)) {
+      const context = lines.slice(Math.max(0, i - 5), i + 5).join('\n')
+      if (!context.match(/circuit|breaker|opossum|resilience|fallback|degrade/i)) {
+        noCircuitBreaker.push({ line: i + 1, endpoint: line.trim().substring(0, 40), suggestion: 'Add circuit breaker (e.g., opossum) for external service calls' })
+      }
+    }
+  })
+
+  // Check for retry logic
+  if (codeLower.includes('fetch') || codeLower.includes('axios') || codeLower.includes('http')) {
+    if (!codeLower.includes('retry') && !codeLower.includes('backoff')) {
+      missingPatterns.push({ pattern: 'Retry/Backoff', description: 'No retry logic for transient failures', suggestion: 'Implement exponential backoff retry for network calls' })
+    }
+  }
+
+  // Check for timeout configuration
+  lines.forEach((line, i) => {
+    if (line.match(/fetch\s*\(/) && !line.match(/timeout|signal|AbortController/) && !lines.slice(i, i + 3).some(l => l.match(/timeout|AbortController/))) {
+      missingPatterns.push({ pattern: 'Timeout', description: 'Fetch call without timeout', suggestion: 'Add AbortController with timeout to prevent hanging requests' })
+    }
+  })
+
+  const totalIssues = missingPatterns.length + missingHealthCheck.length + noCircuitBreaker.length
+  const serviceScore = Math.max(0, 100 - noCircuitBreaker.length * 12 - totalIssues * 8)
+  const severity: Severity = noCircuitBreaker.length > 0 ? 'warning' : totalIssues >= 3 ? 'info' : 'info'
+
+  return {
+    totalIssues, severity, missingPatterns, missingHealthCheck, noCircuitBreaker, serviceScore,
+    summary: `${noCircuitBreaker.length} uncall(s) without circuit breaker, ${missingHealthCheck.length} missing health check, ${missingPatterns.length} missing resilience pattern(s)`
+  }
+}
+
+function formatMicroserviceReport(r: MicroserviceResult): string {
+  const lines: string[] = []
+  lines.push(`# Microservice Pattern Analysis`)
+  lines.push(``)
+  lines.push(`**Service Score:** ${r.serviceScore}/100 | **Issues:** ${r.totalIssues} | **Severity:** ${r.severity.toUpperCase()}`)
+  lines.push(``)
+  lines.push(`> ${r.summary}`)
+  lines.push(``)
+
+  if (r.noCircuitBreaker.length > 0) {
+    lines.push(`## Missing Circuit Breakers (${r.noCircuitBreaker.length})`)
+    r.noCircuitBreaker.forEach(c => lines.push(`- Line ${c.line}: \`${c.endpoint}\` — ${c.suggestion}`))
+    lines.push(``)
+  }
+
+  if (r.missingHealthCheck.length > 0) {
+    lines.push(`## Missing Health Check (${r.missingHealthCheck.length})`)
+    r.missingHealthCheck.forEach(h => lines.push(`- ${h.suggestion}`))
+    lines.push(``)
+  }
+
+  if (r.missingPatterns.length > 0) {
+    lines.push(`## Missing Resilience Patterns (${r.missingPatterns.length})`)
+    r.missingPatterns.forEach(p => lines.push(`- **${p.pattern}**: ${p.suggestion}`))
+    lines.push(``)
+  }
+
+  return lines.join('\n')
+}
+
+// ---- Tool 87: File Organization Analysis ----
+
+interface OrgResult {
+  totalIssues: number
+  severity: Severity
+  deepImports: { line: number; importPath: string; depth: number; suggestion: string }[]
+  missingBarrel: { directory: string; suggestion: string }[]
+  largeFiles: { line: number; suggestion: string }[]
+  inconsistentNaming: { line: number; current: string; expected: string }[]
+  orgScore: number
+  summary: string
+}
+
+function analyzeFileOrganization(code: string): OrgResult {
+  const lines = code.split('\n')
+  const deepImports: OrgResult['deepImports'] = []
+  const missingBarrel: OrgResult['missingBarrel'] = []
+  const largeFiles: OrgResult['largeFiles'] = []
+  const inconsistentNaming: OrgResult['inconsistentNaming'] = []
+
+  // Detect deep import paths (RelativePath depth > 3)
+  lines.forEach((line, i) => {
+    const importMatch = line.match(/(?:import|require)\s*\(?['"]((?:\.\.\/)+[^'"]+)['"]/)
+    if (importMatch) {
+      const depth = (importMatch[1].match(/\.\.\//g) || []).length
+      if (depth > 2) {
+        deepImports.push({ line: i + 1, importPath: importMatch[1], depth, suggestion: `Deep import (${depth} levels) — consider barrel exports or path aliases` })
+      }
+    }
+  })
+
+  // Detect large files
+  if (lines.length > 500) {
+    largeFiles.push({ line: 1, suggestion: `File has ${lines.length} lines — consider splitting into smaller modules (recommended: <300 lines)` })
+  }
+
+  // Check for index.ts/barrel file opportunities (many sibling imports)
+  const relativeImports = lines.filter(l => l.match(/from\s+['"]\.\.\//))
+  if (relativeImports.length > 5) {
+    missingBarrel.push({ directory: 'parent', suggestion: 'Multiple sibling imports — consider creating index.ts barrel for cleaner imports' })
+  }
+
+  // Detect inconsistent naming conventions
+  lines.forEach((line, i) => {
+    if (line.match(/import\s+\{\s*\w+\s+as\s+\w+\s*\}/)) {
+      const aliasMatch = line.match(/import\s+\{\s*(\w+)\s+as\s*(\w+)\s*\}/)
+      if (aliasMatch && aliasMatch[1].toLowerCase() === aliasMatch[2].toLowerCase()) {
+        inconsistentNaming.push({ line: i + 1, current: `${aliasMatch[1]} as ${aliasMatch[2]}`, expected: aliasMatch[1] })
+      }
+    }
+  })
+
+  const totalIssues = deepImports.length + missingBarrel.length + largeFiles.length + inconsistentNaming.length
+  const orgScore = Math.max(0, 100 - deepImports.length * 10 - largeFiles.length * 15 - totalIssues * 5)
+  const severity: Severity = totalIssues >= 5 ? 'warning' : totalIssues >= 2 ? 'info' : 'info'
+
+  return {
+    totalIssues, severity, deepImports, missingBarrel, largeFiles, inconsistentNaming, orgScore,
+    summary: `${deepImports.length} deep import(s), ${largeFiles.length} large file(s), ${inconsistentNaming.length} naming inconsistency(ies)`
+  }
+}
+
+function formatOrgReport(r: OrgResult): string {
+  const lines: string[] = []
+  lines.push(`# File Organization Analysis`)
+  lines.push(``)
+  lines.push(`**Org Score:** ${r.orgScore}/100 | **Issues:** ${r.totalIssues} | **Severity:** ${r.severity.toUpperCase()}`)
+  lines.push(``)
+  lines.push(`> ${r.summary}`)
+  lines.push(``)
+
+  if (r.deepImports.length > 0) {
+    lines.push(`## Deep Imports (${r.deepImports.length})`)
+    r.deepImports.forEach(d => lines.push(`- Line ${d.line}: \`${d.importPath}\` (depth ${d.depth}) — ${d.suggestion}`))
+    lines.push(``)
+  }
+
+  if (r.largeFiles.length > 0) {
+    lines.push(`## Large Files (${r.largeFiles.length})`)
+    r.largeFiles.forEach(f => lines.push(`- ${f.suggestion}`))
+    lines.push(``)
+  }
+
+  if (r.inconsistentNaming.length > 0) {
+    lines.push(`## Naming Issues (${r.inconsistentNaming.length})`)
+    r.inconsistentNaming.forEach(n => lines.push(`- Line ${n.line}: redundant alias \`${n.current}\``))
+    lines.push(``)
+  }
+
+  return lines.join('\n')
+}
+
+// ---- Tool 88: Commit Message Quality ----
+
+interface CommitResult {
+  totalIssues: number
+  severity: Severity
+  conventionalViolations: { line: number; message: string; issue: string; suggestion: string }[]
+  tooLong: { line: number; length: number; issue: string }[]
+  vagueMessages: { line: number; message: string; suggestion: string }[]
+  missingScope: { line: number; suggestion: string }[]
+  commitScore: number
+  summary: string
+}
+
+function analyzeCommitMessage(code: string): CommitResult {
+  const lines = code.split('\n')
+  const conventionalViolations: CommitResult['conventionalViolations'] = []
+  const tooLong: CommitResult['tooLong'] = []
+  const vagueMessages: CommitResult['vagueMessages'] = []
+  const missingScope: CommitResult['missingScope'] = []
+
+  const conventionalTypes = /^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\(.+\))?:\s+.+/
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/\/|\/\*|\*)/)) return
+
+    // Skip empty lines and non-commit lines
+    if (line.trim().length < 5) return
+
+    // Check conventional commit format
+    if (!line.match(conventionalTypes) && line.length > 3 && !line.match(/^#|^\s*-/)) {
+      // Only flag if it looks like a commit message (not code)
+      if (line.length < 100 && !line.includes('=') && !line.includes('(')) {
+        conventionalViolations.push({ line: i + 1, message: line.trim().substring(0, 50), issue: 'Does not follow Conventional Commits format', suggestion: 'Use format: type(scope): description (e.g., feat(auth): add OAuth2 login)' })
+      }
+    }
+
+    // Check for scope
+    if (line.match(conventionalTypes) && !line.match(/\(.+\)/)) {
+      missingScope.push({ line: i + 1, suggestion: 'Add scope to indicate affected module: feat(scope): message' })
+    }
+
+    // Check subject line length
+    const subject = line.split('\n')[0]
+    if (subject.length > 72) {
+      tooLong.push({ line: i + 1, length: subject.length, issue: `Subject line ${subject.length} chars (max 72)` })
+    }
+
+    // Detect vague messages
+    const vague = ['fix bug', 'update', 'change', 'fix stuff', 'misc', 'wip', 'asdf', 'test', 'tmp', 'changes', 'minor fixes', 'code changes']
+    if (vague.some(v => line.toLowerCase().includes(v))) {
+      vagueMessages.push({ line: i + 1, message: line.trim().substring(0, 40), suggestion: 'Be specific: describe what changed and why' })
+    }
+  })
+
+  const totalIssues = conventionalViolations.length + tooLong.length + vagueMessages.length + missingScope.length
+  const commitScore = Math.max(0, 100 - conventionalViolations.length * 10 - vagueMessages.length * 15 - totalIssues * 5)
+  const severity: Severity = totalIssues >= 3 ? 'info' : totalIssues >= 1 ? 'info' : 'info'
+
+  return {
+    totalIssues, severity, conventionalViolations, tooLong, vagueMessages, missingScope, commitScore,
+    summary: `${conventionalViolations.length} format violation(s), ${vagueMessages.length} vague message(s), ${tooLong.length} too long`
+  }
+}
+
+function formatCommitReport(r: CommitResult): string {
+  const lines: string[] = []
+  lines.push(`# Commit Message Quality`)
+  lines.push(``)
+  lines.push(`**Commit Score:** ${r.commitScore}/100 | **Issues:** ${r.totalIssues} | **Severity:** ${r.severity.toUpperCase()}`)
+  lines.push(``)
+  lines.push(`> ${r.summary}`)
+  lines.push(``)
+
+  if (r.conventionalViolations.length > 0) {
+    lines.push(`## Format Violations (${r.conventionalViolations.length})`)
+    r.conventionalViolations.forEach(v => lines.push(`- Line ${v.line}: \`${v.message}\``))
+    lines.push(``)
+  }
+
+  if (r.vagueMessages.length > 0) {
+    lines.push(`## Vague Messages (${r.vagueMessages.length})`)
+    r.vagueMessages.forEach(v => lines.push(`- Line ${v.line}: \`${v.message}\` — ${v.suggestion}`))
+    lines.push(``)
+  }
+
+  if (r.tooLong.length > 0) {
+    lines.push(`## Too Long (${r.tooLong.length})`)
+    r.tooLong.forEach(t => lines.push(`- Line ${t.line}: ${t.length} chars (max 72)`))
+    lines.push(``)
+  }
+
+  return lines.join('\n')
+}
+
+// ---- Tool 89: Code Splitting Opportunities ----
+
+interface SplitResult {
+  totalIssues: number
+  severity: Severity
+  heavySyncImports: { line: number; module: string; suggestion: string }[]
+  routeLevelSplitting: { line: number; component: string; suggestion: string }[]
+  largeBundles: { line: number; importCount: number; suggestion: string }[]
+  lazyCandidates: { line: number; component: string; suggestion: string }[]
+  splitScore: number
+  summary: string
+}
+
+function analyzeCodeSplitting(code: string): SplitResult {
+  const lines = code.split('\n')
+  const heavySyncImports: SplitResult['heavySyncImports'] = []
+  const routeLevelSplitting: SplitResult['routeLevelSplitting'] = []
+  const largeBundles: SplitResult['largeBundles'] = []
+  const lazyCandidates: SplitResult['lazyCandidates'] = []
+
+  const heavyModules = ['chart.js', 'three', 'monaco', 'quill', 'codemirror', 'moment', 'lodash', 'antd', '@mui', 'pdfmake', 'xlsx', 'd3', 'ace-editor']
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/\/|\/\*|\*)/)) return
+
+    // Detect heavy synchronous imports
+    const importMatch = line.match(/import\s+.+\s+from\s+['"]([^'"]+)['"]/)
+    if (importMatch) {
+      const module = importMatch[1]
+      const isHeavy = heavyModules.some(h => module.includes(h))
+      if (isHeavy) {
+        heavySyncImports.push({ line: i + 1, module, suggestion: `Heavy module '${module}' — use dynamic import() for code splitting` })
+      }
+    }
+
+    // Detect React components that could be lazy-loaded
+    if (line.match(/(?:function|const)\s+(\w+)\s*(?::\s*\w+)?\s*\(.*\)\s*(?::\s*\w+)?\s*=>\s*\{/) && line.match(/return\s*\(/)) {
+      const nameMatch = line.match(/(?:function|const)\s+(\w+)/)
+      if (nameMatch) {
+        const componentName = nameMatch[1]
+        // Check if it's a page/component and NOT already lazy-loaded
+        if (componentName[0] === componentName[0].toUpperCase() &&
+            !componentName.match(/Provider|Wrapper|Container/) &&
+            !lines.slice(Math.max(0, i - 3), i).some(l => l.includes('lazy(') || l.includes('React.lazy'))) {
+          // Only suggest for large components (many lines)
+          const nextLines = lines.slice(i, i + 30)
+          if (nextLines.length >= 15) {
+            lazyCandidates.push({ line: i + 1, component: componentName, suggestion: `Dynamic import with React.lazy() and Suspense for '${componentName}'` })
+          }
+        }
+      }
+    }
+  })
+
+  // Count total imports for bundle assessment
+  const topLevelImports = lines.filter(l => l.match(/^import\s+/) && !l.includes('type')).length
+  if (topLevelImports > 20) {
+    largeBundles.push({ line: 1, importCount: topLevelImports, suggestion: `${topLevelImports} imports in file — consider splitting into smaller modules` })
+  }
+
+  // Detect route components that should be code-split
+  if (code.match(/<Route\s+path=|route\(/) && !code.match(/lazy\s*\(|React\.lazy|dynamic\s*\(import/)) {
+    routeLevelSplitting.push({ line: 1, component: 'Router', suggestion: 'Apply code splitting at route level with React.lazy() + Suspense' })
+  }
+
+  const totalIssues = heavySyncImports.length + routeLevelSplitting.length + largeBundles.length + lazyCandidates.length
+  const splitScore = Math.max(0, 100 - heavySyncImports.length * 12 - lazyCandidates.length * 8)
+  const severity: Severity = heavySyncImports.length > 0 ? 'warning' : totalIssues >= 3 ? 'info' : 'info'
+
+  return {
+    totalIssues, severity, heavySyncImports, routeLevelSplitting, largeBundles, lazyCandidates, splitScore,
+    summary: `${heavySyncImports.length} heavy sync import(s), ${lazyCandidates.length} lazy-load candidate(s), ${routeLevelSplitting.length} route split opportunity(ies)`
+  }
+}
+
+function formatSplitReport(r: SplitResult): string {
+  const lines: string[] = []
+  lines.push(`# Code Splitting Analysis`)
+  lines.push(``)
+  lines.push(`**Split Score:** ${r.splitScore}/100 | **Issues:** ${r.totalIssues} | **Severity:** ${r.severity.toUpperCase()}`)
+  lines.push(``)
+  lines.push(`> ${r.summary}`)
+  lines.push(``)
+
+  if (r.heavySyncImports.length > 0) {
+    lines.push(`## Heavy Synchronous Imports (${r.heavySyncImports.length})`)
+    r.heavySyncImports.forEach(h => lines.push(`- Line ${h.line}: \`${h.module}\` — ${h.suggestion}`))
+    lines.push(``)
+  }
+
+  if (r.lazyCandidates.length > 0) {
+    lines.push(`## Lazy Loading Candidates (${r.lazyCandidates.length})`)
+    r.lazyCandidates.forEach(c => lines.push(`- Line ${c.line}: \`${c.component}\` — ${c.suggestion}`))
+    lines.push(``)
+  }
+
+  if (r.routeLevelSplitting.length > 0) {
+    lines.push(`## Route-Level Splitting (${r.routeLevelSplitting.length})`)
+    r.routeLevelSplitting.forEach(r => lines.push(`- Line ${r.line}: ${r.suggestion}`))
+    lines.push(``)
+  }
+
+  return lines.join('\n')
+}
+
 // ==================== PLUGIN REGISTRATION ====================
 
 export function apply(ctx: Context) {
@@ -10796,5 +11592,117 @@ export function apply(ctx: Context) {
     }
   }))
 
-  console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management`)
+  // Tool 82: API Contract Validation (v0.15.0)
+  ctx.tools.register(defineTool({
+    name: 'api_contract',
+    description: 'Validate API contract: unprotected routes, missing responses, status code issues.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The API code to validate' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = validateApiContract(args.code)
+      return formatContractReport(result)
+    }
+  }))
+
+  // Tool 83: GraphQL Analysis (v0.15.0)
+  ctx.tools.register(defineTool({
+    name: 'graphql_analysis',
+    description: 'Analyze GraphQL: query depth, N+1 resolvers, pagination, fragment reuse.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The GraphQL code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeGraphql(args.code)
+      return formatGraphqlReport(result)
+    }
+  }))
+
+  // Tool 84: Infrastructure-as-Code Analysis (v0.15.0)
+  ctx.tools.register(defineTool({
+    name: 'iac_analysis',
+    description: 'Analyze IaC: Docker, Kubernetes, Terraform best practices and security.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The IaC configuration to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeIac(args.code)
+      return formatIacReport(result)
+    }
+  }))
+
+  // Tool 85: Browser Compatibility (v0.15.0)
+  ctx.tools.register(defineTool({
+    name: 'browser_compat',
+    description: 'Check browser compatibility: unsupported features, deprecated APIs, polyfills.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code to check' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeBrowserCompat(args.code)
+      return formatCompatReport(result)
+    }
+  }))
+
+  // Tool 86: Microservice Patterns (v0.15.0)
+  ctx.tools.register(defineTool({
+    name: 'microservice_patterns',
+    description: 'Analyze microservice patterns: health checks, circuit breakers, retries, timeouts.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The microservice code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeMicroservice(args.code)
+      return formatMicroserviceReport(result)
+    }
+  }))
+
+  // Tool 87: File Organization (v0.15.0)
+  ctx.tools.register(defineTool({
+    name: 'file_organization',
+    description: 'Analyze file organization: deep imports, barrel exports, large files, naming.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeFileOrganization(args.code)
+      return formatOrgReport(result)
+    }
+  }))
+
+  // Tool 88: Commit Message Quality (v0.15.0)
+  ctx.tools.register(defineTool({
+    name: 'commit_message',
+    description: 'Analyze commit message quality: conventional commits, length, vagueness.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The commit message(s) to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeCommitMessage(args.code)
+      return formatCommitReport(result)
+    }
+  }))
+
+  // Tool 89: Code Splitting (v0.15.0)
+  ctx.tools.register(defineTool({
+    name: 'code_splitting',
+    description: 'Find code splitting opportunities: heavy sync imports, lazy-load candidates.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeCodeSplitting(args.code)
+      return formatSplitReport(result)
+    }
+  }))
+
+  console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting`)
 }

@@ -1,7 +1,7 @@
 {
   "name": "dsh-tool-codereview",
-  "version": "0.14.0",
-  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 81 tools, React Hooks, SQL, Regex, DOM, Security Headers, CSS, Semver, State Mgmt",
+  "version": "0.15.0",
+  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 89 tools, API Contract, GraphQL, IaC, Browser Compat, Microservice, Org, Commit, Splitting",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
