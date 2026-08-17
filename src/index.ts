@@ -550,6 +550,118 @@ interface NamingViolation {
   severity: Severity
 }
 
+// ==================== v0.8.0 NEW TYPES ====================
+
+// Security patterns (deep detection)
+interface SecurityPatternResult {
+  summary: string
+  score: number
+  vulnerabilities: SecurityPattern[]
+  owaspMapping: Record<string, string>
+}
+
+interface SecurityPattern {
+  type: 'sqli' | 'xss' | 'csrf' | 'path-traversal' | 'command-injection' | 'ssrf' | 'idor' | 'secrets'
+  line: number
+  message: string
+  severity: Severity
+  cwe: string
+  owasp: string
+  fix: string
+  context: string
+}
+
+// Performance tips
+interface PerformanceTipResult {
+  summary: string
+  score: number
+  tips: PerformanceTip[]
+  bottlenecks: string[]
+}
+
+interface PerformanceTip {
+  line: number
+  type: 'algorithm' | 'io' | 'memory' | 'caching' | 'lazy' | 'batch' | 'concurrency'
+  message: string
+  severity: Severity
+  impact: 'low' | 'medium' | 'high'
+  suggestion: string
+  example?: string
+}
+
+// Documentation check
+interface DocumentationResult {
+  summary: string
+  score: number
+  coverage: DocCoverage[]
+  missing: string[]
+  suggestions: string[]
+}
+
+interface DocCoverage {
+  symbol: string
+  line: number
+  hasDoc: boolean
+  paramsDocumented: boolean
+  returnsDocumented: boolean
+  examplesProvided: boolean
+}
+
+// Import organization
+interface ImportOrganizeResult {
+  summary: string
+  score: number
+  current: string[]
+  organized: string[]
+  groups: ImportGroup[]
+  removals: string[]
+}
+
+interface ImportGroup {
+  name: string
+  imports: string[]
+  order: number
+}
+
+// Error handling patterns
+interface ErrorHandlingResult {
+  summary: string
+  score: number
+  patterns: ErrorPattern[]
+  coverage: number
+  suggestions: string[]
+}
+
+interface ErrorPattern {
+  line: number
+  type: 'missing-catch' | 'swallowed' | 'generic' | 'no-fallback' | 'incomplete' | 'proper'
+  message: string
+  severity: Severity
+  fix: string
+}
+
+// API design review
+interface ApiDesignResult {
+  summary: string
+  score: number
+  endpoints: EndpointDesign[]
+  restfulness: number
+  consistency: number
+  suggestions: string[]
+}
+
+interface EndpointDesign {
+  name: string
+  line: number
+  method: string
+  path: string
+  hasValidation: boolean
+  hasErrorHandling: boolean
+  hasPagination: boolean
+  hasAuth: boolean
+  score: number
+}
+
 // ==================== CONFIGURATION ====================
 
 interface PluginConfig {
@@ -3226,6 +3338,685 @@ function formatNamingReport(result: NamingResult): string {
   return lines.join('\n')
 }
 
+// ==================== v0.8.0 NEW FUNCTIONS ====================
+
+// --- Security Pattern Detection (deep) ---
+function detectSecurityPatterns(code: string, language: string): SecurityPatternResult {
+  const vulnerabilities: SecurityPatternResult['vulnerabilities'] = []
+  const lines = code.split('\n')
+  const owaspMapping: Record<string, string> = {}
+
+  // SQL Injection
+  if (/(?:query|execute|sql)\s*\(\s*["'`].*\$\{|"SELECT.*\+|'SELECT.*\+/.test(code)) {
+    lines.forEach((line, idx) => {
+      if (/(?:query|execute|sql)\s*\(/.test(line) && (line.includes('+') || line.includes('$') || line.includes('`'))) {
+        vulnerabilities.push({
+          type: 'sqli',
+          line: idx + 1,
+          message: 'Potential SQL injection - string concatenation in query',
+          severity: 'critical',
+          cwe: 'CWE-89',
+          owasp: 'A03:2021',
+          fix: 'Use parameterized queries or prepared statements',
+          context: line.trim().substring(0, 60)
+        })
+        owaspMapping['sqli'] = 'A03:2021 - Injection'
+      }
+    })
+  }
+
+  // XSS
+  if (/innerHTML|document\.write|dangerouslySetHTML|\.html\(/.test(code)) {
+    lines.forEach((line, idx) => {
+      if (/innerHTML|document\.write|\.html\(/.test(line)) {
+        vulnerabilities.push({
+          type: 'xss',
+          line: idx + 1,
+          message: 'Potential XSS - unsafe HTML injection',
+          severity: 'error',
+          cwe: 'CWE-79',
+          owasp: 'A03:2021',
+          fix: 'Use textContent, sanitization, or framework escaping',
+          context: line.trim().substring(0, 60)
+        })
+        owaspMapping['xss'] = 'A03:2021 - Injection'
+      }
+    })
+  }
+
+  // Command Injection
+  if (/(?:exec|execSync|spawn|system|passthru)\s*\(/.test(code)) {
+    lines.forEach((line, idx) => {
+      if (/(?:exec|execSync|spawn|system)\s*\(/.test(line) && (line.includes('+') || line.includes('$') || line.includes('`'))) {
+        vulnerabilities.push({
+          type: 'command-injection',
+          line: idx + 1,
+          message: 'Potential command injection - unsanitized input to shell',
+          severity: 'critical',
+          cwe: 'CWE-78',
+          owasp: 'A03:2021',
+          fix: 'Use execFile with argument arrays instead of shell strings',
+          context: line.trim().substring(0, 60)
+        })
+        owaspMapping['command-injection'] = 'A03:2021 - Injection'
+      }
+    })
+  }
+
+  // Path Traversal
+  if (/(?:readFile|writeFile|fs\.|open)\s*\(/.test(code)) {
+    lines.forEach((line, idx) => {
+      if (/(?:readFile|writeFile|fs\.|open)\s*\(/.test(line) && (line.includes('+') || line.includes('$'))) {
+        vulnerabilities.push({
+          type: 'path-traversal',
+          line: idx + 1,
+          message: 'Potential path traversal - unsanitized file path',
+          severity: 'error',
+          cwe: 'CWE-22',
+          owasp: 'A01:2021',
+          fix: 'Validate and sanitize file paths, use path.resolve()',
+          context: line.trim().substring(0, 60)
+        })
+        owaspMapping['path-traversal'] = 'A01:2021 - Broken Access Control'
+      }
+    })
+  }
+
+  // Hardcoded Secrets
+  const secretPatterns = [
+    { pattern: /(?:api[_-]?key|apikey|secret|password|token)\s*[:=]\s*['"][^'"]{8,}['"]/gi, type: 'secrets' as const }
+  ]
+  secretPatterns.forEach(sp => {
+    let match: RegExpExecArray | null
+    while ((match = sp.pattern.exec(code)) !== null) {
+      const line = code.substring(0, match.index).split('\n').length
+      vulnerabilities.push({
+        type: 'secrets',
+        line,
+        message: 'Hardcoded secret detected',
+        severity: 'critical',
+        cwe: 'CWE-798',
+        owasp: 'A07:2021',
+        fix: 'Use environment variables or a secrets manager',
+        context: match[0].substring(0, 40) + '...'
+      })
+      owaspMapping['secrets'] = 'A07:2021 - Identification and Authentication Failures'
+    }
+  })
+
+  // SSRF
+  if (/(?:fetch|axios|request|http\.get)\s*\(/.test(code)) {
+    lines.forEach((line, idx) => {
+      if (/(?:fetch|axios|http\.get)\s*\(/.test(line) && (line.includes('+') || line.includes('$'))) {
+        vulnerabilities.push({
+          type: 'ssrf',
+          line: idx + 1,
+          message: 'Potential SSRF - user-controlled URL',
+          severity: 'error',
+          cwe: 'CWE-918',
+          owasp: 'A10:2021',
+          fix: 'Validate and whitelist URLs, use allowlists',
+          context: line.trim().substring(0, 60)
+        })
+        owaspMapping['ssrf'] = 'A10:2021 - Server-Side Request Forgery'
+      }
+    })
+  }
+
+  const score = Math.max(0, 100 - vulnerabilities.filter(v => v.severity === 'critical').length * 25 - vulnerabilities.filter(v => v.severity === 'error').length * 15)
+
+  return {
+    summary: `Found ${vulnerabilities.length} security patterns (${Object.keys(owaspMapping).length} OWASP categories)`,
+    score,
+    vulnerabilities,
+    owaspMapping
+  }
+}
+
+function formatSecurityPatternReport(result: SecurityPatternResult): string {
+  const lines: string[] = []
+  lines.push('## Security Pattern Detection Report')
+  lines.push('')
+  lines.push(`**Score: ${result.score}/100 | OWASP Categories: ${Object.keys(result.owaspMapping).length}**`)
+  lines.push('')
+  lines.push('### Summary')
+  lines.push(result.summary)
+  lines.push('')
+  if (result.vulnerabilities.length > 0) {
+    lines.push('### Vulnerabilities')
+    result.vulnerabilities.forEach(v => {
+      const icon = v.severity === 'critical' ? '🔴' : '🟠'
+      lines.push(`- ${icon} **[${v.type}]** (line ${v.line}) [${v.cwe}] ${v.message}`)
+      lines.push(`  - OWASP: ${v.owasp}`)
+      lines.push(`  - 💡 ${v.fix}`)
+      lines.push(`  - Context: \`${v.context}\``)
+    })
+    lines.push('')
+  }
+  if (Object.keys(result.owaspMapping).length > 0) {
+    lines.push('### OWASP Mapping')
+    Object.entries(result.owaspMapping).forEach(([type, mapping]) => {
+      lines.push(`- **${type}**: ${mapping}`)
+    })
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// --- Performance optimization tips ---
+function generatePerformanceTips(code: string, language: string): PerformanceTipResult {
+  const tips: PerformanceTip[] = []
+  const bottlenecks: string[] = []
+  const lines = code.split('\n')
+
+  // N+1 query detection
+  if (/(?:for|while|forEach|map)\s*\(/.test(code) && /(?:query|find|get|fetch)\s*\(/.test(code)) {
+    lines.forEach((line, idx) => {
+      if (/(?:for|forEach|map)/.test(line) && /(?:find|get|fetch|query)/.test(code.split('\n').slice(idx, idx + 5).join('\n'))) {
+        tips.push({
+          line: idx + 1,
+          type: 'io',
+          message: 'Potential N+1 query in loop',
+          severity: 'warning',
+          impact: 'high',
+          suggestion: 'Batch queries using WHERE IN or JOIN',
+          example: 'const ids = items.map(i => i.id); const results = await db.query("SELECT * FROM t WHERE id IN (?)", [ids]);'
+        })
+      }
+    })
+  }
+
+  // Memory leak detection
+  if (/(?:setInterval|addEventListener|subscribe)\s*\(/.test(code) && !/clearInterval|removeEventListener|unsubscribe/.test(code)) {
+    bottlenecks.push('Potential memory leak - event listeners/subscriptions not cleaned up')
+    tips.push({
+      line: 1,
+      type: 'memory',
+      message: 'Event listeners/subscriptions without cleanup',
+      severity: 'warning',
+      impact: 'medium',
+      suggestion: 'Use useEffect cleanup, unsubscribe, or AbortController'
+    })
+  }
+
+  // Inefficient loops
+  lines.forEach((line, idx) => {
+    if (/for\s*\(\s*let.*\.length/.test(line)) {
+      tips.push({
+        line: idx + 1,
+        type: 'algorithm',
+        message: 'Cache array length for better performance',
+        severity: 'info',
+        impact: 'low',
+        suggestion: 'const len = arr.length; for (let i = 0; i < len; i++)',
+        example: 'const len = arr.length; for (let i = 0; i < len; i++) { ... }'
+      })
+    }
+  })
+
+  // String concatenation in loops
+  lines.forEach((line, idx) => {
+    if (/for.*\{[\s\S]*?[\w+]\s*\+=\s*["'`]/.test(line + (lines[idx + 1] || ''))) {
+      tips.push({
+        line: idx + 1,
+        type: 'memory',
+        message: 'String concatenation in loop - use array join',
+        severity: 'info',
+        impact: 'medium',
+        suggestion: 'Use array.push() + join() instead of += in loops'
+      })
+    }
+  })
+
+  // Missing caching
+  if (/fetch|axios|http/.test(code) && !/cache|Cache/.test(code)) {
+    tips.push({
+      line: 1,
+      type: 'caching',
+      message: 'No caching mechanism detected for HTTP requests',
+      severity: 'info',
+      impact: 'medium',
+      suggestion: 'Implement request caching with TTL or use React Query/SWR'
+    })
+  }
+
+  // Large array operations
+  if (/\.(map|filter|reduce)\s*\(/.test(code) && code.includes('.map') && code.includes('.filter')) {
+    tips.push({
+      line: 1,
+      type: 'algorithm',
+      message: 'Chained array operations - consider single iteration',
+      severity: 'info',
+      impact: 'low',
+      suggestion: 'Combine map+filter into reduce or use for loop for large arrays'
+    })
+  }
+
+  const score = Math.max(0, 100 - tips.filter(t => t.impact === 'high').length * 20 - tips.filter(t => t.impact === 'medium').length * 10)
+
+  return {
+    summary: `Found ${tips.length} performance tips (${bottlenecks.length} bottlenecks)`,
+    score,
+    tips,
+    bottlenecks
+  }
+}
+
+function formatPerformanceTipReport(result: PerformanceTipResult): string {
+  const lines: string[] = []
+  lines.push('## Performance Optimization Report')
+  lines.push('')
+  lines.push(`**Score: ${result.score}/100**`)
+  lines.push('')
+  lines.push('### Summary')
+  lines.push(result.summary)
+  lines.push('')
+  if (result.bottlenecks.length > 0) {
+    lines.push('### ⚠️ Bottlenecks')
+    result.bottlenecks.forEach(b => lines.push(`- 🐌 ${b}`))
+    lines.push('')
+  }
+  if (result.tips.length > 0) {
+    lines.push('### Tips')
+    result.tips.forEach((tip, idx) => {
+      const icon = tip.impact === 'high' ? '🔴' : tip.impact === 'medium' ? '🟡' : '🟢'
+      lines.push(`${idx + 1}. ${icon} [${tip.type}] (line ${tip.line}): ${tip.message}`)
+      lines.push(`   - 💡 ${tip.suggestion}`)
+      if (tip.example) lines.push(`   - Example: \`${tip.example}\``)
+    })
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// --- Documentation completeness check ---
+function checkDocumentation(code: string, language: string): DocumentationResult {
+  const coverage: DocCoverage[] = []
+  const missing: string[] = []
+  const suggestions: string[] = []
+  const lines = code.split('\n')
+
+  // Find function/class declarations and check for preceding comments
+  const funcRegex = /(?:function|def|func|class)\s+(\w+)/g
+  const docCommentRegex = language === 'python' ? /^\s*"""/ : /^\s*\/\*\*|\^\s*\/\/\//
+
+  let match: RegExpExecArray | null
+  while ((match = funcRegex.exec(code)) !== null) {
+    const symbol = match[1]
+    const lineIdx = code.substring(0, match.index).split('\n').length - 1
+    
+    // Check if previous lines have documentation
+    let hasDoc = false
+    let paramsDocumented = false
+    let returnsDocumented = false
+    let examplesProvided = false
+
+    for (let i = Math.max(0, lineIdx - 5); i < lineIdx; i++) {
+      if (docCommentRegex.test(lines[i])) hasDoc = true
+      if (/@param|@argument|Args:/.test(lines[i])) paramsDocumented = true
+      if (/@returns|@return|Returns:/.test(lines[i])) returnsDocumented = true
+      if (/@example|Example:/.test(lines[i])) examplesProvided = true
+    }
+
+    coverage.push({
+      symbol,
+      line: lineIdx + 1,
+      hasDoc,
+      paramsDocumented,
+      returnsDocumented,
+      examplesProvided
+    })
+
+    if (!hasDoc) missing.push(symbol)
+  }
+
+  if (missing.length > 0) {
+    suggestions.push(`${missing.length} symbols missing documentation: ${missing.slice(0, 5).join(', ')}`)
+  }
+
+  const docRate = coverage.length > 0 ? ((coverage.length - missing.length) / coverage.length) * 100 : 100
+  const score = Math.round(docRate)
+
+  return {
+    summary: `Documentation coverage: ${coverage.length - missing.length}/${coverage.length} symbols (${score}%)`,
+    score,
+    coverage,
+    missing,
+    suggestions
+  }
+}
+
+function formatDocumentationReport(result: DocumentationResult): string {
+  const lines: string[] = []
+  lines.push('## Documentation Completeness Report')
+  lines.push('')
+  lines.push(`**Score: ${result.score}/100 | Coverage: ${result.coverage.length - result.missing.length}/${result.coverage.length} symbols**`)
+  lines.push('')
+  lines.push('### Summary')
+  lines.push(result.summary)
+  lines.push('')
+  if (result.coverage.length > 0) {
+    lines.push('### Coverage Details')
+    result.coverage.forEach(c => {
+      const icon = c.hasDoc ? '✅' : '❌'
+      lines.push(`- ${icon} **${c.symbol}** (line ${c.line})`)
+      lines.push(`   - Params: ${c.paramsDocumented ? '✓' : '✗'} | Returns: ${c.returnsDocumented ? '✓' : '✗'} | Examples: ${c.examplesProvided ? '✓' : '✗'}`)
+    })
+    lines.push('')
+  }
+  if (result.missing.length > 0) {
+    lines.push('### Missing Documentation')
+    result.missing.forEach(m => lines.push(`- ❌ **${m}**`))
+    lines.push('')
+  }
+  if (result.suggestions.length > 0) {
+    lines.push('### Suggestions')
+    result.suggestions.forEach(s => lines.push(`- 💡 ${s}`))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// --- Import organization ---
+function organizeImports(code: string, language: string): ImportOrganizeResult {
+  const current = code.match(/^(?:import|from|require|use)\s+['"]?[^\s'"]+['"]?/gm) || []
+  const groups: ImportGroup[] = []
+  const removals: string[] = []
+
+  // Categorize imports
+  const categories: Record<string, string[]> = {
+    'node-builtins': [],
+    'external': [],
+    'internal': [],
+    'relative': []
+  }
+
+  current.forEach(imp => {
+    const cleaned = imp.replace(/^(?:import|from|require|use)\s+/, '').replace(/['"]/g, '')
+    if (/^(?:fs|path|http|https|os|util|crypto|stream|url|events)/.test(cleaned)) {
+      categories['node-builtins'].push(imp)
+    } else if (cleaned.startsWith('.') || cleaned.startsWith('/')) {
+      categories['relative'].push(imp)
+    } else if (cleaned.startsWith('@') || /^[a-z]/.test(cleaned)) {
+      categories['external'].push(imp)
+    } else {
+      categories['internal'].push(imp)
+    }
+  })
+
+  // Check for duplicates
+  const seen = new Set<string>()
+  current.forEach(imp => {
+    const cleaned = imp.replace(/^(?:import|from|require|use)\s+/, '').replace(/['"]/g, '')
+    if (seen.has(cleaned)) removals.push(imp)
+    seen.add(cleaned)
+  })
+
+  // Sort within groups
+  let order = 1
+  Object.entries(categories).forEach(([name, imports]) => {
+    if (imports.length > 0) {
+      groups.push({
+        name,
+        imports: imports.sort(),
+        order: order++
+      })
+    }
+  })
+
+  // Build organized import list
+  const organized: string[] = []
+  groups.forEach(g => {
+    organized.push(...g.imports)
+  })
+
+  const isOrganized = JSON.stringify(current) === JSON.stringify(organized)
+  const score = isOrganized ? 100 : Math.max(0, 100 - removals.length * 10)
+
+  return {
+    summary: `${current.length} imports in ${groups.length} groups${removals.length > 0 ? `, ${removals.length} duplicates` : ''}`,
+    score,
+    current,
+    organized,
+    groups,
+    removals
+  }
+}
+
+function formatImportOrganizeReport(result: ImportOrganizeResult): string {
+  const lines: string[] = []
+  lines.push('## Import Organization Report')
+  lines.push('')
+  lines.push(`**Score: ${result.score}/100 | Imports: ${result.current.length}**`)
+  lines.push('')
+  lines.push('### Summary')
+  lines.push(result.summary)
+  lines.push('')
+  if (result.groups.length > 0) {
+    lines.push('### Grouped Imports')
+    result.groups.forEach(g => {
+      lines.push(`#### ${g.name}`)
+      g.imports.forEach(imp => lines.push(`- \`${imp}\``))
+      lines.push('')
+    })
+  }
+  if (result.removals.length > 0) {
+    lines.push('### ⚠️ Duplicates')
+    result.removals.forEach(r => lines.push(`- \`${r}\``))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// --- Error handling patterns ---
+function analyzeErrorHandling(code: string, language: string): ErrorHandlingResult {
+  const patterns: ErrorPattern[] = []
+  const suggestions: string[] = []
+  const lines = code.split('\n')
+
+  // Missing try-catch around async
+  const asyncFuncRegex = /(?:async\s+function|async\s*\(|async\s+\w+\s*=>)/g
+  let match: RegExpExecArray | null
+  while ((match = asyncFuncRegex.exec(code)) !== null) {
+    const context = code.substring(match.index, match.index + 200)
+    const line = code.substring(0, match.index).split('\n').length
+    if (!context.includes('try')) {
+      patterns.push({
+        line,
+        type: 'missing-catch',
+        message: 'Async function without try-catch',
+        severity: 'warning',
+        fix: 'Wrap async operations in try-catch block'
+      })
+    }
+  }
+
+  // Empty catch blocks
+  lines.forEach((line, idx) => {
+    if (/catch\s*\([^)]*\)\s*\{\s*\}/.test(line)) {
+      patterns.push({
+        line: idx + 1,
+        type: 'swallowed',
+        message: 'Empty catch block - error swallowed',
+        severity: 'error',
+        fix: 'Log the error or rethrow it'
+      })
+    }
+  })
+
+  // Generic catch (.catch(), try-catch with only console.log)
+  if (/\.catch\s*\(\s*(?:err|error|e)\s*=>\s*\{\s*console/.test(code)) {
+    patterns.push({
+      line: 1,
+      type: 'generic',
+      message: 'Error only logged, not properly handled',
+      severity: 'warning',
+      fix: 'Implement proper error recovery or user notification'
+    })
+  }
+
+  // No return in catch
+  const catchWithReturn = (code.match(/catch[\s\S]*?return/g) || []).length
+  const totalCatch = (code.match(/catch\s*\(/g) || []).length
+  if (totalCatch > 0 && catchWithReturn === 0) {
+    patterns.push({
+      line: 1,
+      type: 'no-fallback',
+      message: 'No fallback return value in catch blocks',
+      severity: 'info',
+      fix: 'Consider returning a default value in catch block'
+    })
+  }
+
+  // Calculate coverage
+  const totalTry = (code.match(/try\s*\{/g) || []).length
+  const totalAsync = (code.match(/async\s+/g) || []).length
+  const coverage = totalAsync > 0 ? Math.min(100, (totalTry / totalAsync) * 100) : 100
+
+  if (coverage < 50) suggestions.push('Less than 50% of async operations have error handling')
+  if (patterns.some(p => p.type === 'swallowed')) suggestions.push('Avoid empty catch blocks - log or handle errors')
+
+  const score = Math.max(0, 100 - patterns.filter(p => p.severity === 'error').length * 20 - patterns.filter(p => p.severity === 'warning').length * 10)
+
+  return {
+    summary: `Error handling coverage: ${coverage.toFixed(0)}% (${patterns.length} issues)`,
+    score,
+    patterns,
+    coverage: Math.round(coverage),
+    suggestions
+  }
+}
+
+function formatErrorHandlingReport(result: ErrorHandlingResult): string {
+  const lines: string[] = []
+  lines.push('## Error Handling Report')
+  lines.push('')
+  lines.push(`**Score: ${result.score}/100 | Coverage: ${result.coverage}%**`)
+  lines.push('')
+  lines.push('### Summary')
+  lines.push(result.summary)
+  lines.push('')
+  if (result.patterns.length > 0) {
+    lines.push('### Patterns')
+    result.patterns.forEach(p => {
+      const icon = p.severity === 'error' ? '🔴' : p.severity === 'warning' ? '🟡' : 'ℹ️'
+      lines.push(`- ${icon} [${p.type}] (line ${p.line}): ${p.message}`)
+      lines.push(`  - 💡 ${p.fix}`)
+    })
+    lines.push('')
+  }
+  if (result.suggestions.length > 0) {
+    lines.push('### Suggestions')
+    result.suggestions.forEach(s => lines.push(`- 💡 ${s}`))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// --- API design review ---
+function reviewApiDesign(code: string, language: string): ApiDesignResult {
+  const endpoints: EndpointDesign[] = []
+  const suggestions: string[] = []
+  const lines = code.split('\n')
+
+  // Detect API endpoints (Express, FastAPI, Spring patterns)
+  const endpointPatterns = [
+    { regex: /(?:app|router)\.(get|post|put|delete|patch)\s*\(\s*['"`]([^'"`]+)['"`]/g, framework: 'express' },
+    { regex: /@(?:app|router)\.(get|post|put|delete|patch)\s*\(\s*['"`]([^'"`]+)['"`]/g, framework: 'fastapi' },
+    { regex: /@(?:GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping)\s*\(\s*['"`]([^'"`]+)['"`]?/g, framework: 'spring' }
+  ]
+
+  endpointPatterns.forEach(ep => {
+    let match: RegExpExecArray | null
+    while ((match = ep.regex.exec(code)) !== null) {
+      const method = match[1].toUpperCase()
+      const path = match[2] || '/'
+      const line = code.substring(0, match.index).split('\n').length
+      const context = code.substring(match.index, match.index + 300)
+
+      const hasValidation = /validate|schema|joi|yup|class-validator|@Is/.test(context)
+      const hasErrorHandling = /try|catch|error|Error/.test(context)
+      const hasPagination = /page|limit|offset|skip|take|cursor/.test(context)
+      const hasAuth = /auth|jwt|token|middleware|guard|@PreAuthorize/.test(context)
+
+      let score = 100
+      if (!hasValidation) score -= 20
+      if (!hasErrorHandling) score -= 20
+      if (!hasPagination && method === 'GET') score -= 10
+      if (!hasAuth) score -= 15
+
+      endpoints.push({
+        name: `${method} ${path}`,
+        line,
+        method,
+        path,
+        hasValidation,
+        hasErrorHandling,
+        hasPagination,
+        hasAuth,
+        score: Math.max(0, score)
+      })
+    }
+  })
+
+  // Calculate RESTfulness
+  const methods = endpoints.map(e => e.method)
+  const hasCRUD = ['GET', 'POST', 'PUT', 'DELETE'].every(m => methods.includes(m))
+  const restfulness = hasCRUD ? 100 : Math.round((new Set(methods).size / 4) * 100)
+
+  // Consistency check
+  const paths = endpoints.map(e => e.path)
+  const consistentPaths = paths.every(p => p.startsWith('/api') || p.startsWith('/v'))
+  const consistency = consistentPaths ? 100 : 70
+
+  if (!hasCRUD) suggestions.push('Missing CRUD operations - consider implementing full REST')
+  if (!consistentPaths) suggestions.push('Inconsistent API path prefix - use /api/v1 prefix')
+  endpoints.filter(e => !e.hasValidation).forEach(e => {
+    suggestions.push(`Endpoint '${e.name}' missing input validation`)
+  })
+  endpoints.filter(e => !e.hasAuth).forEach(e => {
+    suggestions.push(`Endpoint '${e.name}' missing authentication`)
+  })
+
+  const avgScore = endpoints.length > 0 ? Math.round(endpoints.reduce((s, e) => s + e.score, 0) / endpoints.length) : 100
+
+  return {
+    summary: `${endpoints.length} endpoints detected (RESTfulness: ${restfulness}%, consistency: ${consistency}%)`,
+    score: avgScore,
+    endpoints,
+    restfulness,
+    consistency,
+    suggestions
+  }
+}
+
+function formatApiDesignReport(result: ApiDesignResult): string {
+  const lines: string[] = []
+  lines.push('## API Design Review Report')
+  lines.push('')
+  lines.push(`**Score: ${result.score}/100 | RESTfulness: ${result.restfulness}% | Consistency: ${result.consistency}%**`)
+  lines.push('')
+  lines.push('### Summary')
+  lines.push(result.summary)
+  lines.push('')
+  if (result.endpoints.length > 0) {
+    lines.push('### Endpoints')
+    result.endpoints.forEach(e => {
+      const icon = e.score >= 80 ? '🟢' : e.score >= 60 ? '🟡' : '🔴'
+      lines.push(`- ${icon} **${e.name}** (line ${e.line}): ${e.score}/100`)
+      lines.push(`   - Validation: ${e.hasValidation ? '✓' : '✗'} | Error Handling: ${e.hasErrorHandling ? '✓' : '✗'}`)
+      lines.push(`   - Pagination: ${e.hasPagination ? '✓' : '✗'} | Auth: ${e.hasAuth ? '✓' : '✗'}`)
+    })
+    lines.push('')
+  }
+  if (result.suggestions.length > 0) {
+    lines.push('### Suggestions')
+    result.suggestions.forEach(s => lines.push(`- 💡 ${s}`))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
 function formatStyleReport(result: StyleCheckResult): string {
   const lines: string[] = []
   lines.push('## Style Check Report')
@@ -3713,6 +4504,102 @@ export function apply(ctx: Context) {
       return formatNamingReport(result)
     }
   }))
+
+  // Tool 28: Security Pattern Detection (v0.8.0)
+  ctx.tools.register(defineTool({
+    name: 'security_patterns',
+    description: 'Deep security pattern detection: SQLi, XSS, CSRF, path traversal, command injection, SSRF, hardcoded secrets. With OWASP/CWE mapping.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code to scan' },
+      language: { type: 'string', description: 'Programming language' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string; language?: string }) {
+      const language = args.language || detectLanguage(args.code)
+      const result = detectSecurityPatterns(args.code, language)
+      return formatSecurityPatternReport(result)
+    }
+  }))
+
+  // Tool 29: Performance Tips (v0.8.0)
+  ctx.tools.register(defineTool({
+    name: 'performance_tips',
+    description: 'Generate performance optimization tips: N+1 queries, memory leaks, inefficient loops, caching suggestions.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code to analyze' },
+      language: { type: 'string', description: 'Programming language' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string; language?: string }) {
+      const language = args.language || detectLanguage(args.code)
+      const result = generatePerformanceTips(args.code, language)
+      return formatPerformanceTipReport(result)
+    }
+  }))
+
+  // Tool 30: Documentation Check (v0.8.0)
+  ctx.tools.register(defineTool({
+    name: 'doc_check',
+    description: 'Check documentation completeness: function docs, param docs, return docs, examples.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code to check' },
+      language: { type: 'string', description: 'Programming language' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string; language?: string }) {
+      const language = args.language || detectLanguage(args.code)
+      const result = checkDocumentation(args.code, language)
+      return formatDocumentationReport(result)
+    }
+  }))
+
+  // Tool 31: Import Organization (v0.8.0)
+  ctx.tools.register(defineTool({
+    name: 'import_organize',
+    description: 'Organize and deduplicate imports. Groups by type: builtins, external, internal, relative.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code to organize' },
+      language: { type: 'string', description: 'Programming language' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string; language?: string }) {
+      const language = args.language || detectLanguage(args.code)
+      const result = organizeImports(args.code, language)
+      return formatImportOrganizeReport(result)
+    }
+  }))
+
+  // Tool 32: Error Handling Analysis (v0.8.0)
+  ctx.tools.register(defineTool({
+    name: 'error_handling',
+    description: 'Analyze error handling patterns: missing catches, swallowed errors, generic catches, fallback values.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code to analyze' },
+      language: { type: 'string', description: 'Programming language' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string; language?: string }) {
+      const language = args.language || detectLanguage(args.code)
+      const result = analyzeErrorHandling(args.code, language)
+      return formatErrorHandlingReport(result)
+    }
+  }))
+
+  // Tool 33: API Design Review (v0.8.0)
+  ctx.tools.register(defineTool({
+    name: 'api_design',
+    description: 'Review API design: RESTfulness, validation, auth, pagination, error handling per endpoint.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code to review' },
+      language: { type: 'string', description: 'Programming language' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string; language?: string }) {
+      const language = args.language || detectLanguage(args.code)
+      const result = reviewApiDesign(args.code, language)
+      return formatApiDesignReport(result)
+    }
+  }))
   
-  console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check`)
+  console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design`)
 }
