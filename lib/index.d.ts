@@ -1,12 +1,17 @@
 /**
- * DSH Code Review Assistant Plugin - Enterprise Edition v0.4.0
+ * DSH Code Review Assistant Plugin - Enterprise Edition v0.5.0
  *
  * Enterprise-grade code analysis toolkit for DeepSeek Harness Agent.
  *
- * Features (v0.4.0):
- * - 10 comprehensive analysis tools
- * - SARIF 2.1.0 output (GitHub Code Scanning compatible)
+ * Features (v0.5.0):
+ * - 16 comprehensive analysis tools
+ * - SARIF 2.1.0 export (GitHub Code Scanning & CI/CD compatible)
  * - Security scanning (OWASP Top 10 2021, CWE Top 25, SANS Top 25)
+ * - Code Smell Detection (God Object, Feature Envy, Shotgun Surgery, etc.)
+ * - TypeScript Strict Mode Compliance Checks
+ * - Auto-Fix with Unified Diff Preview
+ * - Incremental Analysis for Large Projects
+ * - Breaking Change Detection Between Versions
  * - Architecture review & pattern detection
  * - Test coverage analysis
  * - API documentation generation
@@ -26,3 +31,4 @@ import type { Context } from '@deepseek-ai/cordis';
 export declare const name = "dsh-tool-codereview";
 export declare const inject: string[];
 export declare function apply(ctx: Context): void;
+//# sourceMappingURL=index.d.ts.map
