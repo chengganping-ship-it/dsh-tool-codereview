@@ -1,4 +1,15 @@
 {
+  "classification_counts": {},
+  "metrics": null,
+  "feedback_summary": {
+    "external_mentions": 0,
+    "issues": 0,
+    "total_items": 1,
+    "review_comments": 0,
+    "discussions": 1,
+    "prs": 0
+  },
+  "timestamp": "2026-08-18T03:03:25Z",
   "priority_matrix": {
     "high": [
       "PRO-004",
@@ -7,97 +18,86 @@
       "PRO-011",
       "PRO-013"
     ],
-    "low": [],
     "critical": [],
+    "low": [],
     "medium": [
       "PRO-008",
       "PRO-010",
       "PRO-012"
     ]
   },
-  "feedback_summary": {
-    "prs": 0,
-    "total_items": 1,
-    "discussions": 1,
-    "review_comments": 0,
-    "external_mentions": 0,
-    "issues": 0
-  },
-  "metrics": null,
-  "classification_counts": {},
-  "timestamp": "2026-08-18T02:25:51Z",
   "recommendations": [
     {
       "title": "Support configuration file (.dshcoderc)",
-      "items": [],
       "id": "PRO-004",
-      "description": "Allow users to customize rules via config file in their project",
       "effort": "medium",
+      "items": [],
+      "category": "usability",
       "priority": "high",
-      "category": "usability"
+      "description": "Allow users to customize rules via config file in their project"
     },
     {
       "title": "Add test generation suggestions",
-      "items": [],
       "id": "PRO-007",
-      "description": "Generate test case templates based on function signatures",
       "effort": "medium",
+      "items": [],
+      "category": "feature_request",
       "priority": "high",
-      "category": "feature_request"
+      "description": "Generate test case templates based on function signatures"
     },
     {
       "title": "Support Monorepo analysis",
-      "items": [],
       "id": "PRO-008",
-      "description": "Analyze packages/workspaces in monorepo structures",
       "effort": "high",
+      "items": [],
+      "category": "feature_request",
       "priority": "medium",
-      "category": "feature_request"
+      "description": "Analyze packages/workspaces in monorepo structures"
     },
     {
       "title": "Code complexity metrics (cyclomatic/Halstead)",
-      "items": [],
       "id": "PRO-009",
-      "description": "Calculate and report code complexity metrics",
       "effort": "medium",
+      "items": [],
+      "category": "feature_request",
       "priority": "high",
-      "category": "feature_request"
+      "description": "Calculate and report code complexity metrics"
     },
     {
       "title": "Multi-language support expansion",
-      "items": [],
       "id": "PRO-010",
-      "description": "Add deep analysis for Python, Go, Rust, Java",
       "effort": "high",
+      "items": [],
+      "category": "feature_request",
       "priority": "medium",
-      "category": "feature_request"
+      "description": "Add deep analysis for Python, Go, Rust, Java"
     },
     {
       "title": "Integration with CI/CD pipelines",
-      "items": [],
       "id": "PRO-011",
-      "description": "GitHub Actions workflow for automated code review",
       "effort": "low",
+      "items": [],
+      "category": "compatibility",
       "priority": "high",
-      "category": "compatibility"
+      "description": "GitHub Actions workflow for automated code review"
     },
     {
       "title": "Custom rule definitions",
-      "items": [],
       "id": "PRO-012",
-      "description": "Allow users to define custom linting rules via YAML",
       "effort": "high",
+      "items": [],
+      "category": "feature_request",
       "priority": "medium",
-      "category": "feature_request"
+      "description": "Allow users to define custom linting rules via YAML"
     },
     {
       "title": "Batch file analysis",
-      "items": [],
       "id": "PRO-013",
-      "description": "Analyze multiple files/directories at once with summary report",
       "effort": "medium",
+      "items": [],
+      "category": "usability",
       "priority": "high",
-      "category": "usability"
+      "description": "Analyze multiple files/directories at once with summary report"
     }
   ]
 }

@@ -1,17 +1,17 @@
 {
-  "timestamp": "2026-08-18T02:25:40Z",
-  "metrics": null,
-  "summary": {
-    "prs": 0,
-    "total_items": 1,
-    "discussions": 1,
-    "review_comments": 0,
-    "external_mentions": 0,
-    "issues": 0
-  },
-  "issues": [],
   "repository": "chengganping-ship-it/dsh-tool-codereview",
+  "summary": {
+    "external_mentions": 0,
+    "issues": 0,
+    "total_items": 1,
+    "review_comments": 0,
+    "discussions": 1,
+    "prs": 0
+  },
+  "metrics": null,
+  "issues": [],
+  "prs": [],
   "discussions": "{\"message\":\"Discussions are disabled for this repo\",\"documentation_url\":\"https://docs.github.com/rest/repos/discussions#list-discussions-for-repository\",\"status\":\"410\"}",
   "review_comments": [],
-  "prs": []
+  "timestamp": "2026-08-18T03:03:15Z"
 }
