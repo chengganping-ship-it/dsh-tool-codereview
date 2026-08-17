@@ -72,7 +72,7 @@
  * - API gateway (BFF pattern, service routing)
  * 
  * @module dsh-tool-codereview
- * @version 0.33.0
+ * @version 0.34.0
  * @license MIT
  */
 
@@ -82,7 +82,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 export const name = 'dsh-tool-codereview'
 export const inject = ['tools']
 
-const VERSION = '0.33.0'
+const VERSION = '0.34.0'
 
 // ==================== TYPES ====================
 
@@ -20542,6 +20542,526 @@ function formatGracefulDegradationReport(r: GracefulDegradationResult): string {
   return lines.join('\n')
 }
 
+// ==================== V0.34.0: API DEPRECATION STRATEGY ====================
+
+interface APIDeprecationResult {
+  totalIssues: number
+  severity: Severity
+  headers: { line: number; issue: string; suggestion: string }[]
+  sunset: { line: number; issue: string; suggestion: string }[]
+  deprecationScore: number
+  summary: string
+}
+
+function analyzeAPIDeprecation(code: string): APIDeprecationResult {
+  const lines = code.split('\n')
+  const headers: APIDeprecationResult['headers'] = []
+  const sunset: APIDeprecationResult['sunset'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/deprecated|deprecat.*api|deprecat.*endpoint|deprecat.*route/i) && !line.match(/Deprecation.*header|Sunset.*header|deprecation.*policy|migration.*guide/i)) {
+      headers.push({ line: i + 1, issue: 'Deprecated API without Deprecation/Sunset headers', suggestion: 'Add Deprecation: true and Sunset: <date> headers to deprecated API responses for client awareness' })
+    }
+
+    if (line.match(/api.*version.*remove|version.*sunset|endpoint.*retire|api.*retire/i) && !line.match(/notice.*period|migration.*window|client.*notification|timeline/i)) {
+      sunset.push({ line: i + 1, issue: 'API sunset without notice period', suggestion: 'Provide minimum 6-month notice before API sunset; publish migration guide and timeline to consumers' })
+    }
+
+    if (line.match(/Deprecation.*header|Sunset.*header|deprecation.*date/i) && !line.match(/link.*migration|migration.*doc|alternative.*endpoint|successor/i)) {
+      headers.push({ line: i + 1, issue: 'Deprecation header without migration link', suggestion: 'Include Link header (<url>; rel="migration") pointing to migration documentation or successor API' })
+    }
+
+    if (line.match(/breaking.*change|breaking.*api|incompatible.*change/i) && !line.match(/major.*version|version.*bump|semver.*major|migration.*path/i)) {
+      sunset.push({ line: i + 1, issue: 'Breaking change without version bump strategy', suggestion: 'Bump major version for breaking changes; maintain old version during migration window' })
+    }
+  })
+
+  const totalIssues = headers.length + sunset.length
+  const deprecationScore = Math.max(0, 100 - headers.length * 8 - sunset.length * 10)
+  const severity: Severity = sunset.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, headers, sunset, deprecationScore,
+    summary: headers.length + ' header gap(s), ' + sunset.length + ' sunset gap(s)' }
+}
+
+function formatAPIDeprecationReport(r: APIDeprecationResult): string {
+  const lines: string[] = []
+  lines.push('# API Deprecation Strategy Analysis')
+  lines.push('')
+  lines.push('**Deprecation Score:** ' + r.deprecationScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.headers.length > 0) {
+    lines.push('## Headers (' + r.headers.length + ')')
+    r.headers.forEach(h => lines.push('- Line ' + h.line + ': ' + h.suggestion))
+    lines.push('')
+  }
+  if (r.sunset.length > 0) {
+    lines.push('## Sunset (' + r.sunset.length + ')')
+    r.sunset.forEach(s => lines.push('- Line ' + s.line + ': ' + s.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.34.0: DB SAFETY (MIGRATION) ====================
+
+interface DBSafetyResult {
+  totalIssues: number
+  severity: Severity
+  backward: { line: number; issue: string; suggestion: string }[]
+  rollback: { line: number; issue: string; suggestion: string }[]
+  migrationScore: number
+  summary: string
+}
+
+function analyzeDBSafety(code: string): DBSafetyResult {
+  const lines = code.split('\n')
+  const backward: DBSafetyResult['backward'] = []
+  const rollback: DBSafetyResult['rollback'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/DROP.*COLUMN|DROP.*TABLE|dropColumn|dropTable/i) && !line.match(/backup|first.*add.*then.*drop|two.*phase|expand.*contract/i)) {
+      backward.push({ line: i + 1, issue: 'DROP COLUMN/TABLE without two-phase migration', suggestion: 'Use expand-contract: add new column first, migrate data, then drop old column in separate release' })
+    }
+
+    if (line.match(/ALTER.*TABLE|alterTable|modify.*column|change.*column/i) && !line.match(/nullable|default.*value|backward.*compat|online.*DDL|pt.?osc|gh.?ost/i)) {
+      backward.push({ line: i + 1, issue: 'ALTER TABLE without backward-compatible approach', suggestion: 'Add new nullable column with default; use pt-online-schema-change or gh-ost for zero-downtime ALTER' })
+    }
+
+    if (line.match(/migration.*up|up.*migration|forward.*migration/i) && !line.match(/down.*migration|rollback|reverse.*migration|undo/i)) {
+      rollback.push({ line: i + 1, issue: 'Migration without rollback (down) function', suggestion: 'Implement down() migration for every up() migration; test rollback in staging before production deploy' })
+    }
+
+    if (line.match(/rename.*column|rename.*table|renameTable|renameColumn/i) && !line.match(/dual.*write|alias.*column|view.*alias|deprecat.*old.*name/i)) {
+      rollback.push({ line: i + 1, issue: 'Rename column/table without dual-write transition', suggestion: 'Add alias view or dual-write period; update all consumers before removing old name' })
+    }
+  })
+
+  const totalIssues = backward.length + rollback.length
+  const migrationScore = Math.max(0, 100 - backward.length * 10 - rollback.length * 8)
+  const severity: Severity = backward.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, backward, rollback, migrationScore,
+    summary: backward.length + ' backward-compat gap(s), ' + rollback.length + ' rollback gap(s)' }
+}
+
+function formatDBSafetyReport(r: DBSafetyResult): string {
+  const lines: string[] = []
+  lines.push('# Migration Safety Analysis')
+  lines.push('')
+  lines.push('**Migration Score:** ' + r.migrationScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.backward.length > 0) {
+    lines.push('## Backward Compatibility (' + r.backward.length + ')')
+    r.backward.forEach(b => lines.push('- Line ' + b.line + ': ' + b.suggestion))
+    lines.push('')
+  }
+  if (r.rollback.length > 0) {
+    lines.push('## Rollback (' + r.rollback.length + ')')
+    r.rollback.forEach(r => lines.push('- Line ' + r.line + ': ' + r.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.34.0: LOG SAMPLING ====================
+
+interface LogSamplingResult {
+  totalIssues: number
+  severity: Severity
+  sampling: { line: number; issue: string; suggestion: string }[]
+  preservation: { line: number; issue: string; suggestion: string }[]
+  samplingScore: number
+  summary: string
+}
+
+function analyzeLogSampling(code: string): LogSamplingResult {
+  const lines = code.split('\n')
+  const sampling: LogSamplingResult['sampling'] = []
+  const preservation: LogSamplingResult['preservation'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/log.*sample|sample.*log|log.*rate|sample.*rate/i) && !line.match(/error.*preserve|warn.*preserve|always.*error|100.*error/i)) {
+      preservation.push({ line: i + 1, issue: 'Log sampling without error/warn preservation', suggestion: 'Always log 100% of ERROR and WARN levels; sample only INFO/DEBUG to preserve critical signals' })
+    }
+
+    if (line.match(/high.*volume|high.*traffic|high.*QPS|frequent.*log/i) && !line.match(/sample|throttle|rate.*limit|adaptive|dynamic/i)) {
+      sampling.push({ line: i + 1, issue: 'High-volume endpoint without log sampling', suggestion: 'Implement adaptive log sampling (e.g., 1% for INFO) to control log volume while preserving error visibility' })
+    }
+
+    if (line.match(/adaptive.*sample|dynamic.*sample|request.*based.*sample/i) && !line.match(/error.*override|error.*always|latency.*sample|slow.*always/i)) {
+      sampling.push({ line: i + 1, issue: 'Adaptive sampling without error/latency override', suggestion: 'Override sampling for errors and slow requests (>p99); always capture anomalous requests for debugging' })
+    }
+
+    if (line.match(/log.*throttle|throttle.*log|log.*suppress/i) && !line.match(/dedup|count.*suppress|summary.*log|suppressed.*count/i)) {
+      preservation.push({ line: i + 1, issue: 'Log throttling without suppression counter', suggestion: 'Log summary of suppressed messages (e.g., "suppressed 100 similar logs") to maintain visibility' })
+    }
+  })
+
+  const totalIssues = sampling.length + preservation.length
+  const samplingScore = Math.max(0, 100 - sampling.length * 8 - preservation.length * 8)
+  const severity: Severity = preservation.length > 0 ? 'info' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, sampling, preservation, samplingScore,
+    summary: sampling.length + ' sampling gap(s), ' + preservation.length + ' preservation gap(s)' }
+}
+
+function formatLogSamplingReport(r: LogSamplingResult): string {
+  const lines: string[] = []
+  lines.push('# Log Sampling Analysis')
+  lines.push('')
+  lines.push('**Sampling Score:** ' + r.samplingScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.sampling.length > 0) {
+    lines.push('## Sampling (' + r.sampling.length + ')')
+    r.sampling.forEach(s => lines.push('- Line ' + s.line + ': ' + s.suggestion))
+    lines.push('')
+  }
+  if (r.preservation.length > 0) {
+    lines.push('## Preservation (' + r.preservation.length + ')')
+    r.preservation.forEach(p => lines.push('- Line ' + p.line + ': ' + p.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.34.0: SLO TRACKING ====================
+
+interface SLOTrackingResult {
+  totalIssues: number
+  severity: Severity
+  slo: { line: number; issue: string; suggestion: string }[]
+  budget: { line: number; issue: string; suggestion: string }[]
+  sloScore: number
+  summary: string
+}
+
+function analyzeSLOTracking(code: string): SLOTrackingResult {
+  const lines = code.split('\n')
+  const slo: SLOTrackingResult['slo'] = []
+  const budget: SLOTrackingResult['budget'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/SLO|service.*level|availability.*target|latency.*target|error.*rate.*target/i) && !line.match(/error.*budget|burn.*rate|window|rolling/i)) {
+      budget.push({ line: i + 1, issue: 'SLO defined without error budget tracking', suggestion: 'Define error budget (e.g., 0.1% error rate for 99.9% SLO); track burn rate over rolling window' })
+    }
+
+    if (line.match(/error.*budget|budget.*remaining|budget.*consumed/i) && !line.match(/alert|burn.*rate.*alert|exhaust.*policy|freeze.*policy/i)) {
+      budget.push({ line: i + 1, issue: 'Error budget without burn rate alerting', suggestion: 'Alert on fast burn rate (e.g., 5x); define policy when budget exhausted (e.g., freeze deployments)' })
+    }
+
+    if (line.match(/availability.*monitor|uptime.*monitor|health.*score/i) && !line.match(/window|rolling.*30d|rolling.*7d|period|measure.*interval/i)) {
+      slo.push({ line: i + 1, issue: 'Availability monitoring without measurement window', suggestion: 'Define rolling measurement window (e.g., 30-day) for consistent SLO calculation' })
+    }
+
+    if (line.match(/latency.*SLO|latency.*target|p99.*target|p95.*target/i) && !line.match(/histogram|percentile.*calc|bucket.*boundary|prometheus.*histogram/i)) {
+      slo.push({ line: i + 1, issue: 'Latency SLO without histogram metric', suggestion: 'Use Prometheus histogram for accurate percentile calculation; define bucket boundaries matching SLO targets' })
+    }
+  })
+
+  const totalIssues = slo.length + budget.length
+  const sloScore = Math.max(0, 100 - slo.length * 8 - budget.length * 8)
+  const severity: Severity = budget.length > 0 ? 'info' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, slo, budget, sloScore,
+    summary: slo.length + ' SLO gap(s), ' + budget.length + ' budget gap(s)' }
+}
+
+function formatSLOTrackingReport(r: SLOTrackingResult): string {
+  const lines: string[] = []
+  lines.push('# SLO Tracking Analysis')
+  lines.push('')
+  lines.push('**SLO Score:** ' + r.sloScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.slo.length > 0) {
+    lines.push('## SLO Definition (' + r.slo.length + ')')
+    r.slo.forEach(s => lines.push('- Line ' + s.line + ': ' + s.suggestion))
+    lines.push('')
+  }
+  if (r.budget.length > 0) {
+    lines.push('## Error Budget (' + r.budget.length + ')')
+    r.budget.forEach(b => lines.push('- Line ' + b.line + ': ' + b.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.34.0: API KEY MANAGEMENT ====================
+
+interface APIKeyMgmtResult {
+  totalIssues: number
+  severity: Severity
+  storage: { line: number; issue: string; suggestion: string }[]
+  rotation: { line: number; issue: string; suggestion: string }[]
+  keyScore: number
+  summary: string
+}
+
+function analyzeAPIKeyMgmt(code: string): APIKeyMgmtResult {
+  const lines = code.split('\n')
+  const storage: APIKeyMgmtResult['storage'] = []
+  const rotation: APIKeyMgmtResult['rotation'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/api.?key|apikey|api.?secret|API_KEY/i) && line.match(/store|save|insert|database|table/i) && !line.match(/hash|bcrypt|scrypt|argon|encrypt|SHA-?256|SHA-?512/i)) {
+      storage.push({ line: i + 1, issue: 'API key stored in plaintext', suggestion: 'Hash API keys with SHA-256 before storage; store only hash for verification (like password hashing)' })
+    }
+
+    if (line.match(/api.?key.*prefix|key.*prefix|key.*identifier|sk-/i) && !line.match(/prefix.*visible|prefix.*search|lookup.*prefix|hash.*remainder/i)) {
+      storage.push({ line: i + 1, issue: 'API key prefix without lookup strategy', suggestion: 'Store prefix (first 8 chars) for key identification; hash remainder for verification' })
+    }
+
+    if (line.match(/rotate.*key|key.*rotation|rotate.*api/i) && !line.match(/grace.*period|overlap.*period|dual.*valid|old.*key.*valid/i)) {
+      rotation.push({ line: i + 1, issue: 'Key rotation without grace period', suggestion: 'Support dual-key validation during rotation grace period (e.g., 7 days); allow old key to work temporarily' })
+    }
+
+    if (line.match(/api.?key.*scope|key.*permission|key.*restrict/i) && !line.match(/least.*privilege|minimal.*scope|read.*only|write.*only|resource.*restrict/i)) {
+      rotation.push({ line: i + 1, issue: 'API key scope without least-privilege enforcement', suggestion: 'Enforce least-privilege: restrict key to specific resources, actions (read/write), and IP ranges' })
+    }
+  })
+
+  const totalIssues = storage.length + rotation.length
+  const keyScore = Math.max(0, 100 - storage.length * 10 - rotation.length * 8)
+  const severity: Severity = storage.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, storage, rotation, keyScore,
+    summary: storage.length + ' storage gap(s), ' + rotation.length + ' rotation gap(s)' }
+}
+
+function formatAPIKeyMgmtReport(r: APIKeyMgmtResult): string {
+  const lines: string[] = []
+  lines.push('# API Key Management Analysis')
+  lines.push('')
+  lines.push('**Key Score:** ' + r.keyScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.storage.length > 0) {
+    lines.push('## Storage (' + r.storage.length + ')')
+    r.storage.forEach(s => lines.push('- Line ' + s.line + ': ' + s.suggestion))
+    lines.push('')
+  }
+  if (r.rotation.length > 0) {
+    lines.push('## Rotation (' + r.rotation.length + ')')
+    r.rotation.forEach(r => lines.push('- Line ' + r.line + ': ' + r.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.34.0: DATA LINEAGE ====================
+
+interface DataLineageResult {
+  totalIssues: number
+  severity: Severity
+  tracking: { line: number; issue: string; suggestion: string }[]
+  impact: { line: number; issue: string; suggestion: string }[]
+  lineageScore: number
+  summary: string
+}
+
+function analyzeDataLineage(code: string): DataLineageResult {
+  const lines = code.split('\n')
+  const tracking: DataLineageResult['tracking'] = []
+  const impact: DataLineageResult['impact'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/ETL|data.*pipeline|data.*transform|data.*flow/i) && !line.match(/lineage|provenance|source.*track|origin.*track|data.*catalog/i)) {
+      tracking.push({ line: i + 1, issue: 'Data pipeline without lineage tracking', suggestion: 'Track data lineage (source -> transform -> destination) for impact analysis and debugging' })
+    }
+
+    if (line.match(/schema.*change|column.*change|field.*change|type.*change/i) && !line.match(/downstream.*impact|consumer.*notify|impact.*analysis|dependency.*graph/i)) {
+      impact.push({ line: i + 1, issue: 'Schema change without downstream impact analysis', suggestion: 'Analyze downstream consumers before schema change; notify affected teams; use schema registry' })
+    }
+
+    if (line.match(/data.*catalog|schema.*registry|metadata.*store/i) && !line.match(/version|evolution|compat.*check|breaking.*detect/i)) {
+      tracking.push({ line: i + 1, issue: 'Schema registry without compatibility check', suggestion: 'Enable schema compatibility check (BACKWARD/FORWARD) in registry to prevent breaking consumer contracts' })
+    }
+
+    if (line.match(/upstream.*change|source.*change|producer.*change/i) && !line.match(/alert.*downstream|notify.*consumer|impact.*assess|cascade.*check/i)) {
+      impact.push({ line: i + 1, issue: 'Upstream change without downstream notification', suggestion: 'Implement automated downstream notification on upstream schema/data changes; assess cascade impact' })
+    }
+  })
+
+  const totalIssues = tracking.length + impact.length
+  const lineageScore = Math.max(0, 100 - tracking.length * 8 - impact.length * 8)
+  const severity: Severity = impact.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, tracking, impact, lineageScore,
+    summary: tracking.length + ' tracking gap(s), ' + impact.length + ' impact gap(s)' }
+}
+
+function formatDataLineageReport(r: DataLineageResult): string {
+  const lines: string[] = []
+  lines.push('# Data Lineage Analysis')
+  lines.push('')
+  lines.push('**Lineage Score:** ' + r.lineageScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.tracking.length > 0) {
+    lines.push('## Tracking (' + r.tracking.length + ')')
+    r.tracking.forEach(t => lines.push('- Line ' + t.line + ': ' + t.suggestion))
+    lines.push('')
+  }
+  if (r.impact.length > 0) {
+    lines.push('## Impact (' + r.impact.length + ')')
+    r.impact.forEach(imp => lines.push('- Line ' + imp.line + ': ' + imp.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.34.0: INFRA DRIFT ====================
+
+interface InfraDriftResult {
+  totalIssues: number
+  severity: Severity
+  detection: { line: number; issue: string; suggestion: string }[]
+  reconciliation: { line: number; issue: string; suggestion: string }[]
+  driftScore: number
+  summary: string
+}
+
+function analyzeInfraDrift(code: string): InfraDriftResult {
+  const lines = code.split('\n')
+  const detection: InfraDriftResult['detection'] = []
+  const reconciliation: InfraDriftResult['reconciliation'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/terraform|pulumi|cloudformation|IaC|infrastructure.*code/i) && !line.match(/drift.*detect|plan.*schedule|state.*sync|manual.*change.*detect/i)) {
+      detection.push({ line: i + 1, issue: 'IaC without drift detection', suggestion: 'Schedule regular terraform plan to detect drift; alert on manual changes outside IaC' })
+    }
+
+    if (line.match(/manual.*change|console.*change|ad.*hoc.*change|emergency.*change/i) && !line.match(/backport|IaC.*update|state.*import|reconcil|document/i)) {
+      reconciliation.push({ line: i + 1, issue: 'Manual infrastructure change without IaC reconciliation', suggestion: 'Backport manual changes to IaC within 24h; import state to prevent future drift' })
+    }
+
+    if (line.match(/terraform.*state|state.*file|tfstate/i) && !line.match(/remote.*state|state.*lock|versioned.*state|backup.*state/i)) {
+      detection.push({ line: i + 1, issue: 'Terraform state without remote locking', suggestion: 'Use remote state (S3+DynamoDB) with locking to prevent concurrent modifications and enable versioning' })
+    }
+
+    if (line.match(/config.*drift|configuration.*drift|env.*drift/i) && !line.match(/auto.*remediate|self.*heal|auto.*correct|notify.*only/i)) {
+      reconciliation.push({ line: i + 1, issue: 'Config drift without auto-remediation strategy', suggestion: 'Define auto-remediation (self-heal to desired state) or notify-only policy for configuration drift' })
+    }
+  })
+
+  const totalIssues = detection.length + reconciliation.length
+  const driftScore = Math.max(0, 100 - detection.length * 8 - reconciliation.length * 8)
+  const severity: Severity = detection.length > 0 ? 'info' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, detection, reconciliation, driftScore,
+    summary: detection.length + ' detection gap(s), ' + reconciliation.length + ' reconciliation gap(s)' }
+}
+
+function formatInfraDriftReport(r: InfraDriftResult): string {
+  const lines: string[] = []
+  lines.push('# Infrastructure Drift Analysis')
+  lines.push('')
+  lines.push('**Drift Score:** ' + r.driftScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.detection.length > 0) {
+    lines.push('## Detection (' + r.detection.length + ')')
+    r.detection.forEach(d => lines.push('- Line ' + d.line + ': ' + d.suggestion))
+    lines.push('')
+  }
+  if (r.reconciliation.length > 0) {
+    lines.push('## Reconciliation (' + r.reconciliation.length + ')')
+    r.reconciliation.forEach(r => lines.push('- Line ' + r.line + ': ' + r.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.34.0: SCHEMA EVOLUTION ====================
+
+interface SchemaEvolutionResult {
+  totalIssues: number
+  severity: Severity
+  evolution: { line: number; issue: string; suggestion: string }[]
+  contract: { line: number; issue: string; suggestion: string }[]
+  schemaScore: number
+  summary: string
+}
+
+function analyzeSchemaEvolution(code: string): SchemaEvolutionResult {
+  const lines = code.split('\n')
+  const evolution: SchemaEvolutionResult['evolution'] = []
+  const contract: SchemaEvolutionResult['contract'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/protobuf.*schema|avro.*schema|thrift.*schema|graphql.*schema/i) && !line.match(/version|compat|evolut|migration|deprecat/i)) {
+      evolution.push({ line: i + 1, issue: 'Schema definition without versioning', suggestion: 'Add version field to schema; use schema registry for backward/forward compatibility enforcement' })
+    }
+
+    if (line.match(/field.*add|add.*field|add.*column|new.*field/i) && !line.match(/optional|nullable|default|backward|forward/i)) {
+      evolution.push({ line: i + 1, issue: 'New field added without backward-compatible default', suggestion: 'New fields must be optional with defaults; old consumers should ignore unknown fields' })
+    }
+
+    if (line.match(/consumer.*contract|provider.*contract|pact.*test|contract.*test/i) && !line.match(/verify|broker|publish.*contract|ci.*verify/i)) {
+      contract.push({ line: i + 1, issue: 'Contract test without CI verification', suggestion: 'Run contract tests in CI pipeline; publish contracts to broker for cross-team verification' })
+    }
+
+    if (line.match(/breaking.*schema|schema.*break|incompatible.*schema/i) && !line.match(/major.*version|version.*bump|migration.*path|dual.*read/i)) {
+      contract.push({ line: i + 1, issue: 'Breaking schema change without migration path', suggestion: 'Bump major version for breaking changes; provide dual-read period for consumer migration' })
+    }
+  })
+
+  const totalIssues = evolution.length + contract.length
+  const schemaScore = Math.max(0, 100 - evolution.length * 8 - contract.length * 8)
+  const severity: Severity = contract.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, evolution, contract, schemaScore,
+    summary: evolution.length + ' evolution gap(s), ' + contract.length + ' contract gap(s)' }
+}
+
+function formatSchemaEvolutionReport(r: SchemaEvolutionResult): string {
+  const lines: string[] = []
+  lines.push('# Schema Evolution Analysis')
+  lines.push('')
+  lines.push('**Schema Score:** ' + r.schemaScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.evolution.length > 0) {
+    lines.push('## Evolution (' + r.evolution.length + ')')
+    r.evolution.forEach(e => lines.push('- Line ' + e.line + ': ' + e.suggestion))
+    lines.push('')
+  }
+  if (r.contract.length > 0) {
+    lines.push('## Contract (' + r.contract.length + ')')
+    r.contract.forEach(c => lines.push('- Line ' + c.line + ': ' + c.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
 // ==================== PLUGIN REGISTRATION ====================
 
 export function apply(ctx: Context) {
@@ -23904,5 +24424,93 @@ ctx.tools.register(defineTool({
   }
 }))
 
-console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design, container_security, ml_pipeline, api_deprecation, design_system, pwa_compliance, type_system, green_computing, realtime_collab, a11y_deep, i18n_deep, css_architecture, state_machine, web_components, resilience, module_federation, review_automation, observability, migration_safety, edge_computing, api_versioning, wasm_advanced, feature_toggles, email_deliverability, seo_analysis, monorepo_boundaries, ddd_patterns, mf_runtime, realtime_protocols, data_pipeline, gateway_deep, test_rigor, quality_gate, graphql_schema, event_sourcing_integrity, rate_limiting, migration_safety, auth_hardening, distributed_tracing, infrastructure_as_code, review_automation, contract_testing, sec_headers_deep, privacy_compliance, concurrency_patterns, cloud_native, error_recovery, system_design, dependency_injection, api_versioning, serialization_perf, memory_allocation, build_pipeline, error_messages, logging_discipline, config_as_code, component_interface, token_hygiene, query_antipatterns, websocket_lifecycle, graphql_perf, deprecation_tracking, code_splitting_audit, css_arch_deep, sec_dep_audit, webhook_signature, oauth_security, email_infra, health_check_depth, cors_security, feature_rollout, secret_lifecycle, rate_limit_strategy, container_security_scan, grpc_security, data_residency, deployment_progressive, obs_exemplar, data_pipeline_quality, service_mesh, plugin_architecture, mobile_app_security, data_masking, core_web_vitals, infra_cost, api_gateway_config, css_in_js_perf, crdt_state_sync, resource_quota, browser_compat_audit, floating_point, snapshot_testing, event_schema, form_validation, retry_idempotency, a11y_semantics, race_condition, cache_invalidation, data_loader_opt, event_versioning, connection_lifecycle, csp_nonce, struct_error_ctx, stream_backpressure, identifier_collision, graphql_query_depth, auth_token_rotation, mq_dead_letter, file_upload_sec, query_plan, encryption_at_rest, ws_connection_state, rate_limit_policy, payment_idempotency, cron_reliability, immutable_data, data_residency_compliance, response_envelope, compression_negotiation, dns_health, graceful_degradation`)
+ctx.tools.register(defineTool({
+  name: 'api_deprecation_strategy',
+  description: 'Analyze API deprecation strategy: Deprecation/Sunset headers, migration links, breaking change version bump, sunset notice period.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeAPIDeprecation(args.code)
+    return formatAPIDeprecationReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'db_safety',
+  description: 'Analyze database migration safety: backward-compatible ALTER, expand-contract pattern, rollback down() function, rename dual-write.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeDBSafety(args.code)
+    return formatDBSafetyReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'log_sampling',
+  description: 'Analyze log sampling strategy: error/warn preservation, adaptive sampling rate, high-volume endpoint throttling, suppression counter.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeLogSampling(args.code)
+    return formatLogSamplingReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'slo_tracking',
+  description: 'Analyze SLO tracking: error budget definition, burn rate alerting, rolling measurement window, latency histogram metric.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeSLOTracking(args.code)
+    return formatSLOTrackingReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'api_key_mgmt',
+  description: 'Analyze API key management: hashed storage, prefix lookup, rotation grace period, least-privilege scope.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeAPIKeyMgmt(args.code)
+    return formatAPIKeyMgmtReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'data_lineage',
+  description: 'Analyze data lineage tracking: pipeline provenance, schema change impact, compatibility check, upstream notification.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeDataLineage(args.code)
+    return formatDataLineageReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'infra_drift',
+  description: 'Analyze infrastructure drift detection: terraform plan schedule, manual change reconciliation, remote state locking, auto-remediation.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeInfraDrift(args.code)
+    return formatInfraDriftReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'schema_evolution',
+  description: 'Analyze schema evolution: versioning, backward-compatible field addition, contract test CI, breaking change migration path.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeSchemaEvolution(args.code)
+    return formatSchemaEvolutionReport(result)
+  }
+}))
+
+console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design, container_security, ml_pipeline, api_deprecation, design_system, pwa_compliance, type_system, green_computing, realtime_collab, a11y_deep, i18n_deep, css_architecture, state_machine, web_components, resilience, module_federation, review_automation, observability, migration_safety, edge_computing, api_versioning, wasm_advanced, feature_toggles, email_deliverability, seo_analysis, monorepo_boundaries, ddd_patterns, mf_runtime, realtime_protocols, data_pipeline, gateway_deep, test_rigor, quality_gate, graphql_schema, event_sourcing_integrity, rate_limiting, migration_safety, auth_hardening, distributed_tracing, infrastructure_as_code, review_automation, contract_testing, sec_headers_deep, privacy_compliance, concurrency_patterns, cloud_native, error_recovery, system_design, dependency_injection, api_versioning, serialization_perf, memory_allocation, build_pipeline, error_messages, logging_discipline, config_as_code, component_interface, token_hygiene, query_antipatterns, websocket_lifecycle, graphql_perf, deprecation_tracking, code_splitting_audit, css_arch_deep, sec_dep_audit, webhook_signature, oauth_security, email_infra, health_check_depth, cors_security, feature_rollout, secret_lifecycle, rate_limit_strategy, container_security_scan, grpc_security, data_residency, deployment_progressive, obs_exemplar, data_pipeline_quality, service_mesh, plugin_architecture, mobile_app_security, data_masking, core_web_vitals, infra_cost, api_gateway_config, css_in_js_perf, crdt_state_sync, resource_quota, browser_compat_audit, floating_point, snapshot_testing, event_schema, form_validation, retry_idempotency, a11y_semantics, race_condition, cache_invalidation, data_loader_opt, event_versioning, connection_lifecycle, csp_nonce, struct_error_ctx, stream_backpressure, identifier_collision, graphql_query_depth, auth_token_rotation, mq_dead_letter, file_upload_sec, query_plan, encryption_at_rest, ws_connection_state, rate_limit_policy, payment_idempotency, cron_reliability, immutable_data, data_residency_compliance, response_envelope, compression_negotiation, dns_health, graceful_degradation, api_deprecation_strategy, db_safety, log_sampling, slo_tracking, api_key_mgmt, data_lineage, infra_drift, schema_evolution`)
 }
