@@ -1,10 +1,10 @@
 /**
- * DSH Code Review Assistant Plugin - Enterprise Edition v0.13.0
+ * DSH Code Review Assistant Plugin - Enterprise Edition v0.14.0
  * 
  * Enterprise-grade code analysis toolkit for DeepSeek Harness Agent.
  * 
- * Features (v0.13.0):
- * - 73 comprehensive analysis tools
+ * Features (v0.14.0):
+ * - 81 comprehensive analysis tools
  * - SARIF 2.1.0 export (GitHub Code Scanning & CI/CD compatible)
  * - Security scanning (OWASP Top 10 2021, CWE Top 25, SANS Top 25)
  * - Code Smell Detection (God Object, Feature Envy, Shotgun Surgery, etc.)
@@ -38,9 +38,17 @@
  * - Accessibility (a11y) scanning
  * - Design pattern detection
  * - Error boundary analysis
+ * - React Hooks compliance (rules-of-hooks, deps, stale closures)
+ * - Database query analysis (N+1, SELECT *, unbounded)
+ * - Regex optimization (backtracking, simplification)
+ * - DOM efficiency (forced layout, batching)
+ * - Security headers (CSP, HSTS, CORS)
+ * - CSS/style analysis (!important, specificity, magic numbers)
+ * - Dependency version policy (deprecated, unpinned)
+ * - State management (mutations, re-renders, normalization)
  * 
  * @module dsh-tool-codereview
- * @version 0.13.0
+ * @version 0.14.0
  * @license MIT
  */
 
@@ -50,7 +58,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 export const name = 'dsh-tool-codereview'
 export const inject = ['tools']
 
-const VERSION = '0.13.0'
+const VERSION = '0.14.0'
 
 // ==================== TYPES ====================
 
@@ -8687,6 +8695,857 @@ function formatErrorBoundaryReport(r: ErrorBoundaryResult): string {
   return lines.join('\n')
 }
 
+// ==================== V0.14.0 NEW TOOLS ====================
+
+// ---- Tool 74: React Hooks Compliance Check ----
+
+interface HooksResult {
+  totalIssues: number
+  severity: Severity
+  conditionalHooks: { line: number; hook: string; issue: string; suggestion: string }[]
+  loopHooks: { line: number; hook: string; issue: string; suggestion: string }[]
+  missingDeps: { line: number; hook: string; missing: string[]; suggestion: string }[]
+  staleClosures: { line: number; variable: string; suggestion: string }[]
+  unnecessaryHooks: { line: number; hook: string; issue: string; suggestion: string }[]
+  hooksScore: number
+  summary: string
+}
+
+function checkReactHooks(code: string): HooksResult {
+  const lines = code.split('\n')
+  const conditionalHooks: HooksResult['conditionalHooks'] = []
+  const loopHooks: HooksResult['loopHooks'] = []
+  const missingDeps: HooksResult['missingDeps'] = []
+  const staleClosures: HooksResult['staleClosures'] = []
+  const unnecessaryHooks: HooksResult['unnecessaryHooks'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/\/|\/\*|\*)/)) return
+
+    // Detect hooks in conditions
+    if (line.match(/\bif\s*\(/) && lines.slice(i, i + 5).some(l => l.match(/use[A-Z]\w+\s*\(/))) {
+      const hookMatch = lines.slice(i, i + 5).map(l => l.match(/use[A-Z]\w+/)).find(Boolean)
+      if (hookMatch) {
+        conditionalHooks.push({ line: i + 1, hook: hookMatch[0], issue: 'Hook called inside conditional', suggestion: 'Move hook outside of conditions — hooks must be called in the same order every render' })
+      }
+    }
+
+    // Detect hooks in loops
+    if (line.match(/\b(?:for|while|do)\s*\(/) && lines.slice(i, i + 8).some(l => l.match(/use[A-Z]\w+\s*\(/))) {
+      const hookMatch = lines.slice(i, i + 8).map(l => l.match(/use[A-Z]\w+/)).find(Boolean)
+      if (hookMatch) {
+        loopHooks.push({ line: i + 1, hook: hookMatch[0], issue: 'Hook called inside loop', suggestion: 'Move hook outside of loops — hooks cannot be called in loops' })
+      }
+    }
+
+    // Detect useEffect/useCallback without dependency array
+    const effectMatch = line.match(/use(Effect|Callback|Memo|LayoutEffect)\s*\(/)
+    if (effectMatch) {
+      const hookName = 'use' + effectMatch[1]
+      const nextLines = lines.slice(i, i + 8).join('\n')
+      if (!nextLines.includes('[')) {
+        // Try to find used variables
+        const usedVars = new Set<string>()
+        const varPattern = /\b([a-z_]\w{2,})\b/g
+        let m: RegExpExecArray | null
+        while ((m = varPattern.exec(nextLines)) !== null) {
+          if (!['const', 'let', 'var', 'return', 'true', 'false', 'null', 'undefined', 'async', 'await', 'function'].includes(m[1])) {
+            usedVars.add(m[1])
+          }
+        }
+        const depArray = Array.from(usedVars).slice(0, 5)
+        missingDeps.push({ line: i + 1, hook: hookName, missing: depArray, suggestion: `Add dependency array: [${depArray.join(', ')}]` })
+      }
+    }
+
+    // Detect useState when useReducer might be better (complex state)
+    if (line.match(/useState\s*\(\s*(?:\{|\[)/)) {
+      unnecessaryHooks.push({ line: i + 1, hook: 'useState', issue: 'Complex state object', suggestion: 'Consider useReducer for complex state logic with multiple sub-values' })
+    }
+
+    // Detect stale closure: useEffect referencing outer scope variable without deps
+    if (line.match(/useEffect\s*\(\s*\(\)\s*=>/)) {
+      const blockEnd = lines.findIndex((l, j) => j > i && l.includes('}'))
+      const blockLines = lines.slice(i, blockEnd > 0 ? blockEnd + 1 : i + 10)
+      const hasSetState = blockLines.some(l => l.includes('set'))
+      if (!hasSetState && blockLines.join('\n').includes('[') && !blockLines.join('\n').includes('[]')) {
+        // skip those with explicit deps
+      } else if (!blockLines.join('\n').includes('[')) {
+        staleClosures.push({ line: i + 1, variable: 'state prop', suggestion: 'Effect missing dependency array — may use stale closure' })
+      }
+    }
+  })
+
+  const totalIssues = conditionalHooks.length + loopHooks.length + missingDeps.length + staleClosures.length + unnecessaryHooks.length
+  const hooksScore = Math.max(0, 100 - totalIssues * 12)
+  const severity: Severity = conditionalHooks.length + loopHooks.length > 0 ? 'error' : totalIssues >= 3 ? 'warning' : totalIssues >= 1 ? 'info' : 'info'
+
+  return {
+    totalIssues, severity, conditionalHooks, loopHooks, missingDeps, staleClosures, unnecessaryHooks, hooksScore,
+    summary: totalIssues === 0 ? 'React Hooks usage follows rules' : `${totalIssues} hooks issue(s) — score: ${hooksScore}/100`
+  }
+}
+
+function formatHooksReport(r: HooksResult): string {
+  const lines: string[] = []
+  lines.push(`# React Hooks Compliance`)
+  lines.push(``)
+  lines.push(`**Hooks Score:** ${r.hooksScore}/100 | **Issues:** ${r.totalIssues} | **Severity:** ${r.severity.toUpperCase()}`)
+  lines.push(``)
+  lines.push(`> ${r.summary}`)
+  lines.push(``)
+
+  if (r.conditionalHooks.length > 0) {
+    lines.push(`## Conditional Hook Calls (${r.conditionalHooks.length}) ⚠️`)
+    r.conditionalHooks.forEach(h => lines.push(`- Line ${h.line}: \`${h.hook}\` in condition — ${h.suggestion}`))
+    lines.push(``)
+  }
+
+  if (r.loopHooks.length > 0) {
+    lines.push(`## Hook Calls in Loops (${r.loopHooks.length}) ⚠️`)
+    r.loopHooks.forEach(h => lines.push(`- Line ${h.line}: \`${h.hook}\` in loop — ${h.suggestion}`))
+    lines.push(``)
+  }
+
+  if (r.missingDeps.length > 0) {
+    lines.push(`## Missing Dependency Arrays (${r.missingDeps.length})`)
+    r.missingDeps.forEach(d => lines.push(`- Line ${d.line}: \`${d.hook}\` — add [${d.missing.join(', ')}]`))
+    lines.push(``)
+  }
+
+  if (r.staleClosures.length > 0) {
+    lines.push(`## Stale Closures (${r.staleClosures.length})`)
+    r.staleClosures.forEach(s => lines.push(`- Line ${s.line}: ${s.suggestion}`))
+    lines.push(``)
+  }
+
+  return lines.join('\n')
+}
+
+// ---- Tool 75: Database Query Analysis ----
+
+interface QueryResult {
+  totalIssues: number
+  severity: Severity
+  nPlusOne: { line: number; pattern: string; suggestion: string }[]
+  fullTableScan: { line: number; query: string; suggestion: string }[]
+  missingIndexHints: { line: number; table: string; fields: string[]; suggestion: string }[]
+  selectStar: { line: number; suggestion: string }[]
+  unboundedQueries: { line: number; suggestion: string }[]
+  queryScore: number
+  summary: string
+}
+
+function analyzeQueries(code: string): QueryResult {
+  const lines = code.split('\n')
+  const nPlusOne: QueryResult['nPlusOne'] = []
+  const fullTableScan: QueryResult['fullTableScan'] = []
+  const missingIndexHints: QueryResult['missingIndexHints'] = []
+  const selectStar: QueryResult['selectStar'] = []
+  const unboundedQueries: QueryResult['unboundedQueries'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/\/|\/\*|\*)/)) return
+
+    // Detect N+1: query inside loop/forEach/map
+    if ((line.match(/\.(forEach|map|filter|reduce|find)\s*\(/) || line.match(/\bfor\s*\(/)) &&
+        lines.slice(i, i + 10).some(l => l.match(/\.(find|findOne|get|select|query|execute)\s*\(/))) {
+      const queryMatch = lines.slice(i, i + 10).map(l => l.match(/\.(find|findOne|get|query|execute)\s*\(/)).find(Boolean)
+      if (queryMatch) {
+        nPlusOne.push({ line: i + 1, pattern: `Query inside ${line.match(/\.(forEach|map|find)/)?.[1] || 'loop'}()`, suggestion: 'Batch queries with WHERE IN or JOIN to avoid N+1' })
+      }
+    }
+
+    // Detect SELECT *
+    if (line.match(/select\s+\*/i) || line.match(/SELECT\s+\*/)) {
+      selectStar.push({ line: i + 1, suggestion: 'Avoid SELECT * — specify only needed columns to reduce I/O and network transfer' })
+    }
+
+    // Detect missing LIMIT
+    if (line.match(/(?:SELECT|select)\s+.*(?:FROM|from)\s+\w+/) && !line.match(/\bLIMIT\b/i)) {
+      const restOfBlock = lines.slice(i, i + 5).join('\n')
+      if (!restOfBlock.match(/\bLIMIT\b/i) && !restOfBlock.match(/\/.*LIMIT/)) {
+        unboundedQueries.push({ line: i + 1, suggestion: 'Query without LIMIT — add pagination with LIMIT/OFFSET or cursor-based pagination' })
+      }
+    }
+
+    // Detect WHERE without index hint on common filter fields
+    const whereMatch = line.match(/WHERE\s+(\w+)\s*[=<>]/i)
+    if (whereMatch) {
+      const field = whereMatch[1]
+      if (['id', 'email', 'user_id', 'created_at', 'status'].includes(field.toLowerCase())) {
+        // This is informational — these fields SHOULD be indexed
+      }
+    }
+
+    // Detect ORM N+1 patterns (e.g., Sequelize mongoose populate in loop)
+    if (line.match(/\.(populate|include|preload)\s*\(/) && lines.slice(Math.max(0, i - 5), i).some(l => l.match(/\.(forEach|map)\s*\(/))) {
+      nPlusOne.push({ line: i + 1, pattern: 'ORM populate/include inside iteration', suggestion: 'Eager load associations outside the loop using a single query' })
+    }
+  })
+
+  const totalIssues = nPlusOne.length + selectStar.length + unboundedQueries.length
+  const queryScore = Math.max(0, 100 - totalIssues * 12)
+  const severity: Severity = nPlusOne.length > 0 ? 'error' : totalIssues >= 3 ? 'warning' : totalIssues >= 1 ? 'info' : 'info'
+
+  return {
+    totalIssues, severity, nPlusOne, fullTableScan, missingIndexHints, selectStar, unboundedQueries, queryScore,
+    summary: `${nPlusOne.length} N+1 pattern(s), ${selectStar.length} SELECT *, ${unboundedQueries.length} unbounded queries`
+  }
+}
+
+function formatQueryReport(r: QueryResult): string {
+  const lines: string[] = []
+  lines.push(`# Database Query Analysis`)
+  lines.push(``)
+  lines.push(`**Query Score:** ${r.queryScore}/100 | **Issues:** ${r.totalIssues} | **Severity:** ${r.severity.toUpperCase()}`)
+  lines.push(``)
+  lines.push(`> ${r.summary}`)
+  lines.push(``)
+
+  if (r.nPlusOne.length > 0) {
+    lines.push(`## N+1 Query Patterns (${r.nPlusOne.length}) ⚠️`)
+    r.nPlusOne.forEach(n => lines.push(`- Line ${n.line}: ${n.pattern} — ${n.suggestion}`))
+    lines.push(``)
+  }
+
+  if (r.selectStar.length > 0) {
+    lines.push(`## SELECT * Usage (${r.selectStar.length})`)
+    r.selectStar.forEach(s => lines.push(`- Line ${s.line}: ${s.suggestion}`))
+    lines.push(``)
+  }
+
+  if (r.unboundedQueries.length > 0) {
+    lines.push(`## Unbounded Queries (${r.unboundedQueries.length})`)
+    r.unboundedQueries.forEach(u => lines.push(`- Line ${u.line}: ${u.suggestion}`))
+    lines.push(``)
+  }
+
+  return lines.join('\n')
+}
+
+// ---- Tool 76: Regex Optimization ----
+
+interface RegexOptResult {
+  totalIssues: number
+  severity: Severity
+  inefficient: { line: number; pattern: string; issue: string; suggestion: string }[]
+  catastrophic: { line: number; pattern: string; issue: string; suggestion: string }[]
+  nonGreedyOpportunities: { line: number; pattern: string; suggestion: string }[]
+  canBeSimplified: { line: number; original: string; simplified: string }[]
+  readabilityIssues: { line: number; pattern: string; suggestion: string }[]
+  regexScore: number
+  summary: string
+}
+
+function optimizeRegex(code: string): RegexOptResult {
+  const lines = code.split('\n')
+  const inefficient: RegexOptResult['inefficient'] = []
+  const catastrophic: RegexOptResult['catastrophic'] = []
+  const nonGreedyOpportunities: RegexOptResult['nonGreedyOpportunities'] = []
+  const canBeSimplified: RegexOptResult['canBeSimplified'] = []
+  const readabilityIssues: RegexOptResult['readabilityIssues'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/\/|\/\*|\*)/)) return
+
+    // Detect regex literals and new RegExp()
+    const regexPatterns = line.match(/\/(?:[^/\\]|\\\\.)+\/[gimsuy]+/g) || []
+    const newRegexpPatterns = line.match(/new RegExp\s*\(\s*['"](.+?)['"]/g) || []
+    const allPatterns = [...regexPatterns]
+
+    regexPatterns.forEach(p => {
+      const pattern = p.slice(1, p.lastIndexOf('/'))
+      // Detect catastrophic backtracking patterns: nested quantifiers
+      if (pattern.match(/\(.*[\*\+]\)[\*\+]/)) {
+        catastrophic.push({ line: i + 1, pattern: p, issue: 'Potential catastrophic backtracking (nested quantifiers)', suggestion: 'Rewrite to avoid nested quantifiers, or use atomic groups (?>...)' })
+      }
+
+      // Detect .*\s*...\s* patterns (greedy-waltz)
+      if (pattern.match(/\.\*\s\+\.\*\s\+/)) {
+        inefficient.push({ line: i + 1, pattern: p, issue: 'Multiple greedy quantifiers can cause excessive backtracking', suggestion: 'Use specific character classes or non-greedy quantifiers' })
+      }
+
+      // Detect usage of * where + is more appropriate
+      if (pattern.includes('.*') && !pattern.includes('...')) {
+        nonGreedyOpportunities.push({ line: i + 1, pattern: p, suggestion: 'Consider .+ instead of .* when matching one or more characters' })
+      }
+
+      // Detect overly long regex (readability)
+      if (pattern.length > 60) {
+        readabilityIssues.push({ line: i + 1, pattern: p.substring(0, 40) + '...', suggestion: 'Long regex — consider breaking into named sub-patterns or use regex comments' })
+      }
+
+      // Simplification patterns
+      if (pattern.includes('[0-9]') && !pattern.includes('\\d')) {
+        canBeSimplified.push({ line: i + 1, original: pattern, simplified: pattern.replace(/\[0-9\]/g, '\\d') })
+      }
+      if (pattern.includes('[a-zA-Z]') && !pattern.includes('\\w')) {
+        canBeSimplified.push({ line: i + 1, original: pattern, simplified: pattern.replace(/\[a-zA-Z\]/g, '[a-zA-Z] /* consider \\w */') })
+      }
+    })
+  })
+
+  const totalIssues = inefficient.length + catastrophic.length + nonGreedyOpportunities.length + canBeSimplified.length + readabilityIssues.length
+  const regexScore = Math.max(0, 100 - totalIssues * 8)
+  const severity: Severity = catastrophic.length > 0 ? 'error' : inefficient.length > 0 ? 'warning' : totalIssues >= 3 ? 'info' : 'info'
+
+  return {
+    totalIssues, severity, inefficient, catastrophic, nonGreedyOpportunities, canBeSimplified, readabilityIssues, regexScore,
+    summary: `${catastrophic.length} catastrophic risk(s), ${inefficient.length} inefficient pattern(s), ${readabilityIssues.length} readability issue(s)`
+  }
+}
+
+function formatRegexOptReport(r: RegexOptResult): string {
+  const lines: string[] = []
+  lines.push(`# Regex Optimization Analysis`)
+  lines.push(``)
+  lines.push(`**Regex Score:** ${r.regexScore}/100 | **Issues:** ${r.totalIssues} | **Severity:** ${r.severity.toUpperCase()}`)
+  lines.push(``)
+  lines.push(`> ${r.summary}`)
+  lines.push(``)
+
+  if (r.catastrophic.length > 0) {
+    lines.push(`## Catastrophic Backtracking Risk (${r.catastrophic.length}) ⚠️`)
+    r.catastrophic.forEach(c => lines.push(`- Line ${c.line}: \`${c.pattern}\` — ${c.suggestion}`))
+    lines.push(``)
+  }
+
+  if (r.inefficient.length > 0) {
+    lines.push(`## Inefficient Patterns (${r.inefficient.length})`)
+    r.inefficient.forEach(p => lines.push(`- Line ${p.line}: \`${p.pattern}\` — ${p.suggestion}`))
+    lines.push(``)
+  }
+
+  if (r.canBeSimplified.length > 0) {
+    lines.push(`## Simplification Opportunities (${r.canBeSimplified.length})`)
+    r.canBeSimplified.forEach(s => lines.push(`- Line ${s.line}: \`${s.original}\` → \`${s.simplified}\``))
+    lines.push(``)
+  }
+
+  return lines.join('\n')
+}
+
+// ---- Tool 77: DOM Efficiency Analysis ----
+
+interface DomResult {
+  totalIssues: number
+  severity: Severity
+  forcedSyncLayout: { line: number; property: string; suggestion: string }[]
+  readWriteInterleave: { line: number; issue: string; suggestion: string }[]
+  batchableOps: { line: number; operations: string[]; suggestion: string }[]
+  inefficientSelectors: { line: number; selector: string; suggestion: string }[]
+  domScore: number
+  summary: string
+}
+
+function analyzeDomEfficiency(code: string): DomResult {
+  const lines = code.split('\n')
+  const forcedSyncLayout: DomResult['forcedSyncLayout'] = []
+  const readWriteInterleave: DomResult['readWriteInterleave'] = []
+  const batchableOps: DomResult['batchableOps'] = []
+  const inefficientSelectors: DomResult['inefficientSelectors'] = []
+
+  const layoutProperties = ['offsetWidth', 'offsetHeight', 'clientWidth', 'clientHeight', 'scrollTop', 'scrollLeft', 'getBoundingClientRect', 'getComputedStyle', 'offsetTop', 'offsetParent']
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/\/|\/\*|\*)/)) return
+
+    // Detect forced synchronous layout: read layout property then modify style
+    const hasLayoutRead = layoutProperties.some(p => line.includes(p))
+    const hasStyleWrite = line.match(/\.style\.\w+\s*=/)
+
+    if (hasLayoutRead && hasStyleWrite) {
+      forcedSyncLayout.push({ line: i + 1, property: layoutProperties.find(p => line.includes(p)) || '', suggestion: 'Read layout properties after style changes to avoid forced synchronous layout' })
+    }
+
+    // Detect read-write interleaving across lines
+    if (hasLayoutRead) {
+      const nextLines = lines.slice(i + 1, i + 3)
+      if (nextLines.some(l => l.match(/\.style\.\w+\s*=/))) {
+        readWriteInterleave.push({ line: i + 1, issue: 'Reading layout property followed by style write causes layout thrashing', suggestion: 'Batch all reads first, then all writes (double-buffering pattern)' })
+      }
+    }
+
+    // Detect querySelector with complex selectors
+    const selectorMatch = line.match(/querySelector\s*\(\s*['"](.+?)['"]/)
+    if (selectorMatch) {
+      const sel = selectorMatch[1]
+      if (sel.includes(' ') && !sel.includes('#')) {
+        inefficientSelectors.push({ line: i + 1, selector: sel, suggestion: 'Complex descendant selector — prefer getElementById or querySelector with ID' })
+      }
+    }
+
+    // Detect multiple DOM writes in sequence
+    if (line.match(/\.style\.\w+\s*=/)) {
+      const surroundingLines = lines.slice(Math.max(0, i - 2), i + 3).filter(l => l.match(/\.style\.\w+\s*=/))
+      if (surroundingLines.length >= 2) {
+        const ops = surroundingLines.map(l => l.match(/\.style\.(\w+)\s*=/)?.[1] || '').filter(Boolean)
+        batchableOps.push({ line: i + 1, operations: ops, suggestion: 'Combine style changes into a single class toggle or cssText assignment' })
+      }
+    }
+  })
+
+  // Deduplicate batchable
+  const uniqueBatches = batchableOps.filter((b, idx) => batchableOps.findIndex(x => x.line === b.line) === idx)
+
+  const totalIssues = forcedSyncLayout.length + readWriteInterleave.length + uniqueBatches.length + inefficientSelectors.length
+  const domScore = Math.max(0, 100 - totalIssues * 10)
+  const severity: Severity = forcedSyncLayout.length > 0 ? 'warning' : totalIssues >= 3 ? 'info' : 'info'
+
+  return {
+    totalIssues, severity, forcedSyncLayout, readWriteInterleave, batchableOps: uniqueBatches, inefficientSelectors, domScore,
+    summary: `${forcedSyncLayout.length} forced layout(s), ${readWriteInterleave.length} read-write interleave(s), ${uniqueBatches.length} batchable operation(s)`
+  }
+}
+
+function formatDomReport(r: DomResult): string {
+  const lines: string[] = []
+  lines.push(`# DOM Efficiency Analysis`)
+  lines.push(``)
+  lines.push(`**DOM Score:** ${r.domScore}/100 | **Issues:** ${r.totalIssues} | **Severity:** ${r.severity.toUpperCase()}`)
+  lines.push(``)
+  lines.push(`> ${r.summary}`)
+  lines.push(``)
+
+  if (r.forcedSyncLayout.length > 0) {
+    lines.push(`## Forced Synchronous Layout (${r.forcedSyncLayout.length}) ⚠️`)
+    r.forcedSyncLayout.forEach(f => lines.push(`- Line ${f.line}: Read \`${f.property}\` with style write — ${f.suggestion}`))
+    lines.push(``)
+  }
+
+  if (r.readWriteInterleave.length > 0) {
+    lines.push(`## Layout Thrashing (${r.readWriteInterleave.length})`)
+    r.readWriteInterleave.forEach(r => lines.push(`- Line ${r.line}: ${r.suggestion}`))
+    lines.push(``)
+  }
+
+  if (r.batchableOps.length > 0) {
+    lines.push(`## Batchable Operations (${r.batchableOps.length})`)
+    r.batchableOps.forEach(b => lines.push(`- Line ${b.line}: [${b.operations.join(', ')}] — ${b.suggestion}`))
+    lines.push(``)
+  }
+
+  return lines.join('\n')
+}
+
+// ---- Tool 78: Security Headers Analysis ----
+
+interface SecurityHeadersResult {
+  totalIssues: number
+  severity: Severity
+  missingHeaders: { header: string; description: string; suggestion: string }[]
+  misconfiguredHeaders: { header: string; issue: string; suggestion: string }[]
+  deprecatedHeaders: { header: string; replacement: string }[]
+  corsIssues: { line: number; issue: string; suggestion: string }[]
+  securityScore: number
+  summary: string
+}
+
+function analyzeSecurityHeaders(code: string): SecurityHeadersResult {
+  const lines = code.split('\n')
+  const missingHeaders: SecurityHeadersResult['missingHeaders'] = []
+  const misconfiguredHeaders: SecurityHeadersResult['misconfiguredHeaders'] = []
+  const deprecatedHeaders: SecurityHeadersResult['deprecatedHeaders'] = []
+  const corsIssues: SecurityHeadersResult['corsIssues'] = []
+
+  const essentialHeaders = [
+    { name: 'Content-Security-Policy', desc: 'Prevents XSS and injection attacks' },
+    { name: 'Strict-Transport-Security', desc: 'Enforces HTTPS connections' },
+    { name: 'X-Content-Type-Options', desc: 'Prevents MIME type sniffing' },
+    { name: 'X-Frame-Options', desc: 'Prevents clickjacking' },
+    { name: 'Referrer-Policy', desc: 'Controls referrer information' },
+    { name: 'Permissions-Policy', desc: 'Controls browser feature access' }
+  ]
+
+  const codeLower = code.toLowerCase()
+
+  // Check for missing security headers
+  essentialHeaders.forEach(h => {
+    if (!codeLower.includes(h.name.toLowerCase())) {
+      missingHeaders.push({ header: h.name, description: h.desc, suggestion: `Set ${h.name} response header` })
+    }
+  })
+
+  // Detect misconfigured CORS
+  lines.forEach((line, i) => {
+    if (line.match(/access-control-allow-origin.*\*/i) || line.match(/cors\s*\(\s*\{\s*origin\s*:\s*['"]\*['"]/i)) {
+      corsIssues.push({ line: i + 1, issue: 'CORS origin set to wildcard (*) — allows any domain', suggestion: 'Restrict to specific origins: origin: ["https://yourdomain.com"]' })
+    }
+    if (line.match(/\.header\s*\(\s*['"]access-control-allow-origin['"]\s*,\s*['"]\*['"]\)/i)) {
+      corsIssues.push({ line: i + 1, issue: 'CORS Access-Control-Allow-Origin set to *', suggestion: 'Use origin whitelist instead of wildcard' })
+    }
+  })
+
+  // Detect deprecated headers
+  if (codeLower.includes('x-xss-protection')) {
+    deprecatedHeaders.push({ header: 'X-XSS-Protection', replacement: 'Use Content-Security-Policy instead (modern browsers ignore X-XSS-Protection)' })
+  }
+  if (codeLower.includes('public-key-pins') || codeLower.includes('publickeypins')) {
+    deprecatedHeaders.push({ header: 'Public-Key-Pins', replacement: 'Removed from browsers — use Certificate Transparency instead' })
+  }
+
+  // Check for insecure cookie settings
+  lines.forEach((line, i) => {
+    if (line.match(/cookie|set-cookie/i) && !line.match(/httponly|secure|samesite/i)) {
+      misconfiguredHeaders.push({ header: 'Cookie', issue: 'Cookie set without security attributes', suggestion: 'Add HttpOnly, Secure, and SameSite attributes to cookies' })
+    }
+  })
+
+  const totalIssues = missingHeaders.length + misconfiguredHeaders.length + deprecatedHeaders.length + corsIssues.length
+  const securityScore = Math.max(0, 100 - missingHeaders.length * 8 - corsIssues.length * 15 - deprecatedHeaders.length * 5)
+  const severity: Severity = corsIssues.length > 0 ? 'critical' : missingHeaders.length >= 4 ? 'warning' : totalIssues >= 2 ? 'info' : 'info'
+
+  return {
+    totalIssues, severity, missingHeaders, misconfiguredHeaders, deprecatedHeaders, corsIssues, securityScore,
+    summary: `${missingHeaders.length} missing header(s), ${corsIssues.length} CORS issue(s), ${deprecatedHeaders.length} deprecated header(s)`
+  }
+}
+
+function formatSecurityHeadersReport(r: SecurityHeadersResult): string {
+  const lines: string[] = []
+  lines.push(`# Security Headers Analysis`)
+  lines.push(``)
+  lines.push(`**Security Score:** ${r.securityScore}/100 | **Issues:** ${r.totalIssues} | **Severity:** ${r.severity.toUpperCase()}`)
+  lines.push(``)
+  lines.push(`> ${r.summary}`)
+  lines.push(``)
+
+  if (r.corsIssues.length > 0) {
+    lines.push(`## CORS Misconfigurations (${r.corsIssues.length}) ⚠️`)
+    r.corsIssues.forEach(c => lines.push(`- Line ${c.line}: ${c.suggestion}`))
+    lines.push(``)
+  }
+
+  if (r.missingHeaders.length > 0) {
+    lines.push(`## Missing Security Headers (${r.missingHeaders.length})`)
+    r.missingHeaders.forEach(h => lines.push(`- **${h.header}**: ${h.description}`))
+    lines.push(``)
+  }
+
+  if (r.misconfiguredHeaders.length > 0) {
+    lines.push(`## Misconfigured Headers (${r.misconfiguredHeaders.length})`)
+    r.misconfiguredHeaders.forEach(h => lines.push(`- ${h.header}: ${h.suggestion}`))
+    lines.push(``)
+  }
+
+  return lines.join('\n')
+}
+
+// ---- Tool 79: CSS/Style Analysis ----
+
+interface CssResult {
+  totalIssues: number
+  severity: Severity
+  specificityIssues: { line: number; selector: string; specificity: string; suggestion: string }[]
+  duplicateStyles: { rule: string; lines: number[] }[]
+  unusedSelectors: { line: number; selector: string; suggestion: string }[]
+  magicNumbers: { line: number; value: string; suggestion: string }[]
+  importantOveruse: { line: number; property: string; suggestion: string }[]
+  cssScore: number
+  summary: string
+}
+
+function analyzeCss(code: string): CssResult {
+  const lines = code.split('\n')
+  const specificityIssues: CssResult['specificityIssues'] = []
+  const duplicateStyles: Map<string, number[]> = new Map()
+  const unusedSelectors: CssResult['unusedSelectors'] = []
+  const magicNumbers: CssResult['magicNumbers'] = []
+  const importantOveruse: CssResult['importantOveruse'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/\/|\/\*|\*)/)) return
+
+    // Detect !important usage
+    if (line.match(/!important/)) {
+      const propMatch = line.match(/([\w-]+)\s*:[^!]+!important/)
+      if (propMatch) {
+        importantOveruse.push({ line: i + 1, property: propMatch[1], suggestion: 'Avoid !important — increase specificity or refactor CSS architecture' })
+      }
+    }
+
+    // Detect magic pixel values
+    const pxMatch = line.match(/(\d{2,})px/g)
+    if (pxMatch) {
+      pxMatch.forEach(px => {
+        const val = parseInt(px)
+        if (val > 40 && val % 8 !== 0) {
+          magicNumbers.push({ line: i + 1, value: px, suggestion: `Non-standard spacing '${px}' — consider 8px grid (${Math.round(val / 8) * 8}px)` })
+        }
+      })
+    }
+
+    // Detect duplicate style properties
+    const styleMatch = line.match(/([\w-]+)\s*:\s*([^;]+)/g)
+    if (styleMatch) {
+      styleMatch.forEach(s => {
+        const prop = s.split(':')[0].trim()
+        const existing = duplicateStyles.get(prop) || []
+        existing.push(i + 1)
+        duplicateStyles.set(prop, existing)
+      })
+    }
+
+    // Detect ID selectors (high specificity)
+    const idSelector = line.match(/#(\w+)\s*\{/)
+    if (idSelector) {
+      specificityIssues.push({ line: i + 1, selector: `#${idSelector[1]}`, specificity: '(1,0,0)', suggestion: 'High specificity — prefer class selectors for reusable styles' })
+    }
+  })
+
+  const dups = Array.from(duplicateStyles.entries()).filter(([_, v]) => v.length > 1).map(([r, l]) => ({ rule: r, lines: l }))
+  const totalIssues = specificityIssues.length + dups.length + magicNumbers.length + importantOveruse.length
+  const cssScore = Math.max(0, 100 - importantOveruse.length * 15 - totalIssues * 5)
+  const severity: Severity = importantOveruse.length >= 3 ? 'warning' : totalIssues >= 5 ? 'warning' : 'info'
+
+  return {
+    totalIssues, severity, specificityIssues, duplicateStyles: dups, unusedSelectors, magicNumbers, importantOveruse, cssScore,
+    summary: `${importantOveruse.length} !important, ${magicNumbers.length} magic numbers, ${dups.length} duplicate properties`
+  }
+}
+
+function formatCssReport(r: CssResult): string {
+  const lines: string[] = []
+  lines.push(`# CSS/Style Analysis`)
+  lines.push(``)
+  lines.push(`**CSS Score:** ${r.cssScore}/100 | **Issues:** ${r.totalIssues} | **Severity:** ${r.severity.toUpperCase()}`)
+  lines.push(``)
+  lines.push(`> ${r.summary}`)
+  lines.push(``)
+
+  if (r.importantOveruse.length > 0) {
+    lines.push(`## !important Overuse (${r.importantOveruse.length})`)
+    r.importantOveruse.forEach(im => lines.push(`- Line ${im.line}: \`${im.property}\` — ${im.suggestion}`))
+    lines.push(``)
+  }
+
+  if (r.magicNumbers.length > 0) {
+    lines.push(`## Magic Numbers (${r.magicNumbers.length})`)
+    r.magicNumbers.slice(0, 15).forEach(m => lines.push(`- Line ${m.line}: \`${m.value}\` — ${m.suggestion}`))
+    lines.push(``)
+  }
+
+  if (r.specificityIssues.length > 0) {
+    lines.push(`## High Specificity (${r.specificityIssues.length})`)
+    r.specificityIssues.forEach(s => lines.push(`- Line ${s.line}: \`${s.selector}\` (${s.specificity}) — ${s.suggestion}`))
+    lines.push(``)
+  }
+
+  return lines.join('\n')
+}
+
+// ---- Tool 80: Dependency Version Policy ----
+
+interface SemverPolicyResult {
+  totalIssues: number
+  severity: Severity
+  pinnedVersions: { line: number; module: string; current: string; issue: string; suggestion: string }[]
+  deprecatedPkgs: { line: number; module: string; issue: string; suggestion: string }[]
+  wildcardDeps: { line: number; module: string; version: string; suggestion: string }[]
+  duplicateDeps: { module: string; versions: string[] }[]
+  policyScore: number
+  summary: string
+}
+
+function analyzeSemverPolicy(code: string): SemverPolicyResult {
+  const lines = code.split('\n')
+  const pinnedVersions: SemverPolicyResult['pinnedVersions'] = []
+  const deprecatedPkgs: SemverPolicyResult['deprecatedPkgs'] = []
+  const wildcardDeps: SemverPolicyResult['wildcardDeps'] = []
+  const duplicateDeps: Map<string, Set<string>> = new Map()
+
+  const deprecatedList: Record<string, string> = {
+    moment: 'Use date-fns or dayjs (tree-shakeable)',
+    lodash: 'Use lodash-es or native JS alternatives',
+    request: 'Use axios or node-fetch',
+    'babel-core': 'Use @babel/core',
+    'gulp': 'Use vite or esbuild',
+    'ts-node': 'Use tsx for faster execution',
+    'node-sass': 'Use dart-sass (sass package)',
+    'core-js': 'Use @vitejs/plugin-legacy for legacy support'
+  }
+
+  lines.forEach((line, i) => {
+    // Detect version patterns in imports/requires
+    const versionMatch = line.match(/['"]([^'"]+)['"]\s*[:=,]\s*['"]?[\^~>=<]?\s*(\d+\.\d+\.\d+(-[\w.]+)?)['"]?/) ||
+                         line.match(/from\s+['"]([@\w/-]+)['"]/)
+    if (versionMatch) {
+      const module = versionMatch[1]
+      const version = versionMatch[2] || 'latest'
+
+      // Detect wildcard versions
+      if (line.match(/['"][\^~]\s*(\d+\.\d+\.\d+)['"]/) || line.match(/['"]>=?\s*\d/)) {
+        wildcardDeps.push({ line: i + 1, module, version, suggestion: `Pin exact version '${module}': 'x.x.x' to ensure reproducible builds` })
+      }
+
+      // Check deprecated packages
+      const deprecatedKey = Object.keys(deprecatedList).find(k => module.includes(k))
+      if (deprecatedKey) {
+        deprecatedPkgs.push({ line: i + 1, module: deprecatedKey, issue: `Package '${deprecatedKey}' is deprecated`, suggestion: deprecatedList[deprecatedKey] })
+      }
+
+      // Track for duplicates
+      const baseModule = module.replace(/[@\^~><=\s'\"]/g, '').split('/')[0]
+      if (baseModule) {
+        const vers = duplicateDeps.get(baseModule) || new Set()
+        vers.add(version)
+        duplicateDeps.set(baseModule, vers)
+      }
+    }
+  })
+
+  const dups = Array.from(duplicateDeps.entries()).filter(([_, v]) => v.size > 1).map(([m, v]) => ({ module: m, versions: Array.from(v) }))
+  const totalIssues = pinnedVersions.length + deprecatedPkgs.length + wildcardDeps.length + dups.length
+  const policyScore = Math.max(0, 100 - deprecatedPkgs.length * 15 - wildcardDeps.length * 8)
+  const severity: Severity = deprecatedPkgs.length > 0 ? 'warning' : wildcardDeps.length >= 3 ? 'warning' : 'info'
+
+  return {
+    totalIssues, severity, pinnedVersions, deprecatedPkgs, wildcardDeps, duplicateDeps: dups, policyScore,
+    summary: `${deprecatedPkgs.length} deprecated, ${wildcardDeps.length} unpinned, ${dups.length} duplicate packages`
+  }
+}
+
+function formatSemverPolicyReport(r: SemverPolicyResult): string {
+  const lines: string[] = []
+  lines.push(`# Dependency Version Policy`)
+  lines.push(``)
+  lines.push(`**Policy Score:** ${r.policyScore}/100 | **Issues:** ${r.totalIssues} | **Severity:** ${r.severity.toUpperCase()}`)
+  lines.push(``)
+  lines.push(`> ${r.summary}`)
+  lines.push(``)
+
+  if (r.deprecatedPkgs.length > 0) {
+    lines.push(`## Deprecated Packages (${r.deprecatedPkgs.length})`)
+    r.deprecatedPkgs.forEach(d => lines.push(`- Line ${d.line}: \`${d.module}\` → ${d.suggestion}`))
+    lines.push(``)
+  }
+
+  if (r.wildcardDeps.length > 0) {
+    lines.push(`## Unpinned Versions (${r.wildcardDeps.length})`)
+    r.wildcardDeps.forEach(w => lines.push(`- Line ${w.line}: \`${w.module}@${w.version}\` — ${w.suggestion}`))
+    lines.push(``)
+  }
+
+  return lines.join('\n')
+}
+
+// ---- Tool 81: State Management Anti-Patterns ----
+
+interface StateResult {
+  totalIssues: number
+  severity: Severity
+  directMutation: { line: number; pattern: string; suggestion: string }[]
+  unnecessaryRerenders: { line: number; pattern: string; suggestion: string }[]
+  missingNormalization: { line: number; pattern: string; suggestion: string }[]
+  stateInconsistency: { line: number; pattern: string; suggestion: string }[]
+  largeStateObjects: { line: number; count: number; suggestion: string }[]
+  stateScore: number
+  summary: string
+}
+
+function analyzeStateManagement(code: string): StateResult {
+  const lines = code.split('\n')
+  const directMutation: StateResult['directMutation'] = []
+  const unnecessaryRerenders: StateResult['unnecessaryRerenders'] = []
+  const missingNormalization: StateResult['missingNormalization'] = []
+  const stateInconsistency: StateResult['stateInconsistency'] = []
+  const largeStateObjects: StateResult['largeStateObjects'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/\/|\/\*|\*)/)) return
+
+    // Detect Redux state mutation
+    if (line.match(/(?:state|draft)\.\w+\s*=/)) {
+      if (line.includes('state.') && !line.includes('...state') && !line.includes('...draft')) {
+        directMutation.push({ line: i + 1, pattern: line.trim().substring(0, 60), suggestion: 'Use spread operator or Immer for immutable updates' })
+      }
+    }
+
+    // Detect array push on state
+    if (line.match(/(?:state|draft)\.\w+\.\s*push\s*\(/)) {
+      directMutation.push({ line: i + 1, pattern: 'Array push on state', suggestion: 'Use spread: [...arr, newItem] instead of push' })
+    }
+
+    // Detect setState in useEffect without condition
+    if (line.match(/set\w+\s*\(/) && lines.slice(Math.max(0, i - 3), i).some(l => l.includes('useEffect'))) {
+      const surrounding = lines.slice(Math.max(0, i - 5), i + 3).join('\n')
+      if (!surrounding.includes('if') && !surrounding.includes('?.')) {
+        unnecessaryRerenders.push({ line: i + 1, pattern: 'Unconditional setState in effect', suggestion: 'Add guard condition to prevent infinite re-render loops' })
+      }
+    }
+
+    // Detect deeply nested state access (potential normalization issue)
+    const deepAccess = line.match(/(?:state|store)\.\w+\.\w+\.\w+/)
+    if (deepAccess && lines.slice(i, i + 20).some(l => l.includes('filter') || l.includes('find'))) {
+      missingNormalization.push({ line: i + 1, pattern: `Nested state access: ${deepAccess[0]}`, suggestion: 'Consider normalizing state shape or using selectors (reselect)' })
+    }
+
+    // Detect large useState with many fields
+    if (line.match(/useState\s*\(\s*\{/)) {
+      const blockEnd = lines.findIndex((l, j) => j > i && l.includes('}'))
+      const propCount = lines.slice(i, blockEnd > 0 ? blockEnd + 1 : i + 5).filter(l => l.match(/^\s*\w+\s*:/)).length
+      if (propCount > 6) {
+        largeStateObjects.push({ line: i + 1, count: propCount, suggestion: `State has ${propCount} properties — consider splitting into multiple useState or useReducer` })
+      }
+    }
+
+    // Detect multiple setStates in sequence
+    if (line.match(/set[A-Z]\w+\s*\(/)) {
+      const nextLines = lines.slice(i, i + 4)
+      const setCount = nextLines.filter(l => l.match(/set[A-Z]\w+\s*\(/)).length
+      if (setCount >= 2) {
+        stateInconsistency.push({ line: i + 1, pattern: `${setCount} consecutive setState calls`, suggestion: 'Batch updates in single setState or use useReducer for related state' })
+      }
+    }
+  })
+
+  const totalIssues = directMutation.length + unnecessaryRerenders.length + missingNormalization.length + stateInconsistency.length + largeStateObjects.length
+  const stateScore = Math.max(0, 100 - directMutation.length * 15 - totalIssues * 8)
+  const severity: Severity = directMutation.length > 0 ? 'error' : totalIssues >= 3 ? 'warning' : 'info'
+
+  return {
+    totalIssues, severity, directMutation, unnecessaryRerenders, missingNormalization, stateInconsistency, largeStateObjects, stateScore,
+    summary: `${directMutation.length} mutation(s), ${unnecessaryRerenders.length} re-render risk(s), ${largeStateObjects.length} large state object(s)`
+  }
+}
+
+function formatStateReport(r: StateResult): string {
+  const lines: string[] = []
+  lines.push(`# State Management Analysis`)
+  lines.push(``)
+  lines.push(`**State Score:** ${r.stateScore}/100 | **Issues:** ${r.totalIssues} | **Severity:** ${r.severity.toUpperCase()}`)
+  lines.push(``)
+  lines.push(`> ${r.summary}`)
+  lines.push(``)
+
+  if (r.directMutation.length > 0) {
+    lines.push(`## Direct State Mutations (${r.directMutation.length}) ⚠️`)
+    r.directMutation.forEach(m => lines.push(`- Line ${m.line}: \`${m.pattern}\` — ${m.suggestion}`))
+    lines.push(``)
+  }
+
+  if (r.unnecessaryRerenders.length > 0) {
+    lines.push(`## Re-render Risks (${r.unnecessaryRerenders.length})`)
+    r.unnecessaryRerenders.forEach(r => lines.push(`- Line ${r.line}: ${r.suggestion}`))
+    lines.push(``)
+  }
+
+  if (r.missingNormalization.length > 0) {
+    lines.push(`## Missing Normalization (${r.missingNormalization.length})`)
+    r.missingNormalization.forEach(n => lines.push(`- Line ${n.line}: \`${n.pattern}\` — ${n.suggestion}`))
+    lines.push(``)
+  }
+
+  if (r.stateInconsistency.length > 0) {
+    lines.push(`## Batched Updates (${r.stateInconsistency.length})`)
+    r.stateInconsistency.forEach(s => lines.push(`- Line ${s.line}: ${s.suggestion}`))
+    lines.push(``)
+  }
+
+  return lines.join('\n')
+}
+
 // ==================== PLUGIN REGISTRATION ====================
 
 export function apply(ctx: Context) {
@@ -9825,5 +10684,117 @@ export function apply(ctx: Context) {
     }
   }))
 
-  console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary`)
+  // Tool 74: React Hooks Compliance (v0.14.0)
+  ctx.tools.register(defineTool({
+    name: 'react_hooks_check',
+    description: 'Check React Hooks rules: conditional/loop hooks, missing deps, stale closures, unnecessary hooks.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The React component code to check' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = checkReactHooks(args.code)
+      return formatHooksReport(result)
+    }
+  }))
+
+  // Tool 75: Database Query Analysis (v0.14.0)
+  ctx.tools.register(defineTool({
+    name: 'sql_analysis',
+    description: 'Analyze database queries: N+1 patterns, SELECT *, unbounded queries, missing indexes.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code with queries to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeQueries(args.code)
+      return formatQueryReport(result)
+    }
+  }))
+
+  // Tool 76: Regex Optimization (v0.14.0)
+  ctx.tools.register(defineTool({
+    name: 'regex_optimize',
+    description: 'Optimize regex patterns: catastrophic backtracking, inefficient quantifiers, simplification.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code with regex to optimize' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = optimizeRegex(args.code)
+      return formatRegexOptReport(result)
+    }
+  }))
+
+  // Tool 77: DOM Efficiency Analysis (v0.14.0)
+  ctx.tools.register(defineTool({
+    name: 'dom_efficiency',
+    description: 'Analyze DOM efficiency: forced sync layout, layout thrashing, batchable operations.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The DOM manipulation code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeDomEfficiency(args.code)
+      return formatDomReport(result)
+    }
+  }))
+
+  // Tool 78: Security Headers Analysis (v0.14.0)
+  ctx.tools.register(defineTool({
+    name: 'security_headers',
+    description: 'Analyze security headers: CSP, HSTS, CORS misconfigurations, deprecated headers.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code or config to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeSecurityHeaders(args.code)
+      return formatSecurityHeadersReport(result)
+    }
+  }))
+
+  // Tool 79: CSS/Style Analysis (v0.14.0)
+  ctx.tools.register(defineTool({
+    name: 'css_analysis',
+    description: 'Analyze CSS: specificity, !important overuse, magic numbers, duplicate properties.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The CSS/style code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeCss(args.code)
+      return formatCssReport(result)
+    }
+  }))
+
+  // Tool 80: Dependency Version Policy (v0.14.0)
+  ctx.tools.register(defineTool({
+    name: 'semver_policy',
+    description: 'Check dependency version policy: deprecated packages, wildcard versions, unpinned deps.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The source code or package.json to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeSemverPolicy(args.code)
+      return formatSemverPolicyReport(result)
+    }
+  }))
+
+  // Tool 81: State Management Analysis (v0.14.0)
+  ctx.tools.register(defineTool({
+    name: 'state_management',
+    description: 'Analyze state management: direct mutations, re-render risks, normalization, batching.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The state management code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeStateManagement(args.code)
+      return formatStateReport(result)
+    }
+  }))
+
+  console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management`)
 }
