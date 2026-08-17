@@ -62,9 +62,17 @@
  * - WebSocket health (heartbeat, reconnection, backpressure)
  * - Cron job robustness (idempotency, locks, timeouts)
  * - Event sourcing (versioning, snapshots, upcasting)
+ * - Cache strategy (TTL, penetration, thundering herd)
+ * - Graceful shutdown (signals, draining, timeouts)
+ * - Health probes (liveness, readiness, startup)
+ * - Serialization safety (prototype pollution, BigInt)
+ * - Data validation (schema, XSS, sanitization)
+ * - Multi-tenancy (tenant filters, shared state isolation)
+ * - Feature flags (hardcoded flags, cleanup tracking)
+ * - API gateway (BFF pattern, service routing)
  * 
  * @module dsh-tool-codereview
- * @version 0.16.0
+ * @version 0.17.0
  * @license MIT
  */
 
@@ -74,7 +82,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 export const name = 'dsh-tool-codereview'
 export const inject = ['tools']
 
-const VERSION = '0.16.0'
+const VERSION = '0.17.0'
 
 // ==================== TYPES ====================
 
@@ -11053,6 +11061,587 @@ function formatEventSourcingReport(r: EventSourcingResult): string {
   return lines.join('\n')
 }
 
+// ==================== V0.17.0 NEW TOOLS ====================
+
+// ---- Tool 98: Cache Strategy Analysis ----
+
+interface CacheResult {
+  totalIssues: number
+  severity: Severity
+  missingTTL: { line: number; issue: string; suggestion: string }[]
+  penetrationRisk: { line: number; issue: string; suggestion: string }[]
+  inconsistency: { line: number; issue: string; suggestion: string }[]
+  cacheScore: number
+  summary: string
+}
+
+function analyzeCacheStrategy(code: string): CacheResult {
+  const lines = code.split('\n')
+  const missingTTL: CacheResult['missingTTL'] = []
+  const penetrationRisk: CacheResult['penetrationRisk'] = []
+  const inconsistency: CacheResult['inconsistency'] = []
+
+  const codeLower = code.toLowerCase()
+
+  // Detect cache without TTL
+  lines.forEach((line, i) => {
+    if (line.match(/\.set\s*\(/) && line.match(/cache|redis|memcache/i)) {
+      if (!line.match(/ex\s*[:=]|ttl\s*[:=]|expire\s*[:=]/) && !lines.slice(i, i + 3).some(l => l.match(/\bex\s*[:=]|ttl\s*[:=]|\.expireat/i))) {
+        missingTTL.push({ line: i + 1, issue: 'Cache set without TTL/expiry', suggestion: 'Set TTL to prevent stale data and memory leaks' })
+      }
+    }
+  })
+
+  // Detect cache penetration risk (no null caching)
+  if (codeLower.includes('cache') && codeLower.includes('get')) {
+    if (!codeLower.includes('null') && !codeLower.includes('undefined') && !codeLower.includes('empty')) {
+      penetrationRisk.push({ line: 1, issue: 'Cache-aside without null/empty caching', suggestion: 'Cache null results briefly to prevent cache penetration on missing keys' })
+    }
+  }
+
+  // Detect write-through inconsistency
+  if (codeLower.includes('cache') && (codeLower.includes('update') || codeLower.includes('save'))) {
+    if (!codeLower.includes('del') && !codeLower.includes('invalidate') && !codeLower.includes('upsert')) {
+      inconsistency.push({ line: 1, issue: 'Write operation without cache invalidation', suggestion: 'Invalidate related cache keys on write to prevent stale reads' })
+    }
+  }
+
+  // Detect thundering herd (no lock/mutex for hot keys)
+  if (codeLower.includes('cache') && codeLower.includes('recompute')) {
+    if (!codeLower.includes('lock') && !codeLower.includes('mutex') && !codeLower.includes('debounce')) {
+      penetrationRisk.push({ line: 1, issue: 'Cache recomputation without deduplication', suggestion: 'Use distributed lock or Promise memoization to prevent thundering herd' })
+    }
+  }
+
+  const totalIssues = missingTTL.length + penetrationRisk.length + inconsistency.length
+  const cacheScore = Math.max(0, 100 - totalIssues * 12)
+  const severity: Severity = penetrationRisk.length > 0 ? 'warning' : totalIssues >= 2 ? 'info' : 'info'
+
+  return {
+    totalIssues, severity, missingTTL, penetrationRisk, inconsistency, cacheScore,
+    summary: `${missingTTL.length} missing TTL, ${penetrationRisk.length} penetration/herd risk, ${inconsistency.length} inconsistency`
+  }
+}
+
+function formatCacheReport(r: CacheResult): string {
+  const lines: string[] = []
+  lines.push(`# Cache Strategy Analysis`)
+  lines.push(``)
+  lines.push(`**Cache Score:** ${r.cacheScore}/100 | **Issues:** ${r.totalIssues} | **Severity:** ${r.severity.toUpperCase()}`)
+  lines.push(``)
+  lines.push(`> ${r.summary}`)
+  lines.push(``)
+
+  if (r.penetrationRisk.length > 0) {
+    lines.push(`## Penetration / Thundering Herd (${r.penetrationRisk.length})`)
+    r.penetrationRisk.forEach(p => lines.push(`- ${p.suggestion}`))
+    lines.push(``)
+  }
+
+  if (r.missingTTL.length > 0) {
+    lines.push(`## Missing TTL (${r.missingTTL.length})`)
+    r.missingTTL.forEach(t => lines.push(`- Line ${t.line}: ${t.suggestion}`))
+    lines.push(``)
+  }
+
+  return lines.join('\n')
+}
+
+// ---- Tool 99: Graceful Shutdown ----
+
+interface ShutdownResult {
+  totalIssues: number
+  severity: Severity
+  missingSignal: { line: number; issue: string; suggestion: string }[]
+  noDraining: { line: number; issue: string; suggestion: string }[]
+  shutdownScore: number
+  summary: string
+}
+
+function analyzeGracefulShutdown(code: string): ShutdownResult {
+  const lines = code.split('\n')
+  const missingSignal: ShutdownResult['missingSignal'] = []
+  const noDraining: ShutdownResult['noDraining'] = []
+
+  const codeLower = code.toLowerCase()
+
+  // Detect server without signal handlers
+  if ((codeLower.includes('listen') || codeLower.includes('server.start')) && !codeLower.includes('sigterm') && !codeLower.includes('sigint')) {
+    missingSignal.push({ line: 1, issue: 'Server without SIGTERM/SIGINT handler', suggestion: 'Add process.on("SIGTERM") handler for graceful shutdown (K8s sends SIGTERM)' })
+  }
+
+  // Detect missing connection draining
+  if (codeLower.includes('shutdown') || codeLower.includes('close')) {
+    if (!codeLower.includes('drain') && !codeLower.includes('keepalive') && !codeLower.includes('connection')) {
+      noDraining.push({ line: 1, issue: 'Shutdown without connection draining', suggestion: 'Stop accepting new connections, complete in-flight requests before closing' })
+    }
+  }
+
+  // Detect missing timeout in shutdown
+  if (codeLower.includes('shutdown') && !codeLower.includes('timeout') && !codeLower.includes('force')) {
+    noDraining.push({ line: 1, issue: 'No forced shutdown timeout', suggestion: 'Add force-kill timeout (e.g., 30s) to prevent hanging during shutdown' })
+  }
+
+  const totalIssues = missingSignal.length + noDraining.length
+  const shutdownScore = Math.max(0, 100 - totalIssues * 20)
+  const severity: Severity = totalIssues >= 2 ? 'warning' : totalIssues >= 1 ? 'info' : 'info'
+
+  return {
+    totalIssues, severity, missingSignal, noDraining, shutdownScore,
+    summary: `${missingSignal.length} missing signal handler(s), ${noDraining.length} missing draining/timeout`
+  }
+}
+
+function formatShutdownReport(r: ShutdownResult): string {
+  const lines: string[] = []
+  lines.push(`# Graceful Shutdown Analysis`)
+  lines.push(``)
+  lines.push(`**Shutdown Score:** ${r.shutdownScore}/100 | **Issues:** ${r.totalIssues} | **Severity:** ${r.severity.toUpperCase()}`)
+  lines.push(``)
+  lines.push(`> ${r.summary}`)
+  lines.push(``)
+
+  if (r.missingSignal.length > 0) {
+    lines.push(`## Missing Signal Handlers (${r.missingSignal.length})`)
+    r.missingSignal.forEach(s => lines.push(`- ${s.suggestion}`))
+    lines.push(``)
+  }
+
+  return lines.join('\n')
+}
+
+// ---- Tool 100: Health & Readiness Probes ----
+
+interface ProbeResult {
+  totalIssues: number
+  severity: Severity
+  missingLiveness: { issue: string; suggestion: string }[]
+  missingReadiness: { issue: string; suggestion: string }[]
+  missingStartup: { issue: string; suggestion: string }[]
+  probeScore: number
+  summary: string
+}
+
+function analyzeHealthProbes(code: string): ProbeResult {
+  const lines = code.split('\n')
+  const missingLiveness: ProbeResult['missingLiveness'] = []
+  const missingReadiness: ProbeResult['missingReadiness'] = []
+  const missingStartup: ProbeResult['missingStartup'] = []
+
+  const codeLower = code.toLowerCase()
+  const hasServer = codeLower.includes('listen') || codeLower.includes('server') || codeLower.includes('express')
+
+  if (hasServer) {
+    // Check for liveness probe
+    if (!codeLower.includes('healthz') && !codeLower.includes('/health') && !codeLower.includes('/live')) {
+      missingLiveness.push({ issue: 'No health check endpoint', suggestion: 'Add /health endpoint returning 200 OK for K8s liveness probe' })
+    }
+
+    // Check for readiness probe
+    if (!codeLower.includes('ready') && !codeLower.includes('readyz')) {
+      missingReadiness.push({ issue: 'No readiness check endpoint', suggestion: 'Add /ready endpoint that checks DB/cache connectivity for K8s readiness probe' })
+    }
+
+    // Check for startup probe indication
+    if (codeLower.includes('init') || codeLower.includes('preload') || codeLower.includes('migrate')) {
+      if (!codeLower.includes('startup') && !codeLower.includes('startupprobe')) {
+        missingStartup.push({ issue: 'Initialization without startup probe indication', suggestion: 'Add startup probe for applications with long initialization times' })
+      }
+    }
+  }
+
+  const totalIssues = missingLiveness.length + missingReadiness.length + missingStartup.length
+  const probeScore = Math.max(0, 100 - totalIssues * 20)
+  const severity: Severity = totalIssues >= 2 ? 'warning' : totalIssues >= 1 ? 'info' : 'info'
+
+  return {
+    totalIssues, severity, missingLiveness, missingReadiness, missingStartup, probeScore,
+    summary: `${missingLiveness.length} missing liveness, ${missingReadiness.length} missing readiness, ${missingStartup.length} missing startup`
+  }
+}
+
+function formatProbeReport(r: ProbeResult): string {
+  const lines: string[] = []
+  lines.push(`# Health & Readiness Probes`)
+  lines.push(``)
+  lines.push(`**Probe Score:** ${r.probeScore}/100 | **Issues:** ${r.totalIssues} | **Severity:** ${r.severity.toUpperCase()}`)
+  lines.push(``)
+  lines.push(`> ${r.summary}`)
+  lines.push(``)
+
+  if (r.missingLiveness.length > 0) {
+    lines.push(`## Missing Liveness Probe (${r.missingLiveness.length})`)
+    r.missingLiveness.forEach(l => lines.push(`- ${l.suggestion}`))
+    lines.push(``)
+  }
+
+  if (r.missingReadiness.length > 0) {
+    lines.push(`## Missing Readiness Probe (${r.missingReadiness.length})`)
+    r.missingReadiness.forEach(r => lines.push(`- ${r.suggestion}`))
+    lines.push(``)
+  }
+
+  return lines.join('\n')
+}
+
+// ---- Tool 101: Serialization Safety ----
+
+interface SerializationResult {
+  totalIssues: number
+  severity: Severity
+  circularRef: { line: number; issue: string; suggestion: string }[]
+  protoPollution: { line: number; issue: string; suggestion: string }[]
+  bigIntIssues: { line: number; issue: string; suggestion: string }[]
+  serScore: number
+  summary: string
+}
+
+function analyzeSerialization(code: string): SerializationResult {
+  const lines = code.split('\n')
+  const circularRef: SerializationResult['circularRef'] = []
+  const protoPollution: SerializationResult['protoPollution'] = []
+  const bigIntIssues: SerializationResult['bigIntIssues'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/\/|\/\*|\*)/)) return
+
+    // Detect JSON.parse without try-catch (circular ref / malformed)
+    if (line.match(/JSON\.parse\s*\(/) && !lines.slice(Math.max(0, i - 3), i).some(l => l.match(/try/))) {
+      const context = lines.slice(i, i + 5).join('\n')
+      if (!context.match(/catch/)) {
+        circularRef.push({ line: i + 1, issue: 'JSON.parse without try-catch', suggestion: 'Wrap JSON.parse in try-catch to handle malformed input gracefully' })
+      }
+    }
+
+    // Detect __proto__ access
+    if (line.match(/__proto__|constructor\.prototype/)) {
+      protoPollution.push({ line: i + 1, issue: 'Prototype pollution risk via __proto__ or prototype chain', suggestion: 'Sanitize JSON input, use Map instead of plain objects for untrusted data' })
+    }
+
+    // Detect BigInt serialization
+    if (line.match(/BigInt|bigint/) && line.match(/JSON\.stringify/)) {
+      bigIntIssues.push({ line: i + 1, issue: 'BigInt cannot be serialized by JSON.stringify', suggestion: 'Add custom toJSON method or replacer function for BigInt values' })
+    }
+
+    // Detect Date serialization inconsistency
+    if (line.match(/new\s+Date\s*\(/) && line.match(/JSON\.stringify/) && !line.match(/toISOString/)) {
+      bigIntIssues.push({ line: i + 1, issue: 'Date object serialized as UTC string in JSON', suggestion: 'Explicitly call .toISOString() for consistent timezone handling' })
+    }
+  })
+
+  const totalIssues = circularRef.length + protoPollution.length + bigIntIssues.length
+  const serScore = Math.max(0, 100 - totalIssues * 12)
+  const severity: Severity = protoPollution.length > 0 ? 'warning' : totalIssues >= 2 ? 'info' : 'info'
+
+  return {
+    totalIssues, severity, circularRef, protoPollution, bigIntIssues, serScore,
+    summary: `${protoPollution.length} prototype pollution risk(s), ${circularRef.length} unsafe parse(s), ${bigIntIssues.length} BigInt/Date issue(s)`
+  }
+}
+
+function formatSerializationReport(r: SerializationResult): string {
+  const lines: string[] = []
+  lines.push(`# Serialization Safety`)
+  lines.push(``)
+  lines.push(`**Serialization Score:** ${r.serScore}/100 | **Issues:** ${r.totalIssues} | **Severity:** ${r.severity.toUpperCase()}`)
+  lines.push(``)
+  lines.push(`> ${r.summary}`)
+  lines.push(``)
+
+  if (r.protoPollution.length > 0) {
+    lines.push(`## Prototype Pollution (${r.protoPollution.length})`)
+    r.protoPollution.forEach(p => lines.push(`- Line ${p.line}: ${p.suggestion}`))
+    lines.push(``)
+  }
+
+  if (r.bigIntIssues.length > 0) {
+    lines.push(`## BigInt / Date Issues (${r.bigIntIssues.length})`)
+    r.bigIntIssues.forEach(b => lines.push(`- Line ${b.line}: ${b.suggestion}`))
+    lines.push(``)
+  }
+
+  return lines.join('\n')
+}
+
+// ---- Tool 102: Data Validation Patterns ----
+
+interface ValidationResult {
+  totalIssues: number
+  severity: Severity
+  missingValidation: { line: number; field: string; suggestion: string }[]
+  weakValidation: { line: number; issue: string; suggestion: string }[]
+  missingSanitization: { line: number; issue: string; suggestion: string }[]
+  validationScore: number
+  summary: string
+}
+
+function analyzeDataValidation(code: string): ValidationResult {
+  const lines = code.split('\n')
+  const missingValidation: ValidationResult['missingValidation'] = []
+  const weakValidation: ValidationResult['weakValidation'] = []
+  const missingSanitization: ValidationResult['missingSanitization'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/\/|\/\*|\*)/)) return
+
+    // Detect user input without validation
+    if (line.match(/(?:body|params|query|req\.body)\.\w+/) && !line.match(/validate|schema|zod|yup|joi|check|assert/i)) {
+      const fieldMatch = line.match(/(\w+)\s*[=:]\s*(?:body|params|query|req\.body)\.(\w+)/)
+      if (fieldMatch) {
+        missingValidation.push({ line: i + 1, field: fieldMatch[2], suggestion: `Validate '${fieldMatch[2]}' against expected schema before use` })
+      }
+    }
+
+    // Detect weak email regex
+    if (line.match(/email/i) && line.match(/\//) && line.match(/test\s*\(/)) {
+      if (line.match(/@\w+\.\w+/) && !line.match(/rfc|5322|RFC/)) {
+        weakValidation.push({ line: i + 1, issue: 'Simplified email validation regex', suggestion: 'Use RFC 5322-compliant regex or validation library for email' })
+      }
+    }
+
+    // Detect unfiltered HTML output (XSS)
+    if (line.match(/innerHTML|dangerouslySetInnerHTML|v-html|__html/)) {
+      missingSanitization.push({ line: i + 1, issue: 'Raw HTML rendering without sanitization', suggestion: 'Sanitize HTML with DOMPurify before rendering user-generated content' })
+    }
+  })
+
+  const totalIssues = missingValidation.length + weakValidation.length + missingSanitization.length
+  const validationScore = Math.max(0, 100 - missingSanitization.length * 15 - totalIssues * 8)
+  const severity: Severity = missingSanitization.length > 0 ? 'warning' : totalIssues >= 3 ? 'info' : 'info'
+
+  return {
+    totalIssues, severity, missingValidation, weakValidation, missingSanitization, validationScore,
+    summary: `${missingSanitization.length} XSS risk(s), ${missingValidation.length} unvalidated field(s), ${weakValidation.length} weak validation(s)`
+  }
+}
+
+function formatValidationReport(r: ValidationResult): string {
+  const lines: string[] = []
+  lines.push(`# Data Validation Patterns`)
+  lines.push(``)
+  lines.push(`**Validation Score:** ${r.validationScore}/100 | **Issues:** ${r.totalIssues} | **Severity:** ${r.severity.toUpperCase()}`)
+  lines.push(``)
+  lines.push(`> ${r.summary}`)
+  lines.push(``)
+
+  if (r.missingSanitization.length > 0) {
+    lines.push(`## XSS Risks (${r.missingSanitization.length}) ⚠️`)
+    r.missingSanitization.forEach(s => lines.push(`- Line ${s.line}: ${s.suggestion}`))
+    lines.push(``)
+  }
+
+  if (r.missingValidation.length > 0) {
+    lines.push(`## Missing Validation (${r.missingValidation.length})`)
+    r.missingValidation.forEach(v => lines.push(`- Line ${v.line}: \`${v.field}\` — ${v.suggestion}`))
+    lines.push(``)
+  }
+
+  return lines.join('\n')
+}
+
+// ---- Tool 103: Multi-Tenancy Isolation ----
+
+interface TenantResult {
+  totalIssues: number
+  severity: Severity
+  missingTenantFilter: { line: number; issue: string; suggestion: string }[]
+  sharedState: { line: number; issue: string; suggestion: string }[]
+  tenantScore: number
+  summary: string
+}
+
+function analyzeMultiTenancy(code: string): TenantResult {
+  const lines = code.split('\n')
+  const missingTenantFilter: TenantResult['missingTenantFilter'] = []
+  const sharedState: TenantResult['sharedState'] = []
+
+  const codeLower = code.toLowerCase()
+  const hasDb = codeLower.includes('find') || codeLower.includes('query') || codeLower.includes('select')
+
+  if (hasDb || codeLower.includes('tenant') || codeLower.includes('organization')) {
+    // Detect queries without tenant filter
+    lines.forEach((line, i) => {
+      if (line.match(/\.find\s*\(/) || line.match(/SELECT.*FROM/i)) {
+        if (!line.match(/tenant|organization|orgId|tenantId/) && !lines.slice(Math.max(0, i - 3), i).some(l => l.match(/tenant/))) {
+          missingTenantFilter.push({ line: i + 1, issue: 'Database query without tenant scoping', suggestion: 'Add tenant_id filter to prevent cross-tenant data leakage' })
+        }
+      }
+    })
+
+    // Detect global/singleton state
+    lines.forEach((line, i) => {
+      if (line.match(/^(\s*)(const|let|var)\s+\w+\s*=\s*(?:new|Map|Set|\{)/) &&
+          !line.match(/request|context|asyncLocalStorage/)) {
+        if (line.match(/cache|state|config|pool/i)) {
+          sharedState.push({ line: i + 1, issue: 'Global mutable state without tenant isolation', suggestion: 'Use per-request context or AsyncLocalStorage to isolate tenant state' })
+        }
+      }
+    })
+  }
+
+  const totalIssues = missingTenantFilter.length + sharedState.length
+  const tenantScore = Math.max(0, 100 - missingTenantFilter.length * 20 - sharedState.length * 10)
+  const severity: Severity = missingTenantFilter.length > 0 ? 'critical' : totalIssues >= 1 ? 'warning' : 'info'
+
+  return {
+    totalIssues, severity, missingTenantFilter, sharedState, tenantScore,
+    summary: `${missingTenantFilter.length} unprotected query(ues), ${sharedState.length} shared state risk(s)`
+  }
+}
+
+function formatTenantReport(r: TenantResult): string {
+  const lines: string[] = []
+  lines.push(`# Multi-Tenancy Isolation`)
+  lines.push(``)
+  lines.push(`**Tenant Score:** ${r.tenantScore}/100 | **Issues:** ${r.totalIssues} | **Severity:** ${r.severity.toUpperCase()}`)
+  lines.push(``)
+  lines.push(`> ${r.summary}`)
+  lines.push(``)
+
+  if (r.missingTenantFilter.length > 0) {
+    lines.push(`## Missing Tenant Filters (${r.missingTenantFilter.length}) ⚠️`)
+    r.missingTenantFilter.forEach(t => lines.push(`- Line ${t.line}: ${t.suggestion}`))
+    lines.push(``)
+  }
+
+  if (r.sharedState.length > 0) {
+    lines.push(`## Shared State Risks (${r.sharedState.length})`)
+    r.sharedState.forEach(s => lines.push(`- Line ${s.line}: ${s.suggestion}`))
+    lines.push(``)
+  }
+
+  return lines.join('\n')
+}
+
+// ---- Tool 104: Feature Flag Governance ----
+
+interface FeatureFlagResult {
+  totalIssues: number
+  severity: Severity
+  deadFlags: { line: number; issue: string; suggestion: string }[]
+  missingCleanup: { line: number; issue: string; suggestion: string }[]
+  flagScore: number
+  summary: string
+}
+
+function analyzeFeatureFlags(code: string): FeatureFlagResult {
+  const lines = code.split('\n')
+  const deadFlags: FeatureFlagResult['deadFlags'] = []
+  const missingCleanup: FeatureFlagResult['missingCleanup'] = []
+
+  const codeLower = code.toLowerCase()
+
+  // Detect feature flags / conditional toggles
+  if (codeLower.includes('feature') || codeLower.includes('toggle') || codeLower.includes('flag')) {
+    // Detect hardcoded flags
+    lines.forEach((line, i) => {
+      if (line.match(/feature\s*[=!]=\s*['"]/) || line.match(/isEnabled\s*\(/)) {
+        if (!line.match(/config|env|get|fetch|launchdarkly|split|unleash/i)) {
+          deadFlags.push({ line: i + 1, issue: 'Hardcoded feature flag value', suggestion: 'Use LaunchDarkly/Split/Unleash for dynamic feature management' })
+        }
+      }
+    })
+
+    // Detect flags without cleanup tracking
+    if (codeLower.includes('if.*feature') || codeLower.includes('if.*flag')) {
+      if (!codeLower.includes('cleanup') && !codeLower.includes('deprecate') && !codeLower.includes('remove')) {
+        missingCleanup.push({ line: 1, issue: 'Feature flags without cleanup plan', suggestion: 'Add TODO comments or tracking for flag removal after stabilization' })
+      }
+    }
+  }
+
+  const totalIssues = deadFlags.length + missingCleanup.length
+  const flagScore = Math.max(0, 100 - totalIssues * 15)
+  const severity: Severity = deadFlags.length > 0 ? 'warning' : totalIssues >= 1 ? 'info' : 'info'
+
+  return {
+    totalIssues, severity, deadFlags, missingCleanup, flagScore,
+    summary: `${deadFlags.length} hardcoded flag(s), ${missingCleanup.length} missing cleanup plan(s)`
+  }
+}
+
+function formatFlagReport(r: FeatureFlagResult): string {
+  const lines: string[] = []
+  lines.push(`# Feature Flag Governance`)
+  lines.push(``)
+  lines.push(`**Flag Score:** ${r.flagScore}/100 | **Issues:** ${r.totalIssues} | **Severity:** ${r.severity.toUpperCase()}`)
+  lines.push(``)
+  lines.push(`> ${r.summary}`)
+  lines.push(``)
+
+  if (r.deadFlags.length > 0) {
+    lines.push(`## Hardcoded Flags (${r.deadFlags.length})`)
+    r.deadFlags.forEach(f => lines.push(`- Line ${f.line}: ${f.suggestion}`))
+    lines.push(``)
+  }
+
+  return lines.join('\n')
+}
+
+// ---- Tool 105: API Gateway Patterns ----
+
+interface GatewayResult {
+  totalIssues: number
+  severity: Severity
+  missingGateway: { issue: string; suggestion: string }[]
+  noAggregation: { line: number; issue: string; suggestion: string }[]
+  gatewayScore: number
+  summary: string
+}
+
+function analyzeGateway(code: string): GatewayResult {
+  const lines = code.split('\n')
+  const missingGateway: GatewayResult['missingGateway'] = []
+  const noAggregation: GatewayResult['noAggregation'] = []
+
+  const codeLower = code.toLowerCase()
+
+  // Detect microservice calls patterns
+  const hasMicroservices = (codeLower.includes('service') && codeLower.includes('http')) ||
+                           codeLower.includes('fetch') || codeLower.includes('axios')
+
+  if (hasMicroservices) {
+    // Detect missing API gateway pattern
+    if (!codeLower.includes('gateway') && !codeLower.includes('kong') && !codeLower.includes('apigateway') && !codeLower.includes('bff')) {
+      if (codeLower.includes('user-service') || codeLower.includes('order-service') || codeLower.includes('product-service')) {
+        missingGateway.push({ issue: 'Direct microservice calls without gateway', suggestion: 'Route through API Gateway (Kong, AWS API Gateway) for cross-cutting concerns' })
+      }
+    }
+
+    // Detect missing BFF pattern for frontend
+    if (codeLower.includes('frontend') && codeLower.includes('microservice') && !codeLower.includes('bff')) {
+      noAggregation.push({ line: 1, issue: 'Frontend calling multiple microservices', suggestion: 'Implement Backend-for-Frontend (BFF) to aggregate data for UI needs' })
+    }
+  }
+
+  const totalIssues = missingGateway.length + noAggregation.length
+  const gatewayScore = Math.max(0, 100 - totalIssues * 20)
+  const severity: Severity = totalIssues >= 1 ? 'info' : 'info'
+
+  return {
+    totalIssues, severity, missingGateway, noAggregation, gatewayScore,
+    summary: `${missingGateway.length} missing gateway pattern(s), ${noAggregation.length} aggregation opportunity(ies)`
+  }
+}
+
+function formatGatewayReport(r: GatewayResult): string {
+  const lines: string[] = []
+  lines.push(`# API Gateway Patterns`)
+  lines.push(``)
+  lines.push(`**Gateway Score:** ${r.gatewayScore}/100 | **Issues:** ${r.totalIssues} | **Severity:** ${r.severity.toUpperCase()}`)
+  lines.push(``)
+  lines.push(`> ${r.summary}`)
+  lines.push(``)
+
+  if (r.missingGateway.length > 0) {
+    lines.push(`## Missing Gateway (${r.missingGateway.length})`)
+    r.missingGateway.forEach(g => lines.push(`- ${g.suggestion}`))
+    lines.push(``)
+  }
+
+  return lines.join('\n')
+}
+
 // ==================== PLUGIN REGISTRATION ====================
 
 export function apply(ctx: Context) {
@@ -12527,5 +13116,117 @@ export function apply(ctx: Context) {
     }
   }))
 
-  console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing`)
+  // Tool 98: Cache Strategy (v0.17.0)
+  ctx.tools.register(defineTool({
+    name: 'cache_strategy',
+    description: 'Analyze cache strategy: TTL, penetration, thundering herd, invalidation.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The caching code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeCacheStrategy(args.code)
+      return formatCacheReport(result)
+    }
+  }))
+
+  // Tool 99: Graceful Shutdown (v0.17.0)
+  ctx.tools.register(defineTool({
+    name: 'graceful_shutdown',
+    description: 'Analyze graceful shutdown: signal handlers, connection draining, timeouts.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The server code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeGracefulShutdown(args.code)
+      return formatShutdownReport(result)
+    }
+  }))
+
+  // Tool 100: Health & Readiness Probes (v0.17.0)
+  ctx.tools.register(defineTool({
+    name: 'health_probes',
+    description: 'Analyze K8s probes: liveness, readiness, startup probe endpoints.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The server code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeHealthProbes(args.code)
+      return formatProbeReport(result)
+    }
+  }))
+
+  // Tool 101: Serialization Safety (v0.17.0)
+  ctx.tools.register(defineTool({
+    name: 'serialization_safety',
+    description: 'Analyze serialization: prototype pollution, BigInt, unsafe JSON.parse.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The serialization code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeSerialization(args.code)
+      return formatSerializationReport(result)
+    }
+  }))
+
+  // Tool 102: Data Validation (v0.17.0)
+  ctx.tools.register(defineTool({
+    name: 'data_validation',
+    description: 'Analyze data validation: schema validation, XSS, weak regex, sanitization.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The input handling code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeDataValidation(args.code)
+      return formatValidationReport(result)
+    }
+  }))
+
+  // Tool 103: Multi-Tenancy Isolation (v0.17.0)
+  ctx.tools.register(defineTool({
+    name: 'multi_tenancy',
+    description: 'Analyze multi-tenancy: tenant filter, shared state, data isolation.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The multi-tenant code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeMultiTenancy(args.code)
+      return formatTenantReport(result)
+    }
+  }))
+
+  // Tool 104: Feature Flag Governance (v0.17.0)
+  ctx.tools.register(defineTool({
+    name: 'feature_flags',
+    description: 'Analyze feature flags: hardcoded values, cleanup plans, technical debt.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The feature flag code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeFeatureFlags(args.code)
+      return formatFlagReport(result)
+    }
+  }))
+
+  // Tool 105: API Gateway Patterns (v0.17.0)
+  ctx.tools.register(defineTool({
+    name: 'api_gateway',
+    description: 'Analyze API gateway: missing gateway, BFF pattern, service routing.',
+    parameters: {
+      code: { type: 'string', required: true, description: 'The microservice code to analyze' }
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+    async execute(args: { code: string }) {
+      const result = analyzeGateway(args.code)
+      return formatGatewayReport(result)
+    }
+  }))
+
+  console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway`)
 }

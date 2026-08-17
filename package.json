@@ -1,7 +1,7 @@
 {
   "name": "dsh-tool-codereview",
-  "version": "0.16.0",
-  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 97 tools, WASM, Auth, Payment, Email, RateLimit, WebSocket, Cron, EventSourcing",
+  "version": "0.17.0",
+  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 105 tools, Cache, Shutdown, Probes, Serialization, Validation, Tenancy, Flags, Gateway",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
