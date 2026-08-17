@@ -72,7 +72,7 @@
  * - API gateway (BFF pattern, service routing)
  * 
  * @module dsh-tool-codereview
- * @version 0.28.0
+ * @version 0.29.0
  * @license MIT
  */
 
@@ -82,7 +82,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 export const name = 'dsh-tool-codereview'
 export const inject = ['tools']
 
-const VERSION = '0.28.0'
+const VERSION = '0.29.0'
 
 // ==================== TYPES ====================
 
@@ -17942,6 +17942,526 @@ function formatPluginArchReport(r: PluginArchResult): string {
   return lines.join('\n')
 }
 
+// ==================== V0.29.0: MOBILE APP SECURITY ====================
+
+interface MobileAppSecResult {
+  totalIssues: number
+  severity: Severity
+  transport: { line: number; issue: string; suggestion: string }[]
+  storage: { line: number; issue: string; suggestion: string }[]
+  mobileSecScore: number
+  summary: string
+}
+
+function analyzeMobileAppSecurity(code: string): MobileAppSecResult {
+  const lines = code.split('\n')
+  const transport: MobileAppSecResult['transport'] = []
+  const storage: MobileAppSecResult['storage'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/http:\/\/|axios.*http|fetch.*http:/i) && !line.match(/localhost|127\.0\.0\.1|10\.|192\.168\.|debug|dev.*mode/i)) {
+      transport.push({ line: i + 1, issue: 'Cleartext HTTP traffic — MITM risk on mobile', suggestion: 'Enforce HTTPS only (NSAppTransportSecurity / network_security_config) for all mobile traffic' })
+    }
+
+    if (line.match(/certificate.*pin|pin.*certificate|SSL.*pinning|publicKey.*pin/i) && !line.match(/backup.*pin|pin.*rotation|expir.*pin/i)) {
+      storage.push({ line: i + 1, issue: 'Certificate pinning without backup pin or rotation', suggestion: 'Implement backup pins and pin rotation strategy to prevent app lockout on cert expiry' })
+    }
+
+    if (line.match(/keychain|keystore|KeychainStore|SecureStore/i) && !line.match(/accessible|kSecAttr|kAttr|unlock.*this|device.*unlock/i)) {
+      storage.push({ line: i + 1, issue: 'Keychain/keystore without access control attribute', suggestion: 'Set kSecAttrAccessible controls (e.g., afterFirstUnlock) for keychain item protection' })
+    }
+
+    if (line.match(/jailbreak|root.*detect|isRooted|isJailbroken|tamper.*detect/i) && !line.match(/bypass.*detect|multiple.*check|server.*side|obfuscat/i)) {
+      transport.push({ line: i + 1, issue: 'Root/jailbreak detection without server-side verification', suggestion: 'Combine client detection with server-side attestation for tamper resistance' })
+    }
+  })
+
+  const totalIssues = transport.length + storage.length
+  const mobileSecScore = Math.max(0, 100 - transport.length * 12 - storage.length * 10)
+  const severity: Severity = transport.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, transport, storage, mobileSecScore,
+    summary: transport.length + ' transport gap(s), ' + storage.length + ' storage gap(s)' }
+}
+
+function formatMobileAppSecReport(r: MobileAppSecResult): string {
+  const lines: string[] = []
+  lines.push('# Mobile App Security Analysis')
+  lines.push('')
+  lines.push('**Mobile Sec Score:** ' + r.mobileSecScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.transport.length > 0) {
+    lines.push('## Transport (' + r.transport.length + ')')
+    r.transport.forEach(t => lines.push('- Line ' + t.line + ': ' + t.suggestion))
+    lines.push('')
+  }
+  if (r.storage.length > 0) {
+    lines.push('## Storage (' + r.storage.length + ')')
+    r.storage.forEach(s => lines.push('- Line ' + s.line + ': ' + s.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.29.0: DATA MASKING ====================
+
+interface DataMaskingResult {
+  totalIssues: number
+  severity: Severity
+  pii: { line: number; issue: string; suggestion: string }[]
+  anonymization: { line: number; issue: string; suggestion: string }[]
+  maskingScore: number
+  summary: string
+}
+
+function analyzeDataMasking(code: string): DataMaskingResult {
+  const lines = code.split('\n')
+  const pii: DataMaskingResult['pii'] = []
+  const anonymization: DataMaskingResult['anonymization'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/email|phone|ssn|credit.?card|passport|dob|birth|date.*birth/i) && line.match(/log|console|print|log\.|debug/i) && !line.match(/mask|redact|hash|tokeniz|pseudonym/i)) {
+      pii.push({ line: i + 1, issue: 'PII logged without masking', suggestion: 'Mask or redact PII fields (email → u***@example.com) before logging' })
+    }
+
+    if (line.match(/anonymiz|pseudonym|tokeniz|hash.*PII|mask.*field/i) && !line.match(/reversib|lookup|mapping|vault|detokenize/i)) {
+      anonymization.push({ line: i + 1, issue: 'Tokenization without reversible mapping storage', suggestion: 'Store token-to-original mapping in secure vault for authorized re-identification' })
+    }
+
+    if (line.match(/k.?anonymity|l.?diversity|t.?closeness|differential.*privacy/i) && !line.match(/epsilon|delta|noise|laplace|gaussian/i)) {
+      pii.push({ line: i + 1, issue: 'Privacy model without formal epsilon/delta guarantee', suggestion: 'Implement differential privacy with epsilon budget for provable privacy guarantee' })
+    }
+
+    if (line.match(/data.*export|export.*report|download.*CSV|download.*data/i) && !line.match(/mask|redact| aggregat|anonymiz|consent/i)) {
+      anonymization.push({ line: i + 1, issue: 'Data export without masking or aggregation', suggestion: 'Apply data masking or aggregation thresholds for exported datasets' })
+    }
+  })
+
+  const totalIssues = pii.length + anonymization.length
+  const maskingScore = Math.max(0, 100 - pii.length * 12 - anonymization.length * 8)
+  const severity: Severity = pii.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, pii, anonymization, maskingScore,
+    summary: pii.length + ' PII leak(s), ' + anonymization.length + ' anonymization gap(s)' }
+}
+
+function formatDataMaskingReport(r: DataMaskingResult): string {
+  const lines: string[] = []
+  lines.push('# Data Masking Analysis')
+  lines.push('')
+  lines.push('**Masking Score:** ' + r.maskingScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.pii.length > 0) {
+    lines.push('## PII Leakage (' + r.pii.length + ')')
+    r.pii.forEach(p => lines.push('- Line ' + p.line + ': ' + p.suggestion))
+    lines.push('')
+  }
+  if (r.anonymization.length > 0) {
+    lines.push('## Anonymization (' + r.anonymization.length + ')')
+    r.anonymization.forEach(a => lines.push('- Line ' + a.line + ': ' + a.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.29.0: CORE WEB VITALS ====================
+
+interface CoreWebVitalsResult {
+  totalIssues: number
+  severity: Severity
+  lcp: { line: number; issue: string; suggestion: string }[]
+  inp: { line: number; issue: string; suggestion: string }[]
+  vitalsScore: number
+  summary: string
+}
+
+function analyzeCoreWebVitals(code: string): CoreWebVitalsResult {
+  const lines = code.split('\n')
+  const lcp: CoreWebVitalsResult['lcp'] = []
+  const inp: CoreWebVitalsResult['inp'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/hero.*image|banner.*img|above.*fold|main.*image/i) && !line.match(/preload|priority|fetchpriority|eager|preconnect/i)) {
+      lcp.push({ line: i + 1, issue: 'LCP image without preload or fetchpriority', suggestion: 'Add <link rel=preload> or fetchpriority="high" for LCP candidate images' })
+    }
+
+    if (line.match(/font|import.*font|@font-face|web.?font/i) && !line.match(/font-display|swap|optional|preload.*font/i)) {
+      lcp.push({ line: i + 1, issue: 'Webfont without font-display strategy', suggestion: 'Add font-display: swap or optional to prevent invisible text during font load' })
+    }
+
+    if (line.match(/onClick|addEventListener.*click|onClick.*fetch|onClick.*api/i) && !line.match(/idle|requestIdleCallback|defer|priority|transition/i)) {
+      inp.push({ line: i + 1, issue: 'Click handler blocks main thread without yielding', suggestion: 'Yield to main thread (scheduler.yield or microtask) for INP optimization' })
+    }
+
+    if (line.match(/layout.*shift|CLS|layout.*shift/i) && !line.match(/aspect-ratio|width.*height|size.*attr|reserve.*space/i)) {
+      inp.push({ line: i + 1, issue: 'Layout shift risk without reserved space', suggestion: 'Set width/height attributes or aspect-ratio to reserve space before content loads' })
+    }
+  })
+
+  const totalIssues = lcp.length + inp.length
+  const vitalsScore = Math.max(0, 100 - lcp.length * 10 - inp.length * 10)
+  const severity: Severity = lcp.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, lcp, inp, vitalsScore,
+    summary: lcp.length + ' LCP gap(s), ' + inp.length + ' INP/CLS gap(s)' }
+}
+
+function formatCoreWebVitalsReport(r: CoreWebVitalsResult): string {
+  const lines: string[] = []
+  lines.push('# Core Web Vitals Analysis')
+  lines.push('')
+  lines.push('**Vitals Score:** ' + r.vitalsScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.lcp.length > 0) {
+    lines.push('## LCP (' + r.lcp.length + ')')
+    r.lcp.forEach(l => lines.push('- Line ' + l.line + ': ' + l.suggestion))
+    lines.push('')
+  }
+  if (r.inp.length > 0) {
+    lines.push('## INP/CLS (' + r.inp.length + ')')
+    r.inp.forEach(n => lines.push('- Line ' + n.line + ': ' + n.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.29.0: INFRA COST OPTIMIZATION ====================
+
+interface InfraCostResult {
+  totalIssues: number
+  severity: Severity
+  compute: { line: number; issue: string; suggestion: string }[]
+  storage: { line: number; issue: string; suggestion: string }[]
+  costScore: number
+  summary: string
+}
+
+function analyzeInfraCost(code: string): InfraCostResult {
+  const lines = code.split('\n')
+  const compute: InfraCostResult['compute'] = []
+  const storage: InfraCostResult['storage'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/instance.*type|m[0-9]\.|c[0-9]\.|t[0-9]\.|ec2.*type/i) && !line.match(/spot|reserved|graviton|arm|burstable|savings.*plan/i)) {
+      compute.push({ line: i + 1, issue: 'On-demand instance without cost optimization strategy', suggestion: 'Use spot instances (fault-tolerant) or reserved/Savings Plans for stable workloads' })
+    }
+
+    if (line.match(/replica|replicas|minReplicas|replicas:\s*[0-9]+/i) && !line.match(/HPA|autoscal|scale.*down|min.*1|schedule|night/i)) {
+      compute.push({ line: i + 1, issue: 'Fixed replica count without auto-scaling or scale-to-zero', suggestion: 'Use HPA with schedule-based scaling (reduce minReplicas during off-peak)' })
+    }
+
+    if (line.match(/s3|blob|object.*storage|bucket.*storage/i) && !line.match(/lifecycle|IA|glacier|intelligent|tier|expir.*delete/i)) {
+      storage.push({ line: i + 1, issue: 'Object storage without lifecycle tiering', suggestion: 'Add lifecycle policy to transition to IA/Glacier after N days' })
+    }
+
+    if (line.match(/RDS|CloudSQL|postgres|mysql.*instance|database.*instance/i) && !line.match(/reserved|serverless|aurora.*serverless|auto.*pause|shutdown.*night/i)) {
+      compute.push({ line: i + 1, issue: 'Database instance running 24/7 without scheduling', suggestion: 'Use serverless (Aurora) or schedule stop/start for dev/test databases' })
+    }
+  })
+
+  const totalIssues = compute.length + storage.length
+  const costScore = Math.max(0, 100 - compute.length * 10 - storage.length * 8)
+  const severity: Severity = compute.length > 1 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, compute, storage, costScore,
+    summary: compute.length + ' compute gap(s), ' + storage.length + ' storage gap(s)' }
+}
+
+function formatInfraCostReport(r: InfraCostResult): string {
+  const lines: string[] = []
+  lines.push('# Infrastructure Cost Analysis')
+  lines.push('')
+  lines.push('**Cost Score:** ' + r.costScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.compute.length > 0) {
+    lines.push('## Compute (' + r.compute.length + ')')
+    r.compute.forEach(c => lines.push('- Line ' + c.line + ': ' + c.suggestion))
+    lines.push('')
+  }
+  if (r.storage.length > 0) {
+    lines.push('## Storage (' + r.storage.length + ')')
+    r.storage.forEach(s => lines.push('- Line ' + s.line + ': ' + s.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.29.0: API GATEWAY ====================
+
+interface ApiGatewayResult {
+  totalIssues: number
+  severity: Severity
+  validation: { line: number; issue: string; suggestion: string }[]
+  transform: { line: number; issue: string; suggestion: string }[]
+  gatewayScore: number
+  summary: string
+}
+
+function analyzeApiGateway(code: string): ApiGatewayResult {
+  const lines = code.split('\n')
+  const validation: ApiGatewayResult['validation'] = []
+  const transform: ApiGatewayResult['transform'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/api.*gateway|APIGateway|gateway.*route|gateway.*endpoint/i) && !line.match(/validat|schema|request.*valid|model.*valid/i)) {
+      validation.push({ line: i + 1, issue: 'API Gateway without request validation', suggestion: 'Add JSON schema request validation at gateway level to reject malformed requests' })
+    }
+
+    if (line.match(/proxy.*pass|reverse.*proxy|forward.*request|proxy.*request/i) && !line.match(/header.*set|header.*transform|strip.*header|sanitize/i)) {
+      transform.push({ line: i + 1, issue: 'Proxy without header transformation', suggestion: 'Strip sensitive headers (X-Internal-*) and add correlation ID at proxy boundary' })
+    }
+
+    if (line.match(/throttl|rate.*limit|quota.*limit/i) && !line.match(/key.*expression|header.*key|identity.*source|per.?method/i)) {
+      validation.push({ line: i + 1, issue: 'Throttling without per-method or per-client key', suggestion: 'Use key expression (e.g., $context.identity.sourceIp) for granular rate limiting' })
+    }
+
+    if (line.match(/cache.*response|response.*cache|api.*cache/i) && !line.match(/ttl|encrypt|cache.*key|query.*param|vary/i)) {
+      transform.push({ line: i + 1, issue: 'Response caching without cache key strategy', suggestion: 'Define cache key from query params + headers; set TTL and encryption for sensitive data' })
+    }
+  })
+
+  const totalIssues = validation.length + transform.length
+  const gatewayScore = Math.max(0, 100 - validation.length * 12 - transform.length * 8)
+  const severity: Severity = validation.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, validation, transform, gatewayScore,
+    summary: validation.length + ' validation gap(s), ' + transform.length + ' transform gap(s)' }
+}
+
+function formatApiGatewayReport(r: ApiGatewayResult): string {
+  const lines: string[] = []
+  lines.push('# API Gateway Analysis')
+  lines.push('')
+  lines.push('**Gateway Score:** ' + r.gatewayScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.validation.length > 0) {
+    lines.push('## Validation (' + r.validation.length + ')')
+    r.validation.forEach(v => lines.push('- Line ' + v.line + ': ' + v.suggestion))
+    lines.push('')
+  }
+  if (r.transform.length > 0) {
+    lines.push('## Transform (' + r.transform.length + ')')
+    r.transform.forEach(t => lines.push('- Line ' + t.line + ': ' + t.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.29.0: CSS-IN-JS PERFORMANCE ====================
+
+interface CssInJsPerfResult {
+  totalIssues: number
+  severity: Severity
+  runtime: { line: number; issue: string; suggestion: string }[]
+  extraction: { line: number; issue: string; suggestion: string }[]
+  cssInJsScore: number
+  summary: string
+}
+
+function analyzeCssInJsPerf(code: string): CssInJsPerfResult {
+  const lines = code.split('\n')
+  const runtime: CssInJsPerfResult['runtime'] = []
+  const extraction: CssInJsPerfResult['extraction'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/styled\.|styled-|createGlobalStyle|css`|emotion|styled.?components/i) && !line.match(/babel.*plugin|extract| SSR|renderToString|sheet.*collect/i)) {
+      runtime.push({ line: i + 1, issue: 'CSS-in-JS without extraction or SSR collection', suggestion: 'Use babel plugin (babel-plugin-styled-components) to extract CSS to static files' })
+    }
+
+    if (line.match(/attrs\s*\(|withConfig|dynamic.*prop|props.*style/i) && !line.match(/shouldForwardProp|transient|prefix/i)) {
+      runtime.push({ line: i + 1, issue: 'Dynamic props in styled component — runtime overhead', suggestion: 'Use shouldForwardProp to filter DOM attributes; use transient props ($prefix)' })
+    }
+
+    if (line.match(/createGlobalStyle|global.*css|reset.*css|normalize/i) && !line.match(/extract|extractSSR|once|singleton/i)) {
+      extraction.push({ line: i + 1, issue: 'Global styles without deduplication', suggestion: 'Ensure global styles render only once (singleton pattern) to avoid duplication' })
+    }
+
+    if (line.match(/critical.*CSS|above.*fold|inline.*style|first.*paint.*css/i) && !line.match(/extract|penthouse|critical.*extract|inline.*critical/i)) {
+      extraction.push({ line: i + 1, issue: 'Critical CSS mention without extraction tool', suggestion: 'Use critical extraction (next-critical, penthouse) to inline above-fold CSS' })
+    }
+  })
+
+  const totalIssues = runtime.length + extraction.length
+  const cssInJsScore = Math.max(0, 100 - runtime.length * 10 - extraction.length * 8)
+  const severity: Severity = runtime.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, runtime, extraction, cssInJsScore,
+    summary: runtime.length + ' runtime gap(s), ' + extraction.length + ' extraction gap(s)' }
+}
+
+function formatCssInJsReport(r: CssInJsPerfResult): string {
+  const lines: string[] = []
+  lines.push('# CSS-in-JS Performance Analysis')
+  lines.push('')
+  lines.push('**CSS-in-JS Score:** ' + r.cssInJsScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.runtime.length > 0) {
+    lines.push('## Runtime (' + r.runtime.length + ')')
+    r.runtime.forEach(r => lines.push('- Line ' + r.line + ': ' + r.suggestion))
+    lines.push('')
+  }
+  if (r.extraction.length > 0) {
+    lines.push('## Extraction (' + r.extraction.length + ')')
+    r.extraction.forEach(e => lines.push('- Line ' + e.line + ': ' + e.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.29.0: CRDT STATE SYNC ====================
+
+interface CrdtStateSyncResult {
+  totalIssues: number
+  severity: Severity
+  conflict: { line: number; issue: string; suggestion: string }[]
+  merge: { line: number; issue: string; suggestion: string }[]
+  crdtScore: number
+  summary: string
+}
+
+function analyzeCrdtStateSync(code: string): CrdtStateSyncResult {
+  const lines = code.split('\n')
+  const conflict: CrdtStateSyncResult['conflict'] = []
+  const merge: CrdtStateSyncResult['merge'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/last.?write.?wins|LWW|timestamps.*conflict|latest.*wins/i) && !line.match(/vector.*clock|version.*vector|causal|happens.?before/i)) {
+      conflict.push({ line: i + 1, issue: 'LWW conflict resolution without causality tracking', suggestion: 'Use vector clocks or version vectors for causal ordering instead of wall-clock' })
+    }
+
+    if (line.match(/CRDT|crdt|merge.*state|reconcile.*state/i) && !line.match(/commutative|idempotent|associative|monotonic|semilattice/i)) {
+      merge.push({ line: i + 1, issue: 'CRDT usage without commutative/idempotent guarantee', suggestion: 'Verify merge operation is commutative, idempotent, and associative for convergence' })
+    }
+
+    if (line.match(/offline.*edit|local.*change|optimistic.*update|client.*state/i) && !line.match(/conflict|merge|reconcil|queue|buffer/i)) {
+      conflict.push({ line: i + 1, issue: 'Optimistic update without conflict resolution on sync', suggestion: 'Queue local changes; apply conflict resolution (LWW/CRDT) on reconnection' })
+    }
+
+    if (line.match(/sync.*state|state.*sync|replicat.*state|distribut.*state/i) && !line.match(/gossip|anti.?entropy|merkle|hash.?tree|delta/i)) {
+      merge.push({ line: i + 1, issue: 'State sync without delta or anti-entropy protocol', suggestion: 'Use delta-state CRDT with anti-entropy (Merkle tree) for efficient sync' })
+    }
+  })
+
+  const totalIssues = conflict.length + merge.length
+  const crdtScore = Math.max(0, 100 - conflict.length * 12 - merge.length * 8)
+  const severity: Severity = conflict.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, conflict, merge, crdtScore,
+    summary: conflict.length + ' conflict gap(s), ' + merge.length + ' merge gap(s)' }
+}
+
+function formatCrdtStateSyncReport(r: CrdtStateSyncResult): string {
+  const lines: string[] = []
+  lines.push('# CRDT State Sync Analysis')
+  lines.push('')
+  lines.push('**CRDT Score:** ' + r.crdtScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.conflict.length > 0) {
+    lines.push('## Conflict Resolution (' + r.conflict.length + ')')
+    r.conflict.forEach(c => lines.push('- Line ' + c.line + ': ' + c.suggestion))
+    lines.push('')
+  }
+  if (r.merge.length > 0) {
+    lines.push('## Merge Strategy (' + r.merge.length + ')')
+    r.merge.forEach(m => lines.push('- Line ' + m.line + ': ' + m.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.29.0: RESOURCE QUOTA ====================
+
+interface ResourceQuotaResult {
+  totalIssues: number
+  severity: Severity
+  limits: { line: number; issue: string; suggestion: string }[]
+  requests: { line: number; issue: string; suggestion: string }[]
+  quotaScore: number
+  summary: string
+}
+
+function analyzeResourceQuota(code: string): ResourceQuotaResult {
+  const lines = code.split('\n')
+  const limits: ResourceQuotaResult['limits'] = []
+  const requests: ResourceQuotaResult['requests'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/containers:|pod.*spec|deployment.*spec/i) && !line.match(/resources:|limits:|requests:/)) {
+      limits.push({ line: i + 1, issue: 'Container without resource limits/requests', suggestion: 'Set resources.limits (CPU/memory) and requests to enable QoS and scheduling' })
+    }
+
+    if (line.match(/limits:\s*memory|memory.*limit/i) && line.match(/Gi|Mi/) && !line.match(/requests.*memory|OOMKiller|evict/i)) {
+      requests.push({ line: i + 1, issue: 'Memory limit without matching request — OOM risk', suggestion: 'Set requests.memory = limits.memory for Guaranteed QoS class' })
+    }
+
+    if (line.match(/namespace|Namespace/i) && !line.match(/ResourceQuota|LimitRange|quota|limit.*range/i)) {
+      limits.push({ line: i + 1, issue: 'Namespace without ResourceQuota or LimitRange', suggestion: 'Apply ResourceQuota (total CPU/mem) and LimitRange (default constraints) per namespace' })
+    }
+
+    if (line.match(/CPU.*request|request.*CPU|cpu.*limit/i) && line.match(/m[,\s]/) && !line.match(/burst|guaranteed|CFS|period|quota/i)) {
+      requests.push({ line: i + 1, issue: 'CPU request without CFS quota awareness', suggestion: 'Understand CFS quota behavior; set CPU limit carefully to avoid throttling' })
+    }
+  })
+
+  const totalIssues = limits.length + requests.length
+  const quotaScore = Math.max(0, 100 - limits.length * 12 - requests.length * 8)
+  const severity: Severity = limits.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, limits, requests, quotaScore,
+    summary: limits.length + ' limit gap(s), ' + requests.length + ' request gap(s)' }
+}
+
+function formatResourceQuotaReport(r: ResourceQuotaResult): string {
+  const lines: string[] = []
+  lines.push('# Resource Quota Analysis')
+  lines.push('')
+  lines.push('**Quota Score:** ' + r.quotaScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.limits.length > 0) {
+    lines.push('## Limits (' + r.limits.length + ')')
+    r.limits.forEach(l => lines.push('- Line ' + l.line + ': ' + l.suggestion))
+    lines.push('')
+  }
+  if (r.requests.length > 0) {
+    lines.push('## Requests (' + r.requests.length + ')')
+    r.requests.forEach(r => lines.push('- Line ' + r.line + ': ' + r.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
 // ==================== PLUGIN REGISTRATION ====================
 
 export function apply(ctx: Context) {
@@ -20768,5 +21288,117 @@ ctx.tools.register(defineTool({
   }
 }))
 
-console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design, container_security, ml_pipeline, api_deprecation, design_system, pwa_compliance, type_system, green_computing, realtime_collab, a11y_deep, i18n_deep, css_architecture, state_machine, web_components, resilience, module_federation, review_automation, observability, migration_safety, edge_computing, api_versioning, wasm_advanced, feature_toggles, email_deliverability, seo_analysis, monorepo_boundaries, ddd_patterns, mf_runtime, realtime_protocols, data_pipeline, gateway_deep, test_rigor, quality_gate, graphql_schema, event_sourcing_integrity, rate_limiting, migration_safety, auth_hardening, distributed_tracing, infrastructure_as_code, review_automation, contract_testing, sec_headers_deep, privacy_compliance, concurrency_patterns, cloud_native, error_recovery, system_design, dependency_injection, api_versioning, serialization_perf, memory_allocation, build_pipeline, error_messages, logging_discipline, config_as_code, component_interface, token_hygiene, query_antipatterns, websocket_lifecycle, graphql_perf, deprecation_tracking, code_splitting_audit, css_arch_deep, sec_dep_audit, webhook_signature, oauth_security, email_infra, health_check_depth, cors_security, feature_rollout, secret_lifecycle, rate_limit_strategy, container_security_scan, grpc_security, data_residency, deployment_progressive, obs_exemplar, data_pipeline_quality, service_mesh, plugin_architecture`)
+// Tool 194: Mobile App Security
+ctx.tools.register(defineTool({
+  name: 'mobile_app_security',
+  description: 'Analyze mobile app security: HTTPS enforcement, certificate pinning backup, keychain access control, root detection.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The mobile app code to analyze' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeMobileAppSecurity(args.code)
+    return formatMobileAppSecReport(result)
+  }
+}))
+
+// Tool 195: Data Masking
+ctx.tools.register(defineTool({
+  name: 'data_masking',
+  description: 'Analyze data masking: PII logging detection, tokenization reversibility, differential privacy, export masking.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The data handling code to analyze' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeDataMasking(args.code)
+    return formatDataMaskingReport(result)
+  }
+}))
+
+// Tool 196: Core Web Vitals
+ctx.tools.register(defineTool({
+  name: 'core_web_vitals',
+  description: 'Analyze Core Web Vitals: LCP preload, font-display, INP yield, CLS aspect-ratio.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The frontend code to analyze' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeCoreWebVitals(args.code)
+    return formatCoreWebVitalsReport(result)
+  }
+}))
+
+// Tool 197: Infra Cost Optimization
+ctx.tools.register(defineTool({
+  name: 'infra_cost',
+  description: 'Analyze infra cost: spot/reserved instances, HPA auto-scaling, S3 lifecycle tiering, DB scheduling.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The infrastructure code to analyze' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeInfraCost(args.code)
+    return formatInfraCostReport(result)
+  }
+}))
+
+// Tool 198: API Gateway
+ctx.tools.register(defineTool({
+  name: 'api_gateway_config',
+  description: 'Analyze API gateway: request validation, proxy header transform, throttling key, response cache strategy.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The API gateway configuration to analyze' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeApiGateway(args.code)
+    return formatApiGatewayReport(result)
+  }
+}))
+
+// Tool 199: CSS-in-JS Performance
+ctx.tools.register(defineTool({
+  name: 'css_in_js_perf',
+  description: 'Analyze CSS-in-JS performance: extraction, dynamic props, global style dedup, critical CSS extraction.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The CSS-in-JS code to analyze' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeCssInJsPerf(args.code)
+    return formatCssInJsReport(result)
+  }
+}))
+
+// Tool 200: CRDT State Sync
+ctx.tools.register(defineTool({
+  name: 'crdt_state_sync',
+  description: 'Analyze CRDT state sync: LWW causality, commutative merge, optimistic update queue, anti-entropy protocol.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The state sync code to analyze' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeCrdtStateSync(args.code)
+    return formatCrdtStateSyncReport(result)
+  }
+}))
+
+// Tool 201: Resource Quota
+ctx.tools.register(defineTool({
+  name: 'resource_quota',
+  description: 'Analyze resource quotas: container limits/requests, QoS class, namespace quota, CPU CFS awareness.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The resource configuration to analyze' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeResourceQuota(args.code)
+    return formatResourceQuotaReport(result)
+  }
+}))
+
+console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design, container_security, ml_pipeline, api_deprecation, design_system, pwa_compliance, type_system, green_computing, realtime_collab, a11y_deep, i18n_deep, css_architecture, state_machine, web_components, resilience, module_federation, review_automation, observability, migration_safety, edge_computing, api_versioning, wasm_advanced, feature_toggles, email_deliverability, seo_analysis, monorepo_boundaries, ddd_patterns, mf_runtime, realtime_protocols, data_pipeline, gateway_deep, test_rigor, quality_gate, graphql_schema, event_sourcing_integrity, rate_limiting, migration_safety, auth_hardening, distributed_tracing, infrastructure_as_code, review_automation, contract_testing, sec_headers_deep, privacy_compliance, concurrency_patterns, cloud_native, error_recovery, system_design, dependency_injection, api_versioning, serialization_perf, memory_allocation, build_pipeline, error_messages, logging_discipline, config_as_code, component_interface, token_hygiene, query_antipatterns, websocket_lifecycle, graphql_perf, deprecation_tracking, code_splitting_audit, css_arch_deep, sec_dep_audit, webhook_signature, oauth_security, email_infra, health_check_depth, cors_security, feature_rollout, secret_lifecycle, rate_limit_strategy, container_security_scan, grpc_security, data_residency, deployment_progressive, obs_exemplar, data_pipeline_quality, service_mesh, plugin_architecture, mobile_app_security, data_masking, core_web_vitals, infra_cost, api_gateway_config, css_in_js_perf, crdt_state_sync, resource_quota`)
 }

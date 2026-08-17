@@ -200,3 +200,11 @@
     - data_pipeline_quality
     - service_mesh
     - plugin_architecture
+    - mobile_app_security
+    - data_masking
+    - core_web_vitals
+    - infra_cost
+    - api_gateway_config
+    - css_in_js_perf
+    - crdt_state_sync
+    - resource_quota
