@@ -1,7 +1,7 @@
 {
   "name": "dsh-tool-codereview",
-  "version": "0.25.0",
-  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 169 tools, API Versioning, Serialization, Memory Alloc, Build Pipeline, Error Msg, Logging, Config as Code, Component Interface",
+  "version": "0.26.0",
+  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 177 tools, Token Hygiene, Query Anti-Patterns, WebSocket Lifecycle, GraphQL Perf, Deprecation Tracking, Code Splitting, CSS Arch Deep, Sec Dep Audit",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
