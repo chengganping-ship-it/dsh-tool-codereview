@@ -72,7 +72,7 @@
  * - API gateway (BFF pattern, service routing)
  * 
  * @module dsh-tool-codereview
- * @version 0.22.0
+ * @version 0.23.0
  * @license MIT
  */
 
@@ -82,7 +82,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 export const name = 'dsh-tool-codereview'
 export const inject = ['tools']
 
-const VERSION = '0.22.0'
+const VERSION = '0.23.0'
 
 // ==================== TYPES ====================
 
@@ -14847,6 +14847,558 @@ function formatQualityGateReport(r: QualityGateResult): string {
   return lines.join('\n')
 }
 
+// ==================== V0.23.0: GRAPHQL SCHEMA DESIGN ====================
+
+interface GraphqlSchemaResult {
+  totalIssues: number
+  severity: Severity
+  nPlusOne: { line: number; issue: string; suggestion: string }[]
+  depth: { line: number; issue: string; suggestion: string }[]
+  graphqlScore: number
+  summary: string
+}
+
+function analyzeGraphqlSchema(code: string): GraphqlSchemaResult {
+  const lines = code.split('\n')
+  const nPlusOne: GraphqlSchemaResult['nPlusOne'] = []
+  const depth: GraphqlSchemaResult['depth'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/type\s+\w+\s*\{/) && line.match(/Query|Mutation|Subscription/)) {
+      const blockLines = lines.slice(i, i + 80)
+      const listFields = blockLines.filter(l => l.match(/\[.*\]/) && !l.match(/paginate|cursor|limit|first|last/))
+      if (listFields.length > 2) {
+        nPlusOne.push({ line: i + 1, issue: 'Query type with multiple list fields without pagination', suggestion: 'Add cursor-based pagination (first/after) to list fields to prevent N+1' })
+      }
+    }
+
+    if (line.match(/resolver|resolve\s*\(/) && line.match(/forEach|map.*async|Promise\.all/) && !line.match(/dataloader|batch|DataLoader/)) {
+      nPlusOne.push({ line: i + 1, issue: 'Resolver with per-item async — N+1 query risk', suggestion: 'Use DataLoader for batching and caching within single request' })
+    }
+
+    if (line.match(/depth|complexity|cost|multiplier/i) && !line.match(/limit|max|validate|calculate/)) {
+      depth.push({ line: i + 1, issue: 'GraphQL depth/complexity analysis without enforcement', suggestion: 'Implement query depth limiting (maxDepth: 7) and cost analysis' })
+    }
+
+    if (line.match(/schema|first|nested.*type|type.*type.*type/i) && line.match(/self.*reference|recursive|circular/i) && !line.match(/depth|limit|max/)) {
+      depth.push({ line: i + 1, issue: 'Recursive type without depth guard', suggestion: 'Add max depth validation for recursive GraphQL types' })
+    }
+  })
+
+  const totalIssues = nPlusOne.length + depth.length
+  const graphqlScore = Math.max(0, 100 - nPlusOne.length * 12 - depth.length * 10)
+  const severity: Severity = nPlusOne.length > 1 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, nPlusOne, depth, graphqlScore,
+    summary: nPlusOne.length + ' N+1 risk(s), ' + depth.length + ' depth/complexity issue(s)' }
+}
+
+function formatGraphqlSchemaReport(r: GraphqlSchemaResult): string {
+  const lines: string[] = []
+  lines.push('# GraphQL Schema Design Analysis')
+  lines.push('')
+  lines.push('**GraphQL Score:** ' + r.graphqlScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.nPlusOne.length > 0) {
+    lines.push('## N+1 Query Risks (' + r.nPlusOne.length + ')')
+    r.nPlusOne.forEach(n => lines.push('- Line ' + n.line + ': ' + n.suggestion))
+    lines.push('')
+  }
+  if (r.depth.length > 0) {
+    lines.push('## Depth & Complexity (' + r.depth.length + ')')
+    r.depth.forEach(d => lines.push('- Line ' + d.line + ': ' + d.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.23.0: EVENT SOURCING INTEGRITY ====================
+
+interface EventSourcingIntegrityResult {
+  totalIssues: number
+  severity: Severity
+  ordering: { line: number; issue: string; suggestion: string }[]
+  snapshot: { line: number; issue: string; suggestion: string }[]
+  eventScore: number
+  summary: string
+}
+
+function analyzeEventSourcingIntegrity(code: string): EventSourcingIntegrityResult {
+  const lines = code.split('\n')
+  const ordering: EventSourcingIntegrityResult['ordering'] = []
+  const snapshot: EventSourcingIntegrityResult['snapshot'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/event.*store|appendEvent|saveEvent|persistEvent/i) && !line.match(/version|sequence|expectedVersion|optimistic/)) {
+      ordering.push({ line: i + 1, issue: 'Event append without optimistic concurrency', suggestion: 'Use expectedVersion for optimistic locking to prevent concurrent write conflicts' })
+    }
+
+    if (line.match(/applyEvent|handleEvent|onEvent|projectEvent/i) && !line.match(/idempotent|dedup|alreadyProcessed|processedIds/)) {
+      ordering.push({ line: i + 1, issue: 'Event handler without idempotency check', suggestion: 'Track processed event IDs for at-least-once delivery deduplication' })
+    }
+
+    if (line.match(/snapshot|Snapshot/i) && !line.match(/threshold|interval|every.*N|version.*mod/)) {
+      snapshot.push({ line: i + 1, issue: 'Snapshot strategy without threshold configuration', suggestion: 'Snapshot every N events (e.g., 100) to balance rebuild cost vs storage' })
+    }
+
+    if (line.match(/rebuild|replay|reconstruct|rehydrate/i) && !line.match(/snapshot|fromSnapshot|checkpoint/)) {
+      snapshot.push({ line: i + 1, issue: 'Aggregate rebuild without snapshot optimization', suggestion: 'Load from latest snapshot then replay only subsequent events' })
+    }
+
+    if (line.match(/event.*bus|message.*bus|eventStore|eventStoreDB/i) && !line.match(/ordering|partition|key|stream.*order/)) {
+      ordering.push({ line: i + 1, issue: 'Event bus without ordering guarantee', suggestion: 'Use partition key (aggregateId) for per-aggregate ordering guarantee' })
+    }
+  })
+
+  const totalIssues = ordering.length + snapshot.length
+  const eventScore = Math.max(0, 100 - ordering.length * 12 - snapshot.length * 10)
+  const severity: Severity = ordering.length > 1 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, ordering, snapshot, eventScore,
+    summary: ordering.length + ' ordering issue(s), ' + snapshot.length + ' snapshot issue(s)' }
+}
+
+function formatEventSourcingIntegrityReport(r: EventSourcingIntegrityResult): string {
+  const lines: string[] = []
+  lines.push('# Event Sourcing Integrity Analysis')
+  lines.push('')
+  lines.push('**Event Sourcing Score:** ' + r.eventScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.ordering.length > 0) {
+    lines.push('## Ordering & Concurrency (' + r.ordering.length + ')')
+    r.ordering.forEach(o => lines.push('- Line ' + o.line + ': ' + o.suggestion))
+    lines.push('')
+  }
+  if (r.snapshot.length > 0) {
+    lines.push('## Snapshot Strategy (' + r.snapshot.length + ')')
+    r.snapshot.forEach(s => lines.push('- Line ' + s.line + ': ' + s.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.23.0: RATE LIMITING PATTERNS ====================
+
+interface RateLimitPatternResult {
+  totalIssues: number
+  severity: Severity
+  algorithm: { line: number; issue: string; suggestion: string }[]
+  distributed: { line: number; issue: string; suggestion: string }[]
+  rateLimitScore: number
+  summary: string
+}
+
+function analyzeRateLimitPatterns(code: string): RateLimitPatternResult {
+  const lines = code.split('\n')
+  const algorithm: RateLimitPatternResult['algorithm'] = []
+  const distributed: RateLimitPatternResult['distributed'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/token.*bucket|leaky.*bucket|sliding.*window|fixed.*window/i) && !line.match(/redis|distributed|atomic|lua/)) {
+      algorithm.push({ line: i + 1, issue: 'Rate limiting algorithm without distributed backing', suggestion: 'Use Redis + Lua scripts for atomic distributed rate limiting' })
+    }
+
+    if (line.match(/rateLimit|rate.?limit|throttle/) && line.match(/Map|in.?memory|local.*cache|object/) && !line.match(/redis|memcache|shared/)) {
+      distributed.push({ line: i + 1, issue: 'In-memory rate limiter — resets on restart, not shared across instances', suggestion: 'Use Redis (INCR + EXPIRE) for multi-instance rate limit consistency' })
+    }
+
+    if (line.match(/429|Too Many Requests|rate.*exceed/i) && !line.match(/Retry.?After|X.?RateLimit|RateLimit.?Reset/)) {
+      algorithm.push({ line: i + 1, issue: '429 response without rate limit headers', suggestion: 'Include Retry-After or X-RateLimit-Reset header for client backoff' })
+    }
+
+    if (line.match(/express.?rate.?limit|koa.?ratelimit|fastify.?rate/i) && !line.match(/keyGenerator|ip|user|userId/)) {
+      distributed.push({ line: i + 1, issue: 'Rate limiter without custom key generator', suggestion: 'Use userId (authenticated) or API key (anonymous) as rate limit key, not just IP' })
+    }
+
+    if (line.match(/burst|bursty|traffic.*spike/i) && !line.match(/token.*bucket|sliding.*log|leaky/)) {
+      algorithm.push({ line: i + 1, issue: 'Burst traffic handling without proper algorithm', suggestion: 'Use token bucket for controlled burst with sustained rate limiting' })
+    }
+  })
+
+  const totalIssues = algorithm.length + distributed.length
+  const rateLimitScore = Math.max(0, 100 - algorithm.length * 10 - distributed.length * 12)
+  const severity: Severity = distributed.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, algorithm, distributed, rateLimitScore,
+    summary: algorithm.length + ' algorithm issue(s), ' + distributed.length + ' distributed issue(s)' }
+}
+
+function formatRateLimitPatternReport(r: RateLimitPatternResult): string {
+  const lines: string[] = []
+  lines.push('# Rate Limiting Patterns Analysis')
+  lines.push('')
+  lines.push('**Rate Limit Score:** ' + r.rateLimitScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.algorithm.length > 0) {
+    lines.push('## Algorithm (' + r.algorithm.length + ')')
+    r.algorithm.forEach(a => lines.push('- Line ' + a.line + ': ' + a.suggestion))
+    lines.push('')
+  }
+  if (r.distributed.length > 0) {
+    lines.push('## Distributed (' + r.distributed.length + ')')
+    r.distributed.forEach(d => lines.push('- Line ' + d.line + ': ' + d.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.23.0: DATABASE MIGRATION SAFETY ====================
+
+interface MigrationSafetyResult {
+  totalIssues: number
+  severity: Severity
+  backward: { line: number; issue: string; suggestion: string }[]
+  downtime: { line: number; issue: string; suggestion: string }[]
+  migrationScore: number
+  summary: string
+}
+
+function analyzeDbMigrationSafety(code: string): MigrationSafetyResult {
+  const lines = code.split('\n')
+  const backward: MigrationSafetyResult['backward'] = []
+  const downtime: MigrationSafetyResult['downtime'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/DROP\s+(?:COLUMN|TABLE)|ALTER.*DROP|removeColumn/i) && !line.match(/deprecated|phase|expand|contract/)) {
+      backward.push({ line: i + 1, issue: 'Destructive migration (DROP) without expand-contract pattern', suggestion: 'Use expand-contract: add new column first, migrate data, then drop old in separate release' })
+    }
+
+    if (line.match(/ALTER.*TYPE|ALTER.*NOT\s+NULL|ALTER.*UNIQUE|changeColumn/i) && !line.match(/default|USING|coalesce|nullable|phase/)) {
+      downtime.push({ line: i + 1, issue: 'Column type/constraint change without transition strategy', suggestion: 'Add nullable column, backfill, then add constraint in separate migration' })
+    }
+
+    if (line.match(/CREATE\s+INDEX|CREATE.*INDEX/i) && !line.match(/CONCURRENTLY|online|NOWAIT|background/)) {
+      downtime.push({ line: i + 1, issue: 'Index creation without CONCURRENTLY — table lock risk', suggestion: 'Use CREATE INDEX CONCURRENTLY to avoid locking table during build' })
+    }
+
+    if (line.match(/rename|RENAME/i) && line.match(/column|table|field/) && !line.match(/view|alias|compat|deprecated/)) {
+      backward.push({ line: i + 1, issue: 'Rename migration without backward compatibility', suggestion: 'Create view/alias for old name; remove in next release after consumers migrate' })
+    }
+
+    if (line.match(/migration|up\(|down\(|change\(|migrate/i) && !line.match(/transaction|atomic|rollback|reversible/)) {
+      backward.push({ line: i + 1, issue: 'Migration without transaction/rollback safety', suggestion: 'Wrap in transaction; ensure down() reverses up() for rollback capability' })
+    }
+  })
+
+  const totalIssues = backward.length + downtime.length
+  const migrationScore = Math.max(0, 100 - backward.length * 12 - downtime.length * 10)
+  const severity: Severity = downtime.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, backward, downtime, migrationScore,
+    summary: backward.length + ' backward-compat issue(s), ' + downtime.length + ' downtime risk(s)' }
+}
+
+function formatMigrationSafetyReport(r: MigrationSafetyResult): string {
+  const lines: string[] = []
+  lines.push('# Database Migration Safety Analysis')
+  lines.push('')
+  lines.push('**Migration Score:** ' + r.migrationScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.backward.length > 0) {
+    lines.push('## Backward Compatibility (' + r.backward.length + ')')
+    r.backward.forEach(b => lines.push('- Line ' + b.line + ': ' + b.suggestion))
+    lines.push('')
+  }
+  if (r.downtime.length > 0) {
+    lines.push('## Downtime Risks (' + r.downtime.length + ')')
+    r.downtime.forEach(d => lines.push('- Line ' + d.line + ': ' + d.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.23.0: AUTHENTICATION HARDENING ====================
+
+interface AuthHardeningResult {
+  totalIssues: number
+  severity: Severity
+  session: { line: number; issue: string; suggestion: string }[]
+  csrf: { line: number; issue: string; suggestion: string }[]
+  authScore: number
+  summary: string
+}
+
+function analyzeAuthHardening(code: string): AuthHardeningResult {
+  const lines = code.split('\n')
+  const session: AuthHardeningResult['session'] = []
+  const csrf: AuthHardeningResult['csrf'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/session|cookie|setCookie/i) && !line.match(/httpOnly|secure|sameSite|signed|partitioned/i)) {
+      session.push({ line: i + 1, issue: 'Cookie without security flags', suggestion: 'Set httpOnly, secure, sameSite=strict on all session cookies' })
+    }
+
+    if (line.match(/login|signin|authenticate|post.*auth/i) && !line.match(/regenerate|rotate|session.*id|reissue/)) {
+      session.push({ line: i + 1, issue: 'Login without session fixation protection', suggestion: 'Regenerate session ID after authentication to prevent fixation' })
+    }
+
+    if (line.match(/csrf|xsrf|cross.*site.*request/i) && !line.match(/token|double.?submit|origin|referer|custom.?header/)) {
+      csrf.push({ line: i + 1, issue: 'CSRF reference without token validation', suggestion: 'Implement CSRF token (synchronizer pattern) or custom header check' })
+    }
+
+    if (line.match(/PUT|DELETE|PATCH|POST/) && line.match(/fetch|axios|request|ajax/) && !line.match(/csrf|xsrf|_token|authenticity/)) {
+      csrf.push({ line: i + 1, issue: 'State-changing request without CSRF token', suggestion: 'Include CSRF token in header (X-CSRF-Token) for mutating requests' })
+    }
+
+    if (line.match(/logout|signout|invalidateSession/i) && !line.match(/expire|clear|destroy|removeAll/)) {
+      session.push({ line: i + 1, issue: 'Logout without full session cleanup', suggestion: 'Destroy server-side session AND clear client-side cookies on logout' })
+    }
+  })
+
+  const totalIssues = session.length + csrf.length
+  const authScore = Math.max(0, 100 - session.length * 10 - csrf.length * 12)
+  const severity: Severity = csrf.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, session, csrf, authScore,
+    summary: session.length + ' session issue(s), ' + csrf.length + ' CSRF issue(s)' }
+}
+
+function formatAuthHardeningReport(r: AuthHardeningResult): string {
+  const lines: string[] = []
+  lines.push('# Authentication Hardening Analysis')
+  lines.push('')
+  lines.push('**Auth Hardening Score:** ' + r.authScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.session.length > 0) {
+    lines.push('## Session Security (' + r.session.length + ')')
+    r.session.forEach(s => lines.push('- Line ' + s.line + ': ' + s.suggestion))
+    lines.push('')
+  }
+  if (r.csrf.length > 0) {
+    lines.push('## CSRF Protection (' + r.csrf.length + ')')
+    r.csrf.forEach(c => lines.push('- Line ' + c.line + ': ' + c.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.23.0: DISTRIBUTED TRACING ====================
+
+interface TracingResult {
+  totalIssues: number
+  severity: Severity
+  propagation: { line: number; issue: string; suggestion: string }[]
+  sampling: { line: number; issue: string; suggestion: string }[]
+  tracingScore: number
+  summary: string
+}
+
+function analyzeDistributedTracing(code: string): TracingResult {
+  const lines = code.split('\n')
+  const propagation: TracingResult['propagation'] = []
+  const sampling: TracingResult['sampling'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/tracer|span|startSpan|createSpan/i) && !line.match(/traceId|parentSpanId|traceparent|trace.?context/)) {
+      propagation.push({ line: i + 1, issue: 'Span creation without context propagation', suggestion: 'Extract parent context from incoming traceparent header for distributed trace continuity' })
+    }
+
+    if (line.match(/http.*client|fetch|axios|request|grpc/i) && !line.match(/traceparent|tracestate|traceid|x.?b3|uber.?trace/)) {
+      propagation.push({ line: i + 1, issue: 'Outbound request without trace context injection', suggestion: 'Inject traceparent header into all outbound HTTP/gRPC calls' })
+    }
+
+    if (line.match(/sampler|sampling|sampleRate|head.?based/i) && !line.match(/adaptive|probabilistic|rate.?limiting|parent.?based/)) {
+      sampling.push({ line: i + 1, issue: 'Static sampling without adaptive strategy', suggestion: 'Use adaptive sampling: high rate for errors, low rate for healthy traffic' })
+    }
+
+    if (line.match(/jaeger|zipkin|otel|opentelemetry|tempo/i) && !line.match(/exporter|collector|endpoint|otlp/)) {
+      sampling.push({ line: i + 1, issue: 'Tracing SDK without exporter configuration', suggestion: 'Configure OTLP exporter endpoint for trace data collection' })
+    }
+
+    if (line.match(/span|tag|annotation|attribute/i) && !line.match(/error|status|http\.status|duration|latency/)) {
+      sampling.push({ line: i + 1, issue: 'Span without standard attributes', suggestion: 'Add http.status_code, error flag, and duration for trace analysis' })
+    }
+  })
+
+  const totalIssues = propagation.length + sampling.length
+  const tracingScore = Math.max(0, 100 - propagation.length * 12 - sampling.length * 8)
+  const severity: Severity = propagation.length > 1 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, propagation, sampling, tracingScore,
+    summary: propagation.length + ' propagation issue(s), ' + sampling.length + ' sampling issue(s)' }
+}
+
+function formatTracingReport(r: TracingResult): string {
+  const lines: string[] = []
+  lines.push('# Distributed Tracing Analysis')
+  lines.push('')
+  lines.push('**Tracing Score:** ' + r.tracingScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.propagation.length > 0) {
+    lines.push('## Context Propagation (' + r.propagation.length + ')')
+    r.propagation.forEach(p => lines.push('- Line ' + p.line + ': ' + p.suggestion))
+    lines.push('')
+  }
+  if (r.sampling.length > 0) {
+    lines.push('## Sampling Strategy (' + r.sampling.length + ')')
+    r.sampling.forEach(s => lines.push('- Line ' + s.line + ': ' + s.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.23.0: INFRASTRUCTURE AS CODE ====================
+
+interface IacQualityResult {
+  totalIssues: number
+  severity: Severity
+  drift: { line: number; issue: string; suggestion: string }[]
+  state: { line: number; issue: string; suggestion: string }[]
+  iacScore: number
+  summary: string
+}
+
+function analyzeIacQuality(code: string): IacQualityResult {
+  const lines = code.split('\n')
+  const drift: IacQualityResult['drift'] = []
+  const state: IacQualityResult['state'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/terraform|cloudformation|pulumi|cdk|bicep/i) && !line.match(/backend|state|lock|s3|blob|remote/)) {
+      state.push({ line: i + 1, issue: 'IaC without remote state backend', suggestion: 'Configure remote state (S3+DynamoDB, Azure Blob) with locking for team safety' })
+    }
+
+    if (line.match(/resource|output|variable|module/i) && line.match(/terraform|cloudformation|yaml|tf/i) && !line.match(/version|source|constraint|lock/)) {
+      drift.push({ line: i + 1, issue: 'IaC resource without version pinning', suggestion: 'Pin provider/module versions to prevent unexpected drift on init' })
+    }
+
+    if (line.match(/tfstate|terraform\.tfstate|stack\.json/i) && !line.match(/encrypt|kms|sse|at.?rest/)) {
+      state.push({ line: i + 1, issue: 'State file without encryption at rest', suggestion: 'Enable server-side encryption (KMS/SSE) for state files containing secrets' })
+    }
+
+    if (line.match(/plan|apply|deploy|provision/i) && !line.match(/validate|lint|checkov|tfsec|compliance/)) {
+      drift.push({ line: i + 1, issue: 'IaC deployment without security scanning', suggestion: 'Run Checkov/tfsec scan before apply to catch misconfigurations' })
+    }
+
+    if (line.match(/sensitive|secret|password|key|credential/i) && line.match(/variable|output|parameter/) && !line.match(/sensitive\s*=\s*true|NoEcho|secureString/)) {
+      state.push({ line: i + 1, issue: 'Sensitive value without protection flag', suggestion: 'Mark as sensitive=true (Terraform) or NoEcho (CFN) to prevent plaintext output' })
+    }
+  })
+
+  const totalIssues = drift.length + state.length
+  const iacScore = Math.max(0, 100 - drift.length * 10 - state.length * 12)
+  const severity: Severity = state.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, drift, state, iacScore,
+    summary: drift.length + ' drift issue(s), ' + state.length + ' state issue(s)' }
+}
+
+function formatIacQualityReport(r: IacQualityResult): string {
+  const lines: string[] = []
+  lines.push('# Infrastructure as Code Analysis')
+  lines.push('')
+  lines.push('**IaC Score:** ' + r.iacScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.drift.length > 0) {
+    lines.push('## Drift Prevention (' + r.drift.length + ')')
+    r.drift.forEach(d => lines.push('- Line ' + d.line + ': ' + d.suggestion))
+    lines.push('')
+  }
+  if (r.state.length > 0) {
+    lines.push('## State Management (' + r.state.length + ')')
+    r.state.forEach(s => lines.push('- Line ' + s.line + ': ' + s.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.23.0: CODE REVIEW AUTOMATION ====================
+
+interface ReviewAutomationResult {
+  totalIssues: number
+  severity: Severity
+  prSize: { line: number; issue: string; suggestion: string }[]
+  approval: { line: number; issue: string; suggestion: string }[]
+  reviewAutoScore: number
+  summary: string
+}
+
+function analyzeReviewWorkflow(code: string): ReviewAutomationResult {
+  const lines = code.split('\n')
+  const prSize: ReviewAutomationResult['prSize'] = []
+  const approval: ReviewAutomationResult['approval'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/pull.?request|merge.?request|pr.*template|mr.*template/i) && !line.match(/checklist|description|template|require/)) {
+      prSize.push({ line: i + 1, issue: 'PR template without checklist or description requirements', suggestion: 'Require PR template with: summary, testing steps, breaking change flag' })
+    }
+
+    if (line.match(/CODEOWNERS|code.?owner|reviewer|approve/i) && !line.match(/required|mandatory|minimum|count/)) {
+      approval.push({ line: i + 1, issue: 'CODEOWNERS without required approval count', suggestion: 'Require at least 2 approvals from CODEOWNERS for merge' })
+    }
+
+    if (line.match(/branch.*protect|protection.*rule|merge.*check|status.*check/i) && !line.match(/ci.*pass|test.*pass|build.*success|lint.*pass/)) {
+      approval.push({ line: i + 1, issue: 'Branch protection without CI status check requirement', suggestion: 'Require CI pipeline (test/lint/build) to pass before merge' })
+    }
+
+    if (line.match(/squash.*merge|rebase.*merge|merge.*commit/i) && !line.match(/linear.*history|no.*ff|clean.*history/)) {
+      prSize.push({ line: i + 1, issue: 'Merge strategy without linear history enforcement', suggestion: 'Use squash merge for feature branches to maintain clean linear history' })
+    }
+
+    if (line.match(/auto.*merge|auto.*approve|bot.*merge|merge.*bot/i) && !line.match(/ci.*pass|review.*required|check.*pass/)) {
+      approval.push({ line: i + 1, issue: 'Auto-merge without safety gates', suggestion: 'Only auto-merge when CI passes AND required reviews are approved' })
+    }
+  })
+
+  const totalIssues = prSize.length + approval.length
+  const reviewAutoScore = Math.max(0, 100 - prSize.length * 10 - approval.length * 12)
+  const severity: Severity = approval.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, prSize, approval, reviewAutoScore,
+    summary: prSize.length + ' PR size issue(s), ' + approval.length + ' approval issue(s)' }
+}
+
+function formatReviewAutomationReport(r: ReviewAutomationResult): string {
+  const lines: string[] = []
+  lines.push('# Code Review Automation Analysis')
+  lines.push('')
+  lines.push('**Review Auto Score:** ' + r.reviewAutoScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.prSize.length > 0) {
+    lines.push('## PR Size & Quality (' + r.prSize.length + ')')
+    r.prSize.forEach(p => lines.push('- Line ' + p.line + ': ' + p.suggestion))
+    lines.push('')
+  }
+  if (r.approval.length > 0) {
+    lines.push('## Approval Gates (' + r.approval.length + ')')
+    r.approval.forEach(a => lines.push('- Line ' + a.line + ': ' + a.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
 // ==================== PLUGIN REGISTRATION ====================
 
 export function apply(ctx: Context) {
@@ -16989,11 +17541,125 @@ export function apply(ctx: Context) {
       code: { type: 'string', required: true, description: 'The code to analyze for quality gate metrics' }
     },
     output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
-    async execute(args: { code: string }) {
-      const result = analyzeQualityGate(args.code)
-      return formatQualityGateReport(result)
-    }
-  }))
+async execute(args: { code: string }) {
+const result = analyzeQualityGate(args.code)
+return formatQualityGateReport(result)
+}
+}))
 
-  console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design, container_security, ml_pipeline, api_deprecation, design_system, pwa_compliance, type_system, green_computing, realtime_collab, a11y_deep, i18n_deep, css_architecture, state_machine, web_components, resilience, module_federation, review_automation, observability, migration_safety, edge_computing, api_versioning, wasm_advanced, feature_toggles, email_deliverability, seo_analysis, monorepo_boundaries, ddd_patterns, mf_runtime, realtime_protocols, data_pipeline, gateway_deep, test_rigor, quality_gate`)
+// ==================== V0.23.0 REGISTRATIONS (Tools 146-153) ====================
+
+// Tool 146: GraphQL Schema Design
+ctx.tools.register(defineTool({
+  name: 'graphql_schema',
+  description: 'Analyze GraphQL schema: N+1 query risks, depth/complexity limits, recursive type guards, DataLoader usage.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The GraphQL schema/resolver code to analyze' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeGraphqlSchema(args.code)
+    return formatGraphqlSchemaReport(result)
+  }
+}))
+
+// Tool 147: Event Sourcing Integrity
+ctx.tools.register(defineTool({
+  name: 'event_sourcing_integrity',
+  description: 'Analyze event sourcing: optimistic concurrency, idempotency, snapshot strategy, ordering guarantees.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The event sourcing code to analyze' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeEventSourcingIntegrity(args.code)
+    return formatEventSourcingIntegrityReport(result)
+  }
+}))
+
+// Tool 148: Rate Limiting Patterns
+ctx.tools.register(defineTool({
+  name: 'rate_limiting',
+  description: 'Analyze rate limiting: token/leaky bucket, distributed Redis backing, 429 headers, key generators.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The rate limiting code to analyze' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeRateLimitPatterns(args.code)
+    return formatRateLimitPatternReport(result)
+  }
+}))
+
+// Tool 149: Database Migration Safety
+ctx.tools.register(defineTool({
+  name: 'migration_safety',
+  description: 'Analyze DB migration safety: expand-contract pattern, CONCURRENTLY indexes, transaction rollback.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The migration code/SQL to analyze' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeDbMigrationSafety(args.code)
+    return formatMigrationSafetyReport(result)
+  }
+}))
+
+// Tool 150: Authentication Hardening
+ctx.tools.register(defineTool({
+  name: 'auth_hardening',
+  description: 'Analyze auth hardening: cookie security flags, session fixation, CSRF tokens, logout cleanup.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The authentication code to analyze' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeAuthHardening(args.code)
+    return formatAuthHardeningReport(result)
+  }
+}))
+
+// Tool 151: Distributed Tracing
+ctx.tools.register(defineTool({
+  name: 'distributed_tracing',
+  description: 'Analyze distributed tracing: context propagation, adaptive sampling, OTLP exporter, span attributes.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The tracing code to analyze' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeDistributedTracing(args.code)
+    return formatTracingReport(result)
+  }
+}))
+
+// Tool 152: Infrastructure as Code
+ctx.tools.register(defineTool({
+  name: 'infrastructure_as_code',
+  description: 'Analyze IaC quality: remote state backend, version pinning, drift detection, sensitive flags.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The IaC code (Terraform/CloudFormation) to analyze' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeIacQuality(args.code)
+    return formatIacQualityReport(result)
+  }
+}))
+
+// Tool 153: Code Review Automation
+ctx.tools.register(defineTool({
+  name: 'review_automation',
+  description: 'Analyze review automation: PR template, CODEOWNERS, branch protection, merge strategy, auto-merge gates.',
+  parameters: {
+    code: { type: 'string', required: true, description: 'The review workflow code/config to analyze' }
+  },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeReviewWorkflow(args.code)
+    return formatReviewAutomationReport(result)
+  }
+}))
+
+console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design, container_security, ml_pipeline, api_deprecation, design_system, pwa_compliance, type_system, green_computing, realtime_collab, a11y_deep, i18n_deep, css_architecture, state_machine, web_components, resilience, module_federation, review_automation, observability, migration_safety, edge_computing, api_versioning, wasm_advanced, feature_toggles, email_deliverability, seo_analysis, monorepo_boundaries, ddd_patterns, mf_runtime, realtime_protocols, data_pipeline, gateway_deep, test_rigor, quality_gate, graphql_schema, event_sourcing_integrity, rate_limiting, migration_safety, auth_hardening, distributed_tracing, infrastructure_as_code, review_automation`)
 }

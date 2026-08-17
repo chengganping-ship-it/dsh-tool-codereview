@@ -1,7 +1,7 @@
 {
   "name": "dsh-tool-codereview",
-  "version": "0.22.0",
-  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 145 tools, Monorepo, DDD, Microfrontends, Realtime, Data Pipeline, Gateway, Test Rigor, Quality Gate",
+  "version": "0.23.0",
+  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 153 tools, GraphQL, Event Sourcing, Rate Limiting, Migration, Auth, Tracing, IaC, Review Auto",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
