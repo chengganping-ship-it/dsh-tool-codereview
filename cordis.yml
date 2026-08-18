@@ -1,10 +1,10 @@
-# DeepSeek Harness Plugin: Code Review Assistant v0.76.0
-# Enterprise-grade code analysis toolkit with 582 comprehensive tools
+# DeepSeek Harness Plugin: Code Review Assistant v0.77.0
+# Enterprise-grade code analysis toolkit with 590 comprehensive tools
 
 - id: dsh-tool-codereview
   name: dsh-tool-codereview
-  version: 0.76.0
-  description: Enterprise Code Review & Security Scan - 582 tools including Cross Tool Contamination, Agent Objective Override, Tool Argument Injection, LLM Hallucination Amplification, Token Limit Exhaustion, Agent Privilege Abuse, Multi Agent Collusion, Tool Response Manipulation
+  version: 0.77.0
+  description: Enterprise Code Review & Security Scan - 590 tools including Unsafe Tool Composition, Credential Harvesting Via Tool, Tool Execution Ordering Attack, Agent Decoy Invocation, Sandbox Escape Via Tool, Recursive Tool Spawn, Tool Output Sidechannel, Prompt Leakage Via Memory
   author: chengganping-ship-it
   tools:
     - code_review
@@ -586,3 +586,11 @@
     - agent_privilege_abuse
     - multi_agent_collusion
     - tool_response_manipulation
+    - unsafe_tool_composition
+    - credential_harvesting_via_tool
+    - tool_execution_ordering_attack
+    - agent_decoy_invocation
+    - sandbox_escape_via_tool
+    - recursive_tool_spawn
+    - tool_output_sidechannel
+    - prompt_leakage_via_memory
