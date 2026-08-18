@@ -1,7 +1,7 @@
 {
   "name": "dsh-tool-codereview",
   "version": "0.52.0",
-  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 385 tools, API Latency Distribution, Cross-Service Health, Consumer Offset Monitor, Config Value Detection, DB Connection Pool, Background Job Reliability, Canary Release",
+  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 390 tools, Subdomain Takeover, JWT Algorithm Confusion, OAuth Flow Security, gRPC Metadata Leak, WebSocket Security, Dependency Confusion, Timing Attack, Unsafe YAML Load",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
