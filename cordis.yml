@@ -3,8 +3,8 @@
 
 - id: dsh-tool-codereview
   name: dsh-tool-codereview
-  version: 0.84.0
-  description: Enterprise Code Review & Security Scan - 646 tools including Agent Output Suppression, Tool Permission Boundary Breach, Agent Instruction Loop Adv, Tool Schema Manipulation Adv, Agent Privilege Creep, Tool Output Manipulation Adv, Agent Session Fixation Adv, Tool Execution Hijack
+  version: 0.85.0
+  description: Enterprise Code Review & Security Scan - 654 tools including Agent Output Suppression, Tool Permission Boundary Breach, Agent Instruction Loop Adv, Tool Schema Manipulation Adv, Agent Privilege Creep, Tool Output Manipulation Adv, Agent Session Fixation Adv, Tool Execution Hijack
   author: chengganping-ship-it
   tools:
     - code_review
@@ -650,3 +650,11 @@
     - tool_output_manipulation_adv
     - agent_session_fixation_adv
     - tool_execution_hijack
+    - tool_schema_injection_adv
+    - agent_goal_subversion
+    - tool_output_sidechannel_adv
+    - agent_memory_overwrite
+    - tool_permission_escalation_adv
+    - agent_instruction_splice
+    - tool_response_substitution
+    - agent_context_leakage
