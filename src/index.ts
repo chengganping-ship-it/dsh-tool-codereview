@@ -82,7 +82,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 export const name = 'dsh-tool-codereview'
 export const inject = ['tools']
 
-const VERSION = '0.58.0'
+const VERSION = '0.59.0'
 
 // ==================== TYPES ====================
 
@@ -30101,6 +30101,230 @@ function formatMissingPermissionsPolicyReport(r: MissingPermissionsPolicyResult)
   return l.join('\n')
 }
 
+// ==================== V0.59.0: CORS SAFELIST BYPASS ====================
+
+interface CORSSafelistResult { totalIssues: number; severity: Severity; wildcard: { line: number; issue: string; suggestion: string }[]; reflection: { line: number; issue: string; suggestion: string }[]; nullOrigin: { line: number; issue: string; suggestion: string }[]; corsSafelistScore: number; summary: string }
+
+function analyzeCORSSafelist(code: string): CORSSafelistResult {
+  const lines = code.split('\n')
+  const wildcard: CORSSafelistResult['wildcard'] = []
+  const reflection: CORSSafelistResult['reflection'] = []
+  const nullOrigin: CORSSafelistResult['nullOrigin'] = []
+  lines.forEach((line, i) => {
+    if (line.includes('Access-Control-Allow-Origin: *') || (line.includes('cors(') && line.includes('origin: *'))) { wildcard.push({ line: i + 1, issue: 'Wildcard CORS origin allows any domain', suggestion: 'Restrict CORS to specific trusted origins' }) }
+    if (/(origin|Origin)\s*=\s*(req|request|ctx)\.(headers|body|query)/.test(line) && !/includes|===|!==/.test(line)) { reflection.push({ line: i + 1, issue: 'Origin reflected from user input without validation', suggestion: 'Validate origin against an allowlist before reflecting' }) }
+    if (/null/.test(line) && /origin|Origin/.test(line) && !/null\s*!==|null\s*===|!= null|== null/.test(line)) { nullOrigin.push({ line: i + 1, issue: 'Null origin may be accepted without proper check', suggestion: 'Explicitly reject null origin or validate against allowlist' }) }
+  })
+  const totalIssues = wildcard.length + reflection.length + nullOrigin.length
+  const severity: Severity = totalIssues > 5 ? 'critical' : totalIssues > 2 ? 'error' : totalIssues > 0 ? 'warning' : 'info'
+  const corsSafelistScore = Math.max(0, 100 - totalIssues * 15)
+  return { totalIssues, severity, wildcard, reflection, nullOrigin, corsSafelistScore, summary: `CORS Safelist: ${totalIssues} issue(s). Score: ${corsSafelistScore}/100` }
+}
+
+function formatCORSSafelistReport(r: CORSSafelistResult): string {
+  const l: string[] = ['# CORS Safelist Bypass Analysis', `**Severity:** ${r.severity} | **Score:** ${r.corsSafelistScore}/100`, '']
+  if (r.wildcard.length > 0) { l.push('## Wildcard (' + r.wildcard.length + ')'); r.wildcard.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.reflection.length > 0) { l.push('## Reflection (' + r.reflection.length + ')'); r.reflection.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.nullOrigin.length > 0) { l.push('## Null Origin (' + r.nullOrigin.length + ')'); r.nullOrigin.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.59.0: IFRAME SANDBOX POLICY ====================
+
+interface IframeSandboxPolicyResult { totalIssues: number; severity: Severity; missing: { line: number; issue: string; suggestion: string }[]; allowAll: { line: number; issue: string; suggestion: string }[]; scripts: { line: number; issue: string; suggestion: string }[]; iframeSandboxScore: number; summary: string }
+
+function analyzeIframeSandboxPolicy(code: string): IframeSandboxPolicyResult {
+  const lines = code.split('\n')
+  const missing: IframeSandboxPolicyResult['missing'] = []
+  const allowAll: IframeSandboxPolicyResult['allowAll'] = []
+  const scripts: IframeSandboxPolicyResult['scripts'] = []
+  lines.forEach((line, i) => {
+    if (/<iframe/i.test(line) && !/sandbox/i.test(line)) { missing.push({ line: i + 1, issue: 'iframe without sandbox attribute', suggestion: 'Add sandbox attribute with minimal required permissions' }) }
+    if (/sandbox\s*=\s*["']allow-[^"']*allow-scripts[^"']*["']/i.test(line) || /sandbox\s*=\s*["'][^"']*allow-scripts[^"']*allow-same-origin[^"']*["']/i.test(line)) { allowAll.push({ line: i + 1, issue: 'Sandbox allows scripts + same-origin (defeats purpose)', suggestion: 'Avoid combining allow-scripts with allow-same-origin' }) }
+    if (/sandbox/i.test(line) && /allow-scripts/i.test(line) && !/allow-same-origin/i.test(line)) { scripts.push({ line: i + 1, issue: 'Sandbox allows scripts without same-origin restriction', suggestion: 'Review if allow-scripts is truly needed' }) }
+  })
+  const totalIssues = missing.length + allowAll.length + scripts.length
+  const severity: Severity = totalIssues > 5 ? 'critical' : totalIssues > 2 ? 'error' : totalIssues > 0 ? 'warning' : 'info'
+  const iframeSandboxScore = Math.max(0, 100 - totalIssues * 15)
+  return { totalIssues, severity, missing, allowAll, scripts, iframeSandboxScore, summary: `Iframe Sandbox: ${totalIssues} issue(s). Score: ${iframeSandboxScore}/100` }
+}
+
+function formatIframeSandboxPolicyReport(r: IframeSandboxPolicyResult): string {
+  const l: string[] = ['# Iframe Sandbox Policy Analysis', `**Severity:** ${r.severity} | **Score:** ${r.iframeSandboxScore}/100`, '']
+  if (r.missing.length > 0) { l.push('## Missing Sandbox (' + r.missing.length + ')'); r.missing.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.allowAll.length > 0) { l.push('## Allow All (' + r.allowAll.length + ')'); r.allowAll.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.scripts.length > 0) { l.push('## Scripts Allowed (' + r.scripts.length + ')'); r.scripts.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.59.0: REPORT-TO HEADER ====================
+
+interface ReportToHeaderResult { totalIssues: number; severity: Severity; missing: { line: number; issue: string; suggestion: string }[]; invalid: { line: number; issue: string; suggestion: string }[]; endpoint: { line: number; issue: string; suggestion: string }[]; reportToScore: number; summary: string }
+
+function analyzeReportToHeader(code: string): ReportToHeaderResult {
+  const lines = code.split('\n')
+  const missing: ReportToHeaderResult['missing'] = []
+  const invalid: ReportToHeaderResult['invalid'] = []
+  const endpoint: ReportToHeaderResult['endpoint'] = []
+  lines.forEach((line, i) => {
+    if (/report-uri/i.test(line) && !/report-to/i.test(line)) { missing.push({ line: i + 1, issue: 'Using deprecated report-uri without report-to', suggestion: 'Add Report-To header alongside report-uri' }) }
+    if (/Report-To/i.test(line) && !/"group"/.test(line)) { invalid.push({ line: i + 1, issue: 'Report-To header missing group property', suggestion: 'Define a named group for reporting endpoints' }) }
+    if (/Report-To/i.test(line) && /"url"/.test(line) && !/https?:\/\//.test(line)) { endpoint.push({ line: i + 1, issue: 'Report-To endpoint URL may not be absolute', suggestion: 'Use absolute HTTPS URLs for report endpoints' }) }
+  })
+  const totalIssues = missing.length + invalid.length + endpoint.length
+  const severity: Severity = totalIssues > 5 ? 'critical' : totalIssues > 2 ? 'error' : totalIssues > 0 ? 'warning' : 'info'
+  const reportToScore = Math.max(0, 100 - totalIssues * 15)
+  return { totalIssues, severity, missing, invalid, endpoint, reportToScore, summary: `Report-To Header: ${totalIssues} issue(s). Score: ${reportToScore}/100` }
+}
+
+function formatReportToHeaderReport(r: ReportToHeaderResult): string {
+  const l: string[] = ['# Report-To Header Analysis', `**Severity:** ${r.severity} | **Score:** ${r.reportToScore}/100`, '']
+  if (r.missing.length > 0) { l.push('## Missing Report-To (' + r.missing.length + ')'); r.missing.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.invalid.length > 0) { l.push('## Invalid Config (' + r.invalid.length + ')'); r.invalid.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.endpoint.length > 0) { l.push('## Endpoint Issues (' + r.endpoint.length + ')'); r.endpoint.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.59.0: NEL HEADER ====================
+
+interface NELHeaderResult { totalIssues: number; severity: Severity; missing: { line: number; issue: string; suggestion: string }[]; invalid: { line: number; issue: string; suggestion: string }[]; sampling: { line: number; issue: string; suggestion: string }[]; nelScore: number; summary: string }
+
+function analyzeNELHeader(code: string): NELHeaderResult {
+  const lines = code.split('\n')
+  const missing: NELHeaderResult['missing'] = []
+  const invalid: NELHeaderResult['invalid'] = []
+  const sampling: NELHeaderResult['sampling'] = []
+  lines.forEach((line, i) => {
+    if (/report-to/i.test(line) && !/nel/i.test(line)) { missing.push({ line: i + 1, issue: 'Report-To present but NEL header missing', suggestion: 'Add NEL (Network Error Logging) header for network error reporting' }) }
+    if (/NEL/i.test(line) && !/"report_to"/.test(line)) { invalid.push({ line: i + 1, issue: 'NEL header missing report_to property', suggestion: 'Specify report_to in NEL configuration' }) }
+    if (/NEL/i.test(line) && /"success_fraction"/.test(line) && /0\.[0-4]/.test(line)) { sampling.push({ line: i + 1, issue: 'NEL success_fraction too low for effective monitoring', suggestion: 'Set success_fraction to at least 0.5 for meaningful data' }) }
+  })
+  const totalIssues = missing.length + invalid.length + sampling.length
+  const severity: Severity = totalIssues > 5 ? 'critical' : totalIssues > 2 ? 'error' : totalIssues > 0 ? 'warning' : 'info'
+  const nelScore = Math.max(0, 100 - totalIssues * 15)
+  return { totalIssues, severity, missing, invalid, sampling, nelScore, summary: `NEL Header: ${totalIssues} issue(s). Score: ${nelScore}/100` }
+}
+
+function formatNELHeaderReport(r: NELHeaderResult): string {
+  const l: string[] = ['# NEL Header Analysis', `**Severity:** ${r.severity} | **Score:** ${r.nelScore}/100`, '']
+  if (r.missing.length > 0) { l.push('## Missing NEL (' + r.missing.length + ')'); r.missing.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.invalid.length > 0) { l.push('## Invalid Config (' + r.invalid.length + ')'); r.invalid.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.sampling.length > 0) { l.push('## Sampling Issues (' + r.sampling.length + ')'); r.sampling.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.59.0: EXPECT-CT HEADER ====================
+
+interface ExpectCTHeaderResult { totalIssues: number; severity: Severity; missing: { line: number; issue: string; suggestion: string }[]; enforce: { line: number; issue: string; suggestion: string }[]; maxAge: { line: number; issue: string; suggestion: string }[]; expectCTScore: number; summary: string }
+
+function analyzeExpectCTHeader(code: string): ExpectCTHeaderResult {
+  const lines = code.split('\n')
+  const missing: ExpectCTHeaderResult['missing'] = []
+  const enforce: ExpectCTHeaderResult['enforce'] = []
+  const maxAge: ExpectCTHeaderResult['maxAge'] = []
+  lines.forEach((line, i) => {
+    if (/Strict-Transport-Security/i.test(line) && !/Expect-CT/i.test(code.substring(Math.max(0, i * 50), i * 50 + 500))) { missing.push({ line: i + 1, issue: 'HSTS present but Expect-CT header missing', suggestion: 'Add Expect-CT header for certificate transparency enforcement' }) }
+    if (/Expect-CT/i.test(line) && !/enforce/i.test(line)) { enforce.push({ line: i + 1, issue: 'Expect-CT without enforce directive', suggestion: 'Add enforce directive for active CT enforcement' }) }
+    if (/Expect-CT/i.test(line) && /max-age\s*=\s*\d+/.test(line) && /max-age\s*=\s*\d{1,5}(\D|$)/.test(line)) { maxAge.push({ line: i + 1, issue: 'Expect-CT max-age may be too short', suggestion: 'Set max-age to at least 86400 seconds (1 day)' }) }
+  })
+  const totalIssues = missing.length + enforce.length + maxAge.length
+  const severity: Severity = totalIssues > 5 ? 'critical' : totalIssues > 2 ? 'error' : totalIssues > 0 ? 'warning' : 'info'
+  const expectCTScore = Math.max(0, 100 - totalIssues * 15)
+  return { totalIssues, severity, missing, enforce, maxAge, expectCTScore, summary: `Expect-CT Header: ${totalIssues} issue(s). Score: ${expectCTScore}/100` }
+}
+
+function formatExpectCTHeaderReport(r: ExpectCTHeaderResult): string {
+  const l: string[] = ['# Expect-CT Header Analysis', `**Severity:** ${r.severity} | **Score:** ${r.expectCTScore}/100`, '']
+  if (r.missing.length > 0) { l.push('## Missing Expect-CT (' + r.missing.length + ')'); r.missing.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.enforce.length > 0) { l.push('## No Enforce (' + r.enforce.length + ')'); r.enforce.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.maxAge.length > 0) { l.push('## Max-Age Issues (' + r.maxAge.length + ')'); r.maxAge.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.59.0: CORS CREDENTIALS ====================
+
+interface CORSCredentialsResult { totalIssues: number; severity: Severity; wildcardCred: { line: number; issue: string; suggestion: string }[]; missingCred: { line: number; issue: string; suggestion: string }[]; insecureCred: { line: number; issue: string; suggestion: string }[]; corsCredentialsScore: number; summary: string }
+
+function analyzeCORSCredentials(code: string): CORSCredentialsResult {
+  const lines = code.split('\n')
+  const wildcardCred: CORSCredentialsResult['wildcardCred'] = []
+  const missingCred: CORSCredentialsResult['missingCred'] = []
+  const insecureCred: CORSCredentialsResult['insecureCred'] = []
+  lines.forEach((line, i) => {
+    if (/Access-Control-Allow-Origin:\s*\*/.test(line) && /Allow-Credentials:\s*true/i.test(line)) { wildcardCred.push({ line: i + 1, issue: 'Wildcard origin with credentials enabled (blocked by browsers but dangerous)', suggestion: 'Never combine wildcard origin with credentials' }) }
+    if (/withCredentials:\s*true/i.test(line) && !/Allow-Credentials/i.test(code.substring(Math.max(0, i * 50), i * 50 + 500))) { missingCred.push({ line: i + 1, issue: 'Client sends credentials but server may not allow them', suggestion: 'Ensure server responds with Access-Control-Allow-Credentials: true' }) }
+    if (/Allow-Credentials:\s*true/i.test(line) && /Allow-Origin:\s*http:\/\//.test(line)) { insecureCred.push({ line: i + 1, issue: 'Credentials allowed over insecure HTTP', suggestion: 'Only allow credentials over HTTPS origins' }) }
+  })
+  const totalIssues = wildcardCred.length + missingCred.length + insecureCred.length
+  const severity: Severity = totalIssues > 5 ? 'critical' : totalIssues > 2 ? 'error' : totalIssues > 0 ? 'warning' : 'info'
+  const corsCredentialsScore = Math.max(0, 100 - totalIssues * 15)
+  return { totalIssues, severity, wildcardCred, missingCred, insecureCred, corsCredentialsScore, summary: `CORS Credentials: ${totalIssues} issue(s). Score: ${corsCredentialsScore}/100` }
+}
+
+function formatCORSCredentialsReport(r: CORSCredentialsResult): string {
+  const l: string[] = ['# CORS Credentials Analysis', `**Severity:** ${r.severity} | **Score:** ${r.corsCredentialsScore}/100`, '']
+  if (r.wildcardCred.length > 0) { l.push('## Wildcard + Credentials (' + r.wildcardCred.length + ')'); r.wildcardCred.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.missingCred.length > 0) { l.push('## Missing Credentials (' + r.missingCred.length + ')'); r.missingCred.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.insecureCred.length > 0) { l.push('## Insecure Credentials (' + r.insecureCred.length + ')'); r.insecureCred.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.59.0: SERVICE WORKER SCOPE ====================
+
+interface ServiceWorkerScopeResult { totalIssues: number; severity: Severity; missingScope: { line: number; issue: string; suggestion: string }[]; broadScope: { line: number; issue: string; suggestion: string }[]; httpScope: { line: number; issue: string; suggestion: string }[]; serviceWorkerScopeScore: number; summary: string }
+
+function analyzeServiceWorkerScope(code: string): ServiceWorkerScopeResult {
+  const lines = code.split('\n')
+  const missingScope: ServiceWorkerScopeResult['missingScope'] = []
+  const broadScope: ServiceWorkerScopeResult['broadScope'] = []
+  const httpScope: ServiceWorkerScopeResult['httpScope'] = []
+  lines.forEach((line, i) => {
+    if (/navigator\.serviceWorker\.register/i.test(line) && !/scope/.test(line)) { missingScope.push({ line: i + 1, issue: 'Service worker registered without explicit scope', suggestion: 'Specify scope to limit service worker control' }) }
+    if (/scope:\s*['"]\//.test(line)) { broadScope.push({ line: i + 1, issue: 'Service worker scope set to root (controls entire origin)', suggestion: 'Restrict scope to specific path for better isolation' }) }
+    if (/navigator\.serviceWorker\.register/i.test(line) && /http:\/\//.test(line) && !/localhost|127\.0\.0\.1/.test(line)) { httpScope.push({ line: i + 1, issue: 'Service worker registered on non-HTTPS origin', suggestion: 'Service workers require HTTPS (except localhost)' }) }
+  })
+  const totalIssues = missingScope.length + broadScope.length + httpScope.length
+  const severity: Severity = totalIssues > 5 ? 'critical' : totalIssues > 2 ? 'error' : totalIssues > 0 ? 'warning' : 'info'
+  const serviceWorkerScopeScore = Math.max(0, 100 - totalIssues * 15)
+  return { totalIssues, severity, missingScope, broadScope, httpScope, serviceWorkerScopeScore, summary: `Service Worker Scope: ${totalIssues} issue(s). Score: ${serviceWorkerScopeScore}/100` }
+}
+
+function formatServiceWorkerScopeReport(r: ServiceWorkerScopeResult): string {
+  const l: string[] = ['# Service Worker Scope Analysis', `**Severity:** ${r.severity} | **Score:** ${r.serviceWorkerScopeScore}/100`, '']
+  if (r.missingScope.length > 0) { l.push('## Missing Scope (' + r.missingScope.length + ')'); r.missingScope.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.broadScope.length > 0) { l.push('## Broad Scope (' + r.broadScope.length + ')'); r.broadScope.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.httpScope.length > 0) { l.push('## HTTP Scope (' + r.httpScope.length + ')'); r.httpScope.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.59.0: CLIENT HINTS ====================
+
+interface ClientHintsResult { totalIssues: number; severity: Severity; missingHints: { line: number; issue: string; suggestion: string }[]; insecureHints: { line: number; issue: string; suggestion: string }[]; criticalHints: { line: number; issue: string; suggestion: string }[]; clientHintsScore: number; summary: string }
+
+function analyzeClientHints(code: string): ClientHintsResult {
+  const lines = code.split('\n')
+  const missingHints: ClientHintsResult['missingHints'] = []
+  const insecureHints: ClientHintsResult['insecureHints'] = []
+  const criticalHints: ClientHintsResult['criticalHints'] = []
+  lines.forEach((line, i) => {
+    if (/Accept-CH/i.test(line) && !/Sec-CH-UA/i.test(line)) { missingHints.push({ line: i + 1, issue: 'Accept-CH header without user-agent hints', suggestion: 'Consider adding Sec-CH-UA hints for responsive design' }) }
+    if (/Accept-CH/i.test(line) && /DPR|Viewport-Width|Width/i.test(line) && !/https/i.test(code.substring(Math.max(0, i * 50), i * 50 + 500))) { insecureHints.push({ line: i + 1, issue: 'Client hints may leak device info over insecure connection', suggestion: 'Only send client hints over HTTPS' }) }
+    if (/Critical-CH/i.test(line) && !/Accept-CH/i.test(code.substring(Math.max(0, i * 50), i * 50 + 500))) { criticalHints.push({ line: i + 1, issue: 'Critical-CH without Accept-CH header', suggestion: 'Define Accept-CH before marking hints as critical' }) }
+  })
+  const totalIssues = missingHints.length + insecureHints.length + criticalHints.length
+  const severity: Severity = totalIssues > 5 ? 'critical' : totalIssues > 2 ? 'error' : totalIssues > 0 ? 'warning' : 'info'
+  const clientHintsScore = Math.max(0, 100 - totalIssues * 15)
+  return { totalIssues, severity, missingHints, insecureHints, criticalHints, clientHintsScore, summary: `Client Hints: ${totalIssues} issue(s). Score: ${clientHintsScore}/100` }
+}
+
+function formatClientHintsReport(r: ClientHintsResult): string {
+  const l: string[] = ['# Client Hints Analysis', `**Severity:** ${r.severity} | **Score:** ${r.clientHintsScore}/100`, '']
+  if (r.missingHints.length > 0) { l.push('## Missing Hints (' + r.missingHints.length + ')'); r.missingHints.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.insecureHints.length > 0) { l.push('## Insecure Hints (' + r.insecureHints.length + ')'); r.insecureHints.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.criticalHints.length > 0) { l.push('## Critical Hints (' + r.criticalHints.length + ')'); r.criticalHints.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
 // ==================== V0.49.0: PATH TRAVERSAL PREVENTION ====================
 
 interface PathTraversalPreventionResult { totalIssues: number; severity: Severity; traversal: { line: number; issue: string; suggestion: string }[]; symlink: { line: number; issue: string; suggestion: string }[]; canonical: { line: number; issue: string; suggestion: string }[]; pathTraversalScore: number; summary: string }
@@ -37193,5 +37417,93 @@ ctx.tools.register(defineTool({
   }
 }))
 
-console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design, container_security, ml_pipeline, api_deprecation, design_system, pwa_compliance, type_system, green_computing, realtime_collab, a11y_deep, i18n_deep, css_architecture, state_machine, web_components, resilience, module_federation, review_automation, observability, migration_safety, edge_computing, api_versioning, wasm_advanced, feature_toggles, email_deliverability, seo_analysis, monorepo_boundaries, ddd_patterns, mf_runtime, realtime_protocols, data_pipeline, gateway_deep, test_rigor, quality_gate, graphql_schema, event_sourcing_integrity, rate_limiting, migration_safety, auth_hardening, distributed_tracing, infrastructure_as_code, review_automation, contract_testing, sec_headers_deep, privacy_compliance, concurrency_patterns, cloud_native, error_recovery, system_design, dependency_injection, api_versioning, serialization_perf, memory_allocation, build_pipeline, error_messages, logging_discipline, config_as_code, component_interface, token_hygiene, query_antipatterns, websocket_lifecycle, graphql_perf, deprecation_tracking, code_splitting_audit, css_arch_deep, sec_dep_audit, webhook_signature, oauth_security, email_infra, health_check_depth, cors_security, feature_rollout, secret_lifecycle, rate_limit_strategy, container_security_scan, grpc_security, data_residency, deployment_progressive, obs_exemplar, data_pipeline_quality, service_mesh, plugin_architecture, mobile_app_security, data_masking, core_web_vitals, infra_cost, api_gateway_config, css_in_js_perf, crdt_state_sync, resource_quota, browser_compat_audit, floating_point, snapshot_testing, event_schema, form_validation, retry_idempotency, a11y_semantics, race_condition, cache_invalidation, data_loader_opt, event_versioning, connection_lifecycle, csp_nonce, struct_error_ctx, stream_backpressure, identifier_collision, graphql_query_depth, auth_token_rotation, mq_dead_letter, file_upload_sec, query_plan, encryption_at_rest, ws_connection_state, rate_limit_policy, payment_idempotency, cron_reliability, immutable_data, data_residency_compliance, response_envelope, compression_negotiation, dns_health, graceful_degradation, api_deprecation_strategy, db_safety, log_sampling, slo_tracking, api_key_mgmt, data_lineage, infra_drift, schema_evolution, wasm_interop, data_partition, plugin_lifecycle, time_sync, feature_store, vector_db, api_composition, audit_trail, graphql_cost, session_mgmt, csv_injection, tls_config, distributed_lock, event_dedup, allocator_pattern, webhook_retry, money_handling, pagination, resource_leak, c4_architecture, semaphore, dns_optimization, content_negotiation, retry_budget, cache_stampede, gateway_routing, search_sanitization, rate_limit_headers, data_consistency, mobile_hardening, build_config, grpc_interceptors, memory_alignment, saga_orchestration, ws_backpressure, bff_pattern, immutable_infra, csp_reporting, token_bucket, circuit_breaker, change_data_capture, api_federation, cache_warming, conn_multiplex, least_privilege, tracing_sampling, json_patch, event_snapshot, adaptive_rate, graceful_retry, encryption_transit, image_scanning, deadlock_detect, deprecation_comm, metrics_cardinality, api_key_rotation, data_retention, flag_cleanup, log_redaction, sli_slo, graceful_degrade, pagination_consistency, dep_drift, cqrs_pattern, outbox_idempotency, api_version_negotiation, connection_backpressure, graceful_startup, secret_detection, error_code_registry, cache_key_design, db_migration_safety, retry_strategy, health_check_completeness, log_structuring, event_schema_evolution, graceful_shutdown_timing, config_hot_reload, mutual_tls, dead_letter_queue, rate_limit_header, websocket_pool, container_image_opt, dns_prefetch_config, async_memory_leak, api_idempotency_key, service_mesh_policy, pagination_safety, background_job_idempotency, feature_flag_lifecycle, request_deduplication, connection_leak, payload_compression, cors_preflight_cache, timestamp_monotonicity, search_query_safety, api_response_cache, thread_pool_starvation, db_slow_query, url_validation, memory_alignment_audit, cache_stampede_guard, log_injection_prevention, temp_file_security, jwt_token_validation, file_permission_audit, dns_rebinding_protection, integer_overflow_detection, command_injection_prevention, csrf_token_validation, path_traversal_prevention, insecure_deserialization, mass_assignment, weak_cryptography, ssti_injection, file_upload_validation, hardcoded_secrets, unsafe_reflection, xxe_injection_prevention, prototype_pollution, async_race_condition, clickjacking_protection, insecure_cors_config, unrestricted_file_deletion, content_type_header, weak_password_policy, crlf_injection_prevention, session_timeout_policy, zip_slip_prevention, ssrf_detection, process_env_leak, redos_complexity, null_byte_injection, mime_type_spoofing, subdomain_takeover, jwt_algorithm_confusion, oauth_flow_security, grpc_metadata_leak, websocket_security, dependency_confusion, timing_attack, unsafe_yaml_load, api_latency, cross_service_health, consumer_offset, config_value, db_connection_pool, background_job, canary_release, certificate_validation, memory_safety, input_sanitization, crypto_random, session_fixation, open_redirect, xml_bomb, ldap_injection, graphql_injection, nosql_injection, graphql_depth_limit, path_normalization, buffer_overread, http_parameter_pollution, dom_clobbering, postmessage_security, xml_signature_wrapping, insecure_random, missing_content_length, cookie_prefix_bypass, unicode_normalization, websocket_origin_bypass, missing_x_frame_options, sql_concatenation, missing_strict_transport_security, insecure_direct_object_reference, authentication_bypass, privilege_escalation, missing_csrf_protection, insecure_jwt_storage, missing_rate_limiting, debug_mode_enabled, unsafe_eval_usage, sql_injection_orm, race_condition_toctou, memory_corruption_risk, insecure_webhook_verification, api_version_deprecation, prototype_pollution_vuln, dns_rebinding_risk, host_header_injection, csv_formula_injection, log_forging_risk, missing_csp_directive, insecure_cookie_scope, tabnabbing_risk, subresource_integrity, missing_permissions_policy`)
+ctx.tools.register(defineTool({
+  name: 'cors_safelist',
+  description: 'Analyze CORS safelist bypass: wildcard origin, origin reflection, null origin.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeCORSSafelist(args.code)
+    return formatCORSSafelistReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'iframe_sandbox_policy',
+  description: 'Analyze iframe sandbox policy: missing sandbox, allow-scripts+same-origin combo.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeIframeSandboxPolicy(args.code)
+    return formatIframeSandboxPolicyReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'report_to_header',
+  description: 'Analyze Report-To header: missing group, invalid endpoint, deprecated report-uri.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeReportToHeader(args.code)
+    return formatReportToHeaderReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'nel_header',
+  description: 'Analyze NEL header: missing report_to, invalid config, sampling rate.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeNELHeader(args.code)
+    return formatNELHeaderReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'expect_ct_header',
+  description: 'Analyze Expect-CT header: missing enforce, max-age too short, CT enforcement.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeExpectCTHeader(args.code)
+    return formatExpectCTHeaderReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'cors_credentials',
+  description: 'Analyze CORS credentials: wildcard+credentials, missing allow-credentials, insecure HTTP.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeCORSCredentials(args.code)
+    return formatCORSCredentialsReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'service_worker_scope',
+  description: 'Analyze service worker scope: missing scope, broad root scope, HTTP registration.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeServiceWorkerScope(args.code)
+    return formatServiceWorkerScopeReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'client_hints',
+  description: 'Analyze client hints: missing hints, insecure hints, critical-CH config.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeClientHints(args.code)
+    return formatClientHintsReport(result)
+  }
+}))
+
+console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design, container_security, ml_pipeline, api_deprecation, design_system, pwa_compliance, type_system, green_computing, realtime_collab, a11y_deep, i18n_deep, css_architecture, state_machine, web_components, resilience, module_federation, review_automation, observability, migration_safety, edge_computing, api_versioning, wasm_advanced, feature_toggles, email_deliverability, seo_analysis, monorepo_boundaries, ddd_patterns, mf_runtime, realtime_protocols, data_pipeline, gateway_deep, test_rigor, quality_gate, graphql_schema, event_sourcing_integrity, rate_limiting, migration_safety, auth_hardening, distributed_tracing, infrastructure_as_code, review_automation, contract_testing, sec_headers_deep, privacy_compliance, concurrency_patterns, cloud_native, error_recovery, system_design, dependency_injection, api_versioning, serialization_perf, memory_allocation, build_pipeline, error_messages, logging_discipline, config_as_code, component_interface, token_hygiene, query_antipatterns, websocket_lifecycle, graphql_perf, deprecation_tracking, code_splitting_audit, css_arch_deep, sec_dep_audit, webhook_signature, oauth_security, email_infra, health_check_depth, cors_security, feature_rollout, secret_lifecycle, rate_limit_strategy, container_security_scan, grpc_security, data_residency, deployment_progressive, obs_exemplar, data_pipeline_quality, service_mesh, plugin_architecture, mobile_app_security, data_masking, core_web_vitals, infra_cost, api_gateway_config, css_in_js_perf, crdt_state_sync, resource_quota, browser_compat_audit, floating_point, snapshot_testing, event_schema, form_validation, retry_idempotency, a11y_semantics, race_condition, cache_invalidation, data_loader_opt, event_versioning, connection_lifecycle, csp_nonce, struct_error_ctx, stream_backpressure, identifier_collision, graphql_query_depth, auth_token_rotation, mq_dead_letter, file_upload_sec, query_plan, encryption_at_rest, ws_connection_state, rate_limit_policy, payment_idempotency, cron_reliability, immutable_data, data_residency_compliance, response_envelope, compression_negotiation, dns_health, graceful_degradation, api_deprecation_strategy, db_safety, log_sampling, slo_tracking, api_key_mgmt, data_lineage, infra_drift, schema_evolution, wasm_interop, data_partition, plugin_lifecycle, time_sync, feature_store, vector_db, api_composition, audit_trail, graphql_cost, session_mgmt, csv_injection, tls_config, distributed_lock, event_dedup, allocator_pattern, webhook_retry, money_handling, pagination, resource_leak, c4_architecture, semaphore, dns_optimization, content_negotiation, retry_budget, cache_stampede, gateway_routing, search_sanitization, rate_limit_headers, data_consistency, mobile_hardening, build_config, grpc_interceptors, memory_alignment, saga_orchestration, ws_backpressure, bff_pattern, immutable_infra, csp_reporting, token_bucket, circuit_breaker, change_data_capture, api_federation, cache_warming, conn_multiplex, least_privilege, tracing_sampling, json_patch, event_snapshot, adaptive_rate, graceful_retry, encryption_transit, image_scanning, deadlock_detect, deprecation_comm, metrics_cardinality, api_key_rotation, data_retention, flag_cleanup, log_redaction, sli_slo, graceful_degrade, pagination_consistency, dep_drift, cqrs_pattern, outbox_idempotency, api_version_negotiation, connection_backpressure, graceful_startup, secret_detection, error_code_registry, cache_key_design, db_migration_safety, retry_strategy, health_check_completeness, log_structuring, event_schema_evolution, graceful_shutdown_timing, config_hot_reload, mutual_tls, dead_letter_queue, rate_limit_header, websocket_pool, container_image_opt, dns_prefetch_config, async_memory_leak, api_idempotency_key, service_mesh_policy, pagination_safety, background_job_idempotency, feature_flag_lifecycle, request_deduplication, connection_leak, payload_compression, cors_preflight_cache, timestamp_monotonicity, search_query_safety, api_response_cache, thread_pool_starvation, db_slow_query, url_validation, memory_alignment_audit, cache_stampede_guard, log_injection_prevention, temp_file_security, jwt_token_validation, file_permission_audit, dns_rebinding_protection, integer_overflow_detection, command_injection_prevention, csrf_token_validation, path_traversal_prevention, insecure_deserialization, mass_assignment, weak_cryptography, ssti_injection, file_upload_validation, hardcoded_secrets, unsafe_reflection, xxe_injection_prevention, prototype_pollution, async_race_condition, clickjacking_protection, insecure_cors_config, unrestricted_file_deletion, content_type_header, weak_password_policy, crlf_injection_prevention, session_timeout_policy, zip_slip_prevention, ssrf_detection, process_env_leak, redos_complexity, null_byte_injection, mime_type_spoofing, subdomain_takeover, jwt_algorithm_confusion, oauth_flow_security, grpc_metadata_leak, websocket_security, dependency_confusion, timing_attack, unsafe_yaml_load, api_latency, cross_service_health, consumer_offset, config_value, db_connection_pool, background_job, canary_release, certificate_validation, memory_safety, input_sanitization, crypto_random, session_fixation, open_redirect, xml_bomb, ldap_injection, graphql_injection, nosql_injection, graphql_depth_limit, path_normalization, buffer_overread, http_parameter_pollution, dom_clobbering, postmessage_security, xml_signature_wrapping, insecure_random, missing_content_length, cookie_prefix_bypass, unicode_normalization, websocket_origin_bypass, missing_x_frame_options, sql_concatenation, missing_strict_transport_security, insecure_direct_object_reference, authentication_bypass, privilege_escalation, missing_csrf_protection, insecure_jwt_storage, missing_rate_limiting, debug_mode_enabled, unsafe_eval_usage, sql_injection_orm, race_condition_toctou, memory_corruption_risk, insecure_webhook_verification, api_version_deprecation, prototype_pollution_vuln, dns_rebinding_risk, host_header_injection, csv_formula_injection, log_forging_risk, missing_csp_directive, insecure_cookie_scope, tabnabbing_risk, subresource_integrity, missing_permissions_policy, cors_safelist, iframe_sandbox_policy, report_to_header, nel_header, expect_ct_header, cors_credentials, service_worker_scope, client_hints`)
 }

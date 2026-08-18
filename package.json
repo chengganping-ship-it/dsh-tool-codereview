@@ -1,7 +1,7 @@
 {
   "name": "dsh-tool-codereview",
-  "version": "0.58.0",
-  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 438 tools, Host Header Injection, CSV Formula Injection, Log Forging Risk, Missing CSP Directive, Insecure Cookie Scope, Tabnabbing Risk, Subresource Integrity, Missing Permissions Policy",
+  "version": "0.59.0",
+  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 446 tools, CORS Safelist, Iframe Sandbox Policy, Report-To Header, NEL Header, Expect-CT Header, CORS Credentials, Service Worker Scope, Client Hints",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",

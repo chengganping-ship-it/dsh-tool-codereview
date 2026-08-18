@@ -1,10 +1,10 @@
-# DeepSeek Harness Plugin: Code Review Assistant v0.58.0
-# Enterprise-grade code analysis toolkit with 438 comprehensive tools
+# DeepSeek Harness Plugin: Code Review Assistant v0.59.0
+# Enterprise-grade code analysis toolkit with 446 comprehensive tools
 
 - id: dsh-tool-codereview
   name: dsh-tool-codereview
-  version: 0.58.0
-  description: Enterprise Code Review & Security Scan - 438 tools including Host Header Injection, CSV Formula Injection, Log Forging Risk, Missing CSP Directive, Insecure Cookie Scope, Tabnabbing Risk, Subresource Integrity, Missing Permissions Policy
+  version: 0.59.0
+  description: Enterprise Code Review & Security Scan - 446 tools including CORS Safelist, Iframe Sandbox Policy, Report-To Header, NEL Header, Expect-CT Header, CORS Credentials, Service Worker Scope, Client Hints
   author: chengganping-ship-it
   tools:
     - code_review
@@ -442,3 +442,11 @@
     - tabnabbing_risk
     - subresource_integrity
     - missing_permissions_policy
+    - cors_safelist
+    - iframe_sandbox_policy
+    - report_to_header
+    - nel_header
+    - expect_ct_header
+    - cors_credentials
+    - service_worker_scope
+    - client_hints
