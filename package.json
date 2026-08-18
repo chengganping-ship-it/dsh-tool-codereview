@@ -1,7 +1,7 @@
 {
   "name": "dsh-tool-codereview",
-  "version": "0.57.0",
-  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 430 tools, Unsafe Eval Usage, SQL Injection ORM, Race Condition TOCTOU, Memory Corruption Risk, Insecure Webhook Verification, API Version Deprecation, Prototype Pollution, DNS Rebinding Risk",
+  "version": "0.58.0",
+  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 438 tools, Host Header Injection, CSV Formula Injection, Log Forging Risk, Missing CSP Directive, Insecure Cookie Scope, Tabnabbing Risk, Subresource Integrity, Missing Permissions Policy",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
