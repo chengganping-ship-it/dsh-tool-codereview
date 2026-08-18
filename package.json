@@ -1,7 +1,7 @@
 {
   "name": "dsh-tool-codereview",
-  "version": "0.95.0",
-  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 734 tools, Agent Instruction Replay Deep, Tool Output Masking Adv, Agent Goal Desync Deep, Tool Permission Shadowing Adv, Agent Context Remixing Deep, Tool Response Replay Adv, Agent Session Masking Deep, Tool Capability Replay Adv"",
+  "version": "0.96.0",
+  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 742 tools, Agent Credential Rotation Evasion Deep, Tool Timing Attack Expert, Agent Narrative Confusion Deep, Tool Capability Masking Expert, Agent Prompt Leakage Deep, Tool Response Fragmentation Expert, Agent Tool Chaining Deep, Tool Schema Confusion Expert"",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
