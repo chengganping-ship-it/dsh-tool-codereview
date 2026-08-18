@@ -1,7 +1,7 @@
 {
   "name": "dsh-tool-codereview",
-  "version": "0.51.0",
-  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 377 tools, CRLF Injection Prevention, Session Timeout Policy, Zip Slip Prevention, SSRF Detection, Process Env Leak, ReDoS Complexity, Null Byte Injection, MIME Type Spoofing",
+  "version": "0.52.0",
+  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 385 tools, API Latency Distribution, Cross-Service Health, Consumer Offset Monitor, Config Value Detection, DB Connection Pool, Background Job Reliability, Canary Release",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",

@@ -1,10 +1,10 @@
-# DeepSeek Harness Plugin: Code Review Assistant v0.51.0
-# Enterprise-grade code analysis toolkit with 377 comprehensive tools
+# DeepSeek Harness Plugin: Code Review Assistant v0.52.0
+# Enterprise-grade code analysis toolkit with 385 comprehensive tools
 
 - id: dsh-tool-codereview
   name: dsh-tool-codereview
-  version: 0.51.0
-  description: Enterprise Code Review & Security Scan - 377 tools including CRLF Injection Prevention, Session Timeout Policy, Zip Slip Prevention, SSRF Detection, Process Env Leak, ReDoS Complexity, Null Byte Injection, MIME Type Spoofing
+  version: 0.52.0
+  description: Enterprise Code Review & Security Scan - 385 tools including API Latency Distribution, Cross-Service Health, Consumer Offset Monitor, Config Value Detection, DB Connection Pool, Background Job Reliability, Canary Release
   author: chengganping-ship-it
   tools:
     - code_review
@@ -379,3 +379,10 @@
     - redos_complexity
     - null_byte_injection
     - mime_type_spoofing
+    - api_latency
+    - cross_service_health
+    - consumer_offset
+    - config_value
+    - db_connection_pool
+    - background_job
+    - canary_release
