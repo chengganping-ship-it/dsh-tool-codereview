@@ -72,7 +72,7 @@
  * - API gateway (BFF pattern, service routing)
  * 
  * @module dsh-tool-codereview
- * @version 0.40.0
+ * @version 0.41.0
  * @license MIT
  */
 
@@ -82,7 +82,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 export const name = 'dsh-tool-codereview'
 export const inject = ['tools']
 
-const VERSION = '0.40.0'
+const VERSION = '0.41.0'
 
 // ==================== TYPES ====================
 
@@ -24117,6 +24117,526 @@ function formatJSONPatchReport(r: JSONPatchResult): string {
   return lines.join('\n')
 }
 
+// ==================== V0.41.0: EVENT SOURCING SNAPSHOT ====================
+
+interface EventSnapshotResult {
+  totalIssues: number
+  severity: Severity
+  snapshot: { line: number; issue: string; suggestion: string }[]
+  strategy: { line: number; issue: string; suggestion: string }[]
+  snapshotScore: number
+  summary: string
+}
+
+function analyzeEventSnapshot(code: string): EventSnapshotResult {
+  const lines = code.split('\n')
+  const snapshot: EventSnapshotResult['snapshot'] = []
+  const strategy: EventSnapshotResult['strategy'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/event.*sourc|sourc.*event|event.*store/i) && !line.match(/snapshot|compact|project|aggregat.*cache/i)) {
+      snapshot.push({ line: i + 1, issue: 'Event sourcing without snapshot strategy', suggestion: 'Take periodic snapshots of aggregate state; replaying thousands of events on every read is impractical' })
+    }
+
+    if (line.match(/snapshot.*interval|snapshot.*frequency|snapshot.*period/i) && !line.match(/event.*count.*snapshot|time.*based.*snapshot|hybrid.*snapshot|adaptive.*snapshot/i)) {
+      strategy.push({ line: i + 1, issue: 'Snapshot interval without adaptive trigger', suggestion: 'Use hybrid triggers: snapshot every N events AND every M minutes; adapt based on event throughput' })
+    }
+
+    if (line.match(/snapshot.*store|store.*snapshot|snapshot.*persist/i) && !line.match(/snapshot.*compress|snapshot.*seria|snapshot.*format|snapshot.*version/i)) {
+      snapshot.push({ line: i + 1, issue: 'Snapshot storage without serialization format', suggestion: 'Define snapshot serialization format (JSON, Protobuf); version snapshots to support aggregate schema evolution' })
+    }
+
+    if (line.match(/snapshot.*replay|replay.*snapshot|restore.*snapshot/i) && !line.match(/snapshot.*valid|snapshot.*integrity|snapshot.*checksum|snapshot.*corrupt/i)) {
+      strategy.push({ line: i + 1, issue: 'Snapshot restore without integrity validation', suggestion: 'Validate snapshot checksum before restore; corrupted snapshots produce silent aggregate corruption' })
+    }
+  })
+
+  const totalIssues = snapshot.length + strategy.length
+  const snapshotScore = Math.max(0, 100 - snapshot.length * 8 - strategy.length * 8)
+  const severity: Severity = snapshot.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, snapshot, strategy, snapshotScore,
+    summary: snapshot.length + ' snapshot gap(s), ' + strategy.length + ' strategy gap(s)' }
+}
+
+function formatEventSnapshotReport(r: EventSnapshotResult): string {
+  const lines: string[] = []
+  lines.push('# Event Sourcing Snapshot Analysis')
+  lines.push('')
+  lines.push('**Snapshot Score:** ' + r.snapshotScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.snapshot.length > 0) {
+    lines.push('## Snapshot (' + r.snapshot.length + ')')
+    r.snapshot.forEach(s => lines.push('- Line ' + s.line + ': ' + s.suggestion))
+    lines.push('')
+  }
+  if (r.strategy.length > 0) {
+    lines.push('## Strategy (' + r.strategy.length + ')')
+    r.strategy.forEach(s => lines.push('- Line ' + s.line + ': ' + s.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.41.0: ADAPTIVE RATE LIMIT ====================
+
+interface AdaptiveRateLimitResult {
+  totalIssues: number
+  severity: Severity
+  adapt: { line: number; issue: string; suggestion: string }[]
+  throttle: { line: number; issue: string; suggestion: string }[]
+  adaptScore: number
+  summary: string
+}
+
+function analyzeAdaptiveRateLimit(code: string): AdaptiveRateLimitResult {
+  const lines = code.split('\n')
+  const adapt: AdaptiveRateLimitResult['adapt'] = []
+  const throttle: AdaptiveRateLimitResult['throttle'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/rate.*limit.*adapt|adapt.*rate.*limit|dynamic.*rate|rate.*adjust/i) && !line.match(/utilization.*target|cpu.*target|latency.*target|error.*target|feedback.*loop/i)) {
+      adapt.push({ line: i + 1, issue: 'Adaptive rate limit without utilization target', suggestion: 'Target specific metric (CPU, latency, p99); adaptive limit without target oscillates or stagnates' })
+    }
+
+    if (line.match(/throttl.*backpressure|backpressure.*throttl|propagat.*throttl|throttl.*signal/i) && !line.match(/throttl.*upstream|throttl.*source|throttl.*origin|client.*signal/i)) {
+      throttle.push({ line: i + 1, issue: 'Backpressure propagation without upstream signal', suggestion: 'Propagate throttle signal to original caller; intermediate layers should not swallow backpressure' })
+    }
+
+    if (line.match(/quota.*redistribut|redistribut.*quota|quota.*reallocat|quota.*shift/i) && !line.match(/quota.*fair|quota.*weigh|quota.*priorit|quota.*guarantee/i)) {
+      adapt.push({ line: i + 1, issue: 'Quota redistribution without fairness/priority', suggestion: 'Redistribute quotas with priority weights; guarantee minimum quota to critical clients' })
+    }
+
+    if (line.match(/rate.*limit.*burst|burst.*rate|rate.*spike/i) && !line.match(/burst.*decay|burst.*recover|burst.*cool.*down|gradual.*restor/i)) {
+      throttle.push({ line: i + 1, issue: 'Burst rate limit without cool-down recovery', suggestion: 'Implement gradual rate recovery after burst; immediate return to full rate invites repeated bursting' })
+    }
+  })
+
+  const totalIssues = adapt.length + throttle.length
+  const adaptScore = Math.max(0, 100 - adapt.length * 8 - throttle.length * 8)
+  const severity: Severity = adapt.length > 0 ? 'info' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, adapt, throttle, adaptScore,
+    summary: adapt.length + ' adapt gap(s), ' + throttle.length + ' throttle gap(s)' }
+}
+
+function formatAdaptiveRateLimitReport(r: AdaptiveRateLimitResult): string {
+  const lines: string[] = []
+  lines.push('# Adaptive Rate Limit Analysis')
+  lines.push('')
+  lines.push('**Adapt Score:** ' + r.adaptScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.adapt.length > 0) {
+    lines.push('## Adapt (' + r.adapt.length + ')')
+    r.adapt.forEach(a => lines.push('- Line ' + a.line + ': ' + a.suggestion))
+    lines.push('')
+  }
+  if (r.throttle.length > 0) {
+    lines.push('## Throttle (' + r.throttle.length + ')')
+    r.throttle.forEach(t => lines.push('- Line ' + t.line + ': ' + t.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.41.0: GRACEFUL RETRY ====================
+
+interface GracefulRetryResult {
+  totalIssues: number
+  severity: Severity
+  retry: { line: number; issue: string; suggestion: string }[]
+  budget: { line: number; issue: string; suggestion: string }[]
+  retryScore: number
+  summary: string
+}
+
+function analyzeGracefulRetry(code: string): GracefulRetryResult {
+  const lines = code.split('\n')
+  const retry: GracefulRetryResult['retry'] = []
+  const budget: GracefulRetryResult['budget'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/retry.*budget|budget.*retry|retry.*cost|retry.*allowance/i) && !line.match(/budget.*per.*endpoint|budget.*target|budget.*exhaust|budget.*alert/i)) {
+      budget.push({ line: i + 1, issue: 'Retry budget without per-endpoint target', suggestion: 'Set retry budget per endpoint (e.g., 10% of direct calls); global budget allows one endpoint to consume all retries' })
+    }
+
+    if (line.match(/retry.*exhaust|budget.*exhaust|retry.*deplet|budget.*deplet/i) && !line.match(/exhaust.*action|exhaust.*fail|exhaust.*alert|exhaust.*metric/i)) {
+      retry.push({ line: i + 1, issue: 'Retry budget exhaustion without action', suggestion: 'Alert and fail fast on budget exhaustion; continuing without budget amplifies downstream load' })
+    }
+
+    if (line.match(/retry.*idempotent|idempotent.*retry|safe.*retry|retry.*safe/i) && !line.match(/idempotency.*key|idempotency.*check|non.*idempotent.*block|retry.*scope/i)) {
+      budget.push({ line: i + 1, issue: 'Idempotent retry without idempotency key', suggestion: 'Verify idempotency key exists for retry; non-idempotent operations should not be retried without explicit scope' })
+    }
+
+    if (line.match(/retry.*cascad|cascad.*retry|nested.*retry|retry.*within.*retry/i) && !line.match(/cascad.*prevent|cascad.*limit|cascad.*depth|cascad.*budget.*share/i)) {
+      retry.push({ line: i + 1, issue: 'Cascading retry without depth limit', suggestion: 'Limit retry cascade depth (max 1 level); share budget across layers to prevent retry amplification' })
+    }
+  })
+
+  const totalIssues = retry.length + budget.length
+  const retryScore = Math.max(0, 100 - retry.length * 8 - budget.length * 8)
+  const severity: Severity = retry.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, retry, budget, retryScore,
+    summary: retry.length + ' retry gap(s), ' + budget.length + ' budget gap(s)' }
+}
+
+function formatGracefulRetryReport(r: GracefulRetryResult): string {
+  const lines: string[] = []
+  lines.push('# Graceful Retry Analysis')
+  lines.push('')
+  lines.push('**Retry Score:** ' + r.retryScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.retry.length > 0) {
+    lines.push('## Retry (' + r.retry.length + ')')
+    r.retry.forEach(r => lines.push('- Line ' + r.line + ': ' + r.suggestion))
+    lines.push('')
+  }
+  if (r.budget.length > 0) {
+    lines.push('## Budget (' + r.budget.length + ')')
+    r.budget.forEach(b => lines.push('- Line ' + b.line + ': ' + b.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.41.0: ENCRYPTION IN TRANSIT ====================
+
+interface EncryptionTransitResult {
+  totalIssues: number
+  severity: Severity
+  tls: { line: number; issue: string; suggestion: string }[]
+  cert: { line: number; issue: string; suggestion: string }[]
+  transitScore: number
+  summary: string
+}
+
+function analyzeEncryptionTransit(code: string): EncryptionTransitResult {
+  const lines = code.split('\n')
+  const tls: EncryptionTransitResult['tls'] = []
+  const cert: EncryptionTransitResult['cert'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/mtls|mutual.*tls|tls.*mutual|client.*cert.*auth/i) && !line.match(/ca.*trust|ca.*bundle|trust.*anchor|cert.*chain.*valid/i)) {
+      tls.push({ line: i + 1, issue: 'mTLS without CA trust bundle', suggestion: 'Configure trusted CA bundle for mTLS; reject client certs not signed by trusted CA' })
+    }
+
+    if (line.match(/cert.*pin|pin.*cert|pin.*public.*key|cert.*fingerprin/i) && !line.match(/pin.*backup|pin.*rotat|pin.*fallback|pin.*mismatch.*action/i)) {
+      cert.push({ line: i + 1, issue: 'Certificate pinning without rotation/fallback', suggestion: 'Plan for pin rotation; pinned cert expiration causes outages; include backup pins' })
+    }
+
+    if (line.match(/cipher.*suite|tls.*cipher|ssl.*cipher|cipher.*select/i) && !line.match(/tls.*1\.3|tls.*1\.2.*only|weak.*cipher.*reject|deprecated.*cipher/i)) {
+      tls.push({ line: i + 1, issue: 'Cipher suite selection without deprecation', suggestion: 'Prefer TLS 1.3; for TLS 1.2 reject weak ciphers (RC4, 3DES, CBC-mode)' })
+    }
+
+    if (line.match(/cert.*rotat|rotat.*cert|auto.*renew|renew.*cert/i) && !line.match(/rotat.*grace|rotat.*overlap|rotat.*before.*expir|zero.*downtime.*rotat/i)) {
+      cert.push({ line: i + 1, issue: 'Certificate rotation without overlap window', suggestion: 'Rotate before expiry with overlap; zero-downtime rotation requires dual-cert during transition' })
+    }
+  })
+
+  const totalIssues = tls.length + cert.length
+  const transitScore = Math.max(0, 100 - tls.length * 8 - cert.length * 8)
+  const severity: Severity = tls.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, tls, cert, transitScore,
+    summary: tls.length + ' tls gap(s), ' + cert.length + ' cert gap(s)' }
+}
+
+function formatEncryptionTransitReport(r: EncryptionTransitResult): string {
+  const lines: string[] = []
+  lines.push('# Encryption in Transit Analysis')
+  lines.push('')
+  lines.push('**Transit Score:** ' + r.transitScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.tls.length > 0) {
+    lines.push('## TLS (' + r.tls.length + ')')
+    r.tls.forEach(t => lines.push('- Line ' + t.line + ': ' + t.suggestion))
+    lines.push('')
+  }
+  if (r.cert.length > 0) {
+    lines.push('## Cert (' + r.cert.length + ')')
+    r.cert.forEach(c => lines.push('- Line ' + c.line + ': ' + c.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.41.0: CONTAINER IMAGE SCANNING ====================
+
+interface ImageScanningResult {
+  totalIssues: number
+  severity: Severity
+  scan: { line: number; issue: string; suggestion: string }[]
+  base: { line: number; issue: string; suggestion: string }[]
+  scanScore: number
+  summary: string
+}
+
+function analyzeImageScanning(code: string): ImageScanningResult {
+  const lines = code.split('\n')
+  const scan: ImageScanningResult['scan'] = []
+  const base: ImageScanningResult['base'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/image.*scan|scan.*image|vuln.*scan|scan.*vuln/i) && !line.match(/scan.*on.*build|scan.*on.*push|scan.*on.*deploy|scan.*gate/i)) {
+      scan.push({ line: i + 1, issue: 'Image scan without pipeline gate', suggestion: 'Gate deployment on scan results; scanning without blocking deployment is theater' })
+    }
+
+    if (line.match(/sbom|software.*bill.*materia|provenance/i) && !line.match(/sbom.*sign|sbom.*verif|sbom.*store|sbom.*distribut/i)) {
+      base.push({ line: i + 1, issue: 'SBOM without signing/distribution', suggestion: 'Sign SBOMs for integrity; distribute alongside image for supply chain verification' })
+    }
+
+    if (line.match(/distroless|slim.*image|alpine.*image|minimal.*base/i) && !line.match(/base.*image.*pin|base.*image.*digest|base.*image.*lock/i)) {
+      scan.push({ line: i + 1, issue: 'Minimal base image without digest pin', suggestion: 'Pin base image by digest; minimal image tags can still be overwritten at registry' })
+    }
+
+    if (line.match(/image.*layer|layer.*image|docker.*layer/i) && !line.match(/layer.*cach|layer.*reorder|layer.*reduce|secret.*in.*layer/i)) {
+      base.push({ line: i + 1, issue: 'Image layers without secret-leak review', suggestion: 'Review layers for secrets in build context; secrets in intermediate layers persist in registry' })
+    }
+  })
+
+  const totalIssues = scan.length + base.length
+  const scanScore = Math.max(0, 100 - scan.length * 8 - base.length * 8)
+  const severity: Severity = scan.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, scan, base, scanScore,
+    summary: scan.length + ' scan gap(s), ' + base.length + ' base gap(s)' }
+}
+
+function formatImageScanningReport(r: ImageScanningResult): string {
+  const lines: string[] = []
+  lines.push('# Container Image Scanning Analysis')
+  lines.push('')
+  lines.push('**Scan Score:** ' + r.scanScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.scan.length > 0) {
+    lines.push('## Scan (' + r.scan.length + ')')
+    r.scan.forEach(s => lines.push('- Line ' + s.line + ': ' + s.suggestion))
+    lines.push('')
+  }
+  if (r.base.length > 0) {
+    lines.push('## Base (' + r.base.length + ')')
+    r.base.forEach(b => lines.push('- Line ' + b.line + ': ' + b.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.41.0: DEADLOCK DETECTION ====================
+
+interface DeadlockDetectResult {
+  totalIssues: number
+  severity: Severity
+  lock: { line: number; issue: string; suggestion: string }[]
+  order: { line: number; issue: string; suggestion: string }[]
+  deadlockScore: number
+  summary: string
+}
+
+function analyzeDeadlockDetect(code: string): DeadlockDetectResult {
+  const lines = code.split('\n')
+  const lock: DeadlockDetectResult['lock'] = []
+  const order: DeadlockDetectResult['order'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/lock.*nest|nest.*lock|multi.*lock|multiple.*lock/i) && !line.match(/lock.*order|lock.*hierarch|lock.*rank|lock.*acquir.*order/i)) {
+      lock.push({ line: i + 1, issue: 'Nested locks without ordering', suggestion: 'Define global lock acquisition order; all threads must acquire locks in the same hierarchical order' })
+    }
+
+    if (line.match(/lock.*timeout|timeout.*lock|try.*lock.*timeout|lock.*deadline/i) && !line.match(/timeout.*action|timeout.*fail|timeout.*retry|timeout.*alert/i)) {
+      order.push({ line: i + 1, issue: 'Lock timeout without failure action', suggestion: 'Define action on lock timeout (fail, retry, abort); indefinite waiting hides deadlock' })
+    }
+
+    if (line.match(/cyclic.*depend|circular.*depend|depend.*cycle|cycle.*depend/i) && !line.match(/cycle.*detect|cycle.*break|cycle.*prevent|topolog.*sort/i)) {
+      lock.push({ line: i + 1, issue: 'Cyclic dependency without detection/prevention', suggestion: 'Detect cycles in dependency graph at startup; use topological sort to verify acyclic structure' })
+    }
+
+    if (line.match(/lock.*graph|wait.*graph|resource.*allocat.*graph|deadlock.*detect/i) && !line.match(/graph.*cycle|graph.*check.*interval|graph.*snapshot/i)) {
+      order.push({ line: i + 1, issue: 'Lock graph without periodic cycle check', suggestion: 'Check wait-for graph for cycles periodically; detect deadlock before threads hang indefinitely' })
+    }
+  })
+
+  const totalIssues = lock.length + order.length
+  const deadlockScore = Math.max(0, 100 - lock.length * 8 - order.length * 8)
+  const severity: Severity = lock.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, lock, order, deadlockScore,
+    summary: lock.length + ' lock gap(s), ' + order.length + ' order gap(s)' }
+}
+
+function formatDeadlockDetectReport(r: DeadlockDetectResult): string {
+  const lines: string[] = []
+  lines.push('# Deadlock Detection Analysis')
+  lines.push('')
+  lines.push('**Deadlock Score:** ' + r.deadlockScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.lock.length > 0) {
+    lines.push('## Lock (' + r.lock.length + ')')
+    r.lock.forEach(l => lines.push('- Line ' + l.line + ': ' + l.suggestion))
+    lines.push('')
+  }
+  if (r.order.length > 0) {
+    lines.push('## Order (' + r.order.length + ')')
+    r.order.forEach(o => lines.push('- Line ' + o.line + ': ' + o.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.41.0: API DEPRECATION COMMUNICATION ====================
+
+interface DeprecationCommResult {
+  totalIssues: number
+  severity: Severity
+  deprecat: { line: number; issue: string; suggestion: string }[]
+  sunset: { line: number; issue: string; suggestion: string }[]
+  deprecatScore: number
+  summary: string
+}
+
+function analyzeDeprecationComm(code: string): DeprecationCommResult {
+  const lines = code.split('\n')
+  const deprecat: DeprecationCommResult['deprecat'] = []
+  const sunset: DeprecationCommResult['sunset'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/api.*deprecat|deprecat.*api|endpoint.*deprecat|deprecat.*endpoint/i) && !line.match(/deprecat.*header|deprecat.*notice|deprecat.*response|Sunset.*header/i)) {
+      deprecat.push({ line: i + 1, issue: 'API deprecation without response header notice', suggestion: 'Add Deprecation and Sunset headers to API responses; clients discover deprecation through runtime signals' })
+    }
+
+    if (line.match(/sunset.*date|api.*sunset|sunset.*header/i) && !line.match(/sunset.*notice.*period|sunset.*reminder|sunset.*timeline|sunset.*migrat/i)) {
+      sunset.push({ line: i + 1, issue: 'Sunset date without migration timeline', suggestion: 'Provide migration timeline before sunset; 90-day notice minimum for breaking deprecation' })
+    }
+
+    if (line.match(/deprecat.*document|deprecat.*guide|migrat.*guide/i) && !line.match(/deprecat.*code.*exampl|deprecat.*before.*after|deprecat.*diff|side.*by.*side/i)) {
+      deprecat.push({ line: i + 1, issue: 'Deprecation guide without code examples', suggestion: 'Include before/after code examples; abstract migration guides are hard to follow' })
+    }
+
+    if (line.match(/api.*version.*deprecat|version.*deprecat|deprecat.*version/i) && !line.match(/deprecat.*metric|deprecat.*usage.*track|deprecat.*client.*count|deprecat.*monitor/i)) {
+      sunset.push({ line: i + 1, issue: 'API version deprecation without usage monitoring', suggestion: 'Track deprecated version usage; sunset only when client count reaches zero' })
+    }
+  })
+
+  const totalIssues = deprecat.length + sunset.length
+  const deprecatScore = Math.max(0, 100 - deprecat.length * 8 - sunset.length * 8)
+  const severity: Severity = deprecat.length > 0 ? 'info' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, deprecat, sunset, deprecatScore,
+    summary: deprecat.length + ' deprecat gap(s), ' + sunset.length + ' sunset gap(s)' }
+}
+
+function formatDeprecationCommReport(r: DeprecationCommResult): string {
+  const lines: string[] = []
+  lines.push('# API Deprecation Communication Analysis')
+  lines.push('')
+  lines.push('**Deprecation Score:** ' + r.deprecatScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.deprecat.length > 0) {
+    lines.push('## Deprecate (' + r.deprecat.length + ')')
+    r.deprecat.forEach(d => lines.push('- Line ' + d.line + ': ' + d.suggestion))
+    lines.push('')
+  }
+  if (r.sunset.length > 0) {
+    lines.push('## Sunset (' + r.sunset.length + ')')
+    r.sunset.forEach(s => lines.push('- Line ' + s.line + ': ' + s.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.41.0: METRICS CARDINALITY ====================
+
+interface MetricsCardinalityResult {
+  totalIssues: number
+  severity: Severity
+  label: { line: number; issue: string; suggestion: string }[]
+  aggregat: { line: number; issue: string; suggestion: string }[]
+  cardinalityScore: number
+  summary: string
+}
+
+function analyzeMetricsCardinality(code: string): MetricsCardinalityResult {
+  const lines = code.split('\n')
+  const label: MetricsCardinalityResult['label'] = []
+  const aggregat: MetricsCardinalityResult['aggregat'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/high.*cardinality|cardinality.*high|unbounded.*label|unbounded.*tag/i) && !line.match(/cardinality.*limit|cardinality.*bound|label.*whitelist|label.*allowlist/i)) {
+      label.push({ line: i + 1, issue: 'High-cardinality label without bound', suggestion: 'Bound label cardinality (max N values); unbounded labels explode time series count' })
+    }
+
+    if (line.match(/label.*user.*id|label.*request.*id|label.*session.*id|label.*uuid/i) && !line.match(/label.*drop|label.*remov|label.*aggregat|label.*bucket/i)) {
+      label.push({ line: i + 1, issue: 'User/request ID as label (infinite cardinality)', suggestion: 'Never use unique IDs as labels; aggregate into buckets or drop from metrics' })
+    }
+
+    if (line.match(/pre.*aggregat|aggregat.*before|record.*aggregat|aggregat.*record/i) && !line.match(/aggregat.*window|aggregat.*interval|aggregat.*retention|aggregat.*rule/i)) {
+      aggregat.push({ line: i + 1, issue: 'Pre-aggregation without window/retention rule', suggestion: 'Define aggregation window and retention; raw data retention vs aggregation tradeoff' })
+    }
+
+    if (line.match(/metric.*explosion|series.*explosion|cardinality.*explosion|time.*series.*explosion/i) && !line.match(/explosion.*alert|explosion.*detect|explosion.*prevent|cardinality.*monitor/i)) {
+      aggregat.push({ line: i + 1, issue: 'Cardinality explosion without monitoring/alerting', suggestion: 'Monitor time series count per metric; alert on cardinality growth rate' })
+    }
+  })
+
+  const totalIssues = label.length + aggregat.length
+  const cardinalityScore = Math.max(0, 100 - label.length * 8 - aggregat.length * 8)
+  const severity: Severity = label.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, label, aggregat, cardinalityScore,
+    summary: label.length + ' label gap(s), ' + aggregat.length + ' aggregat gap(s)' }
+}
+
+function formatMetricsCardinalityReport(r: MetricsCardinalityResult): string {
+  const lines: string[] = []
+  lines.push('# Metrics Cardinality Analysis')
+  lines.push('')
+  lines.push('**Cardinality Score:** ' + r.cardinalityScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.label.length > 0) {
+    lines.push('## Label (' + r.label.length + ')')
+    r.label.forEach(l => lines.push('- Line ' + l.line + ': ' + l.suggestion))
+    lines.push('')
+  }
+  if (r.aggregat.length > 0) {
+    lines.push('## Aggregate (' + r.aggregat.length + ')')
+    r.aggregat.forEach(a => lines.push('- Line ' + a.line + ': ' + a.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
 // ==================== PLUGIN REGISTRATION ====================
 
 export function apply(ctx: Context) {
@@ -28084,5 +28604,93 @@ ctx.tools.register(defineTool({
   }
 }))
 
-console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design, container_security, ml_pipeline, api_deprecation, design_system, pwa_compliance, type_system, green_computing, realtime_collab, a11y_deep, i18n_deep, css_architecture, state_machine, web_components, resilience, module_federation, review_automation, observability, migration_safety, edge_computing, api_versioning, wasm_advanced, feature_toggles, email_deliverability, seo_analysis, monorepo_boundaries, ddd_patterns, mf_runtime, realtime_protocols, data_pipeline, gateway_deep, test_rigor, quality_gate, graphql_schema, event_sourcing_integrity, rate_limiting, migration_safety, auth_hardening, distributed_tracing, infrastructure_as_code, review_automation, contract_testing, sec_headers_deep, privacy_compliance, concurrency_patterns, cloud_native, error_recovery, system_design, dependency_injection, api_versioning, serialization_perf, memory_allocation, build_pipeline, error_messages, logging_discipline, config_as_code, component_interface, token_hygiene, query_antipatterns, websocket_lifecycle, graphql_perf, deprecation_tracking, code_splitting_audit, css_arch_deep, sec_dep_audit, webhook_signature, oauth_security, email_infra, health_check_depth, cors_security, feature_rollout, secret_lifecycle, rate_limit_strategy, container_security_scan, grpc_security, data_residency, deployment_progressive, obs_exemplar, data_pipeline_quality, service_mesh, plugin_architecture, mobile_app_security, data_masking, core_web_vitals, infra_cost, api_gateway_config, css_in_js_perf, crdt_state_sync, resource_quota, browser_compat_audit, floating_point, snapshot_testing, event_schema, form_validation, retry_idempotency, a11y_semantics, race_condition, cache_invalidation, data_loader_opt, event_versioning, connection_lifecycle, csp_nonce, struct_error_ctx, stream_backpressure, identifier_collision, graphql_query_depth, auth_token_rotation, mq_dead_letter, file_upload_sec, query_plan, encryption_at_rest, ws_connection_state, rate_limit_policy, payment_idempotency, cron_reliability, immutable_data, data_residency_compliance, response_envelope, compression_negotiation, dns_health, graceful_degradation, api_deprecation_strategy, db_safety, log_sampling, slo_tracking, api_key_mgmt, data_lineage, infra_drift, schema_evolution, wasm_interop, data_partition, plugin_lifecycle, time_sync, feature_store, vector_db, api_composition, audit_trail, graphql_cost, session_mgmt, csv_injection, tls_config, distributed_lock, event_dedup, allocator_pattern, webhook_retry, money_handling, pagination, resource_leak, c4_architecture, semaphore, dns_optimization, content_negotiation, retry_budget, cache_stampede, gateway_routing, search_sanitization, rate_limit_headers, data_consistency, mobile_hardening, build_config, grpc_interceptors, memory_alignment, saga_orchestration, ws_backpressure, bff_pattern, immutable_infra, csp_reporting, token_bucket, circuit_breaker, change_data_capture, api_federation, cache_warming, conn_multiplex, least_privilege, tracing_sampling, json_patch`)
+ctx.tools.register(defineTool({
+  name: 'event_snapshot',
+  description: 'Analyze event sourcing snapshots: snapshot strategy, adaptive triggers, serialization format, integrity validation.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeEventSnapshot(args.code)
+    return formatEventSnapshotReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'adaptive_rate',
+  description: 'Analyze adaptive rate limiting: utilization target, backpressure propagation, quota redistribution, burst cool-down.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeAdaptiveRateLimit(args.code)
+    return formatAdaptiveRateLimitReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'graceful_retry',
+  description: 'Analyze graceful retry: per-endpoint budget, exhaustion action, idempotency key, cascade depth limit.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeGracefulRetry(args.code)
+    return formatGracefulRetryReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'encryption_transit',
+  description: 'Analyze encryption in transit: mTLS trust bundle, cert pinning fallback, cipher suite deprecation, cert rotation overlap.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeEncryptionTransit(args.code)
+    return formatEncryptionTransitReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'image_scanning',
+  description: 'Analyze container image scanning: scan gate, SBOM signing, base image digest pin, secret-leak review.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeImageScanning(args.code)
+    return formatImageScanningReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'deadlock_detect',
+  description: 'Analyze deadlock detection: lock ordering, lock timeout action, cyclic dependency detection, wait-graph cycle check.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeDeadlockDetect(args.code)
+    return formatDeadlockDetectReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'deprecation_comm',
+  description: 'Analyze API deprecation communication: response header notice, migration timeline, code examples, usage monitoring.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeDeprecationComm(args.code)
+    return formatDeprecationCommReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'metrics_cardinality',
+  description: 'Analyze metrics cardinality: label bounds, unique ID labels, pre-aggregation rules, cardinality explosion monitoring.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeMetricsCardinality(args.code)
+    return formatMetricsCardinalityReport(result)
+  }
+}))
+
+console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design, container_security, ml_pipeline, api_deprecation, design_system, pwa_compliance, type_system, green_computing, realtime_collab, a11y_deep, i18n_deep, css_architecture, state_machine, web_components, resilience, module_federation, review_automation, observability, migration_safety, edge_computing, api_versioning, wasm_advanced, feature_toggles, email_deliverability, seo_analysis, monorepo_boundaries, ddd_patterns, mf_runtime, realtime_protocols, data_pipeline, gateway_deep, test_rigor, quality_gate, graphql_schema, event_sourcing_integrity, rate_limiting, migration_safety, auth_hardening, distributed_tracing, infrastructure_as_code, review_automation, contract_testing, sec_headers_deep, privacy_compliance, concurrency_patterns, cloud_native, error_recovery, system_design, dependency_injection, api_versioning, serialization_perf, memory_allocation, build_pipeline, error_messages, logging_discipline, config_as_code, component_interface, token_hygiene, query_antipatterns, websocket_lifecycle, graphql_perf, deprecation_tracking, code_splitting_audit, css_arch_deep, sec_dep_audit, webhook_signature, oauth_security, email_infra, health_check_depth, cors_security, feature_rollout, secret_lifecycle, rate_limit_strategy, container_security_scan, grpc_security, data_residency, deployment_progressive, obs_exemplar, data_pipeline_quality, service_mesh, plugin_architecture, mobile_app_security, data_masking, core_web_vitals, infra_cost, api_gateway_config, css_in_js_perf, crdt_state_sync, resource_quota, browser_compat_audit, floating_point, snapshot_testing, event_schema, form_validation, retry_idempotency, a11y_semantics, race_condition, cache_invalidation, data_loader_opt, event_versioning, connection_lifecycle, csp_nonce, struct_error_ctx, stream_backpressure, identifier_collision, graphql_query_depth, auth_token_rotation, mq_dead_letter, file_upload_sec, query_plan, encryption_at_rest, ws_connection_state, rate_limit_policy, payment_idempotency, cron_reliability, immutable_data, data_residency_compliance, response_envelope, compression_negotiation, dns_health, graceful_degradation, api_deprecation_strategy, db_safety, log_sampling, slo_tracking, api_key_mgmt, data_lineage, infra_drift, schema_evolution, wasm_interop, data_partition, plugin_lifecycle, time_sync, feature_store, vector_db, api_composition, audit_trail, graphql_cost, session_mgmt, csv_injection, tls_config, distributed_lock, event_dedup, allocator_pattern, webhook_retry, money_handling, pagination, resource_leak, c4_architecture, semaphore, dns_optimization, content_negotiation, retry_budget, cache_stampede, gateway_routing, search_sanitization, rate_limit_headers, data_consistency, mobile_hardening, build_config, grpc_interceptors, memory_alignment, saga_orchestration, ws_backpressure, bff_pattern, immutable_infra, csp_reporting, token_bucket, circuit_breaker, change_data_capture, api_federation, cache_warming, conn_multiplex, least_privilege, tracing_sampling, json_patch, event_snapshot, adaptive_rate, graceful_retry, encryption_transit, image_scanning, deadlock_detect, deprecation_comm, metrics_cardinality`)
 }

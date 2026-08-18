@@ -1,7 +1,7 @@
 {
   "name": "dsh-tool-codereview",
-  "version": "0.40.0",
-  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 289 tools, Circuit Breaker, Change Data Capture, API Federation, Cache Warming, Conn Multiplex, Least Privilege, Tracing Sampling, JSON Patch",
+  "version": "0.41.0",
+  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 297 tools, Event Snapshot, Adaptive Rate Limit, Graceful Retry, Encryption Transit, Image Scanning, Deadlock Detection, Deprecation Comm, Metrics Cardinality",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
