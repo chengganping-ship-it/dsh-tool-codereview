@@ -1,10 +1,10 @@
-# DeepSeek Harness Plugin: Code Review Assistant v0.49.0
-# Enterprise-grade code analysis toolkit with 361 comprehensive tools
+# DeepSeek Harness Plugin: Code Review Assistant v0.50.0
+# Enterprise-grade code analysis toolkit with 369 comprehensive tools
 
 - id: dsh-tool-codereview
   name: dsh-tool-codereview
-  version: 0.49.0
-  description: Enterprise Code Review & Security Scan - 361 tools including Path Traversal Prevention, Insecure Deserialization, Mass Assignment, Weak Cryptography, SSTI Injection, File Upload Validation, Hardcoded Secrets, Unsafe Reflection
+  version: 0.50.0
+  description: Enterprise Code Review & Security Scan - 369 tools including XXE Injection Prevention, Prototype Pollution, Async Race Condition, Clickjacking Protection, Insecure CORS Config, Unrestricted File Deletion, Content-Type Header, Weak Password Policy
   author: chengganping-ship-it
   tools:
     - code_review
@@ -363,3 +363,11 @@
     - file_upload_validation
     - hardcoded_secrets
     - unsafe_reflection
+    - xxe_injection_prevention
+    - prototype_pollution
+    - async_race_condition
+    - clickjacking_protection
+    - insecure_cors_config
+    - unrestricted_file_deletion
+    - content_type_header
+    - weak_password_policy
