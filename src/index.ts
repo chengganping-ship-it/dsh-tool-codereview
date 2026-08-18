@@ -82,7 +82,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 export const name = 'dsh-tool-codereview'
 export const inject = ['tools']
 
-const VERSION = '0.54.0'
+const VERSION = '0.55.0'
 
 // ==================== TYPES ====================
 
@@ -28951,6 +28951,292 @@ function formatPostMessageSecurityReport(r: PostMessageSecurityResult): string {
   return l.join('\n')
 }
 
+// ==================== V0.55.0: XML SIGNATURE WRAPPING ====================
+
+interface XMLSignatureWrappingResult { totalIssues: number; severity: Severity; reference: { line: number; issue: string; suggestion: string }[]; transform: { line: number; issue: string; suggestion: string }[]; validation: { line: number; issue: string; suggestion: string }[]; xmlSignatureWrappingScore: number; summary: string }
+
+function analyzeXMLSignatureWrapping(code: string): XMLSignatureWrappingResult {
+  const lines = code.split('\n')
+  const reference: XMLSignatureWrappingResult['reference'] = []
+  const transform: XMLSignatureWrappingResult['transform'] = []
+  const validation: XMLSignatureWrappingResult['validation'] = []
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+    if (line.match(/ds:Reference|Reference.*URI|URI.*signature/i) && !line.match(/canonical|transform.*enveloped|enveloped.*sign/i)) {
+      reference.push({ line: i + 1, issue: 'XML Signature Reference without enveloped transform', suggestion: 'Use enveloped signature transform; external references enable signature wrapping attacks' })
+    }
+    if (line.match(/ds:Transform|Transform.*Algorithm|canonicaliz/i) && !line.match(/enveloped|exclusive.*c14n|xml-exc-c14n/i)) {
+      transform.push({ line: i + 1, issue: 'XML Signature transform not using exclusive canonicalization', suggestion: 'Use exclusive canonicalization (xml-exc-c14n); inclusive transforms enable wrapping attacks' })
+    }
+    if (line.match(/verify.*signature|signature.*verify|validate.*sign/i) && !line.match(/schema.*valid|signature.*manifest|manifest.*valid/i)) {
+      validation.push({ line: i + 1, issue: 'Signature validation without schema/Manifest check', suggestion: 'Validate against schema or use Manifest; schema-agnostic validation enables wrapping' })
+    }
+    if (line.match(/XPath.*filter|filter.*XPath|xpath.*sign/i) && !line.match(/strict.*xpath|xpath.*restrict/i)) {
+      validation.push({ line: i + 1, issue: 'XPath filter in signature without strict constraints', suggestion: 'Restrict XPath expressions; flexible XPath enables signature manipulation' })
+    }
+  })
+  const totalIssues = reference.length + transform.length + validation.length
+  const xmlSignatureWrappingScore = Math.max(0, 100 - reference.length * 10 - transform.length * 8 - validation.length * 10)
+  const severity: Severity = totalIssues > 3 ? 'critical' : totalIssues > 1 ? 'error' : totalIssues > 0 ? 'warning' : 'info'
+  return { totalIssues, severity, reference, transform, validation, xmlSignatureWrappingScore, summary: `XML Signature Wrapping: ${totalIssues} issue(s) found. Score: ${xmlSignatureWrappingScore}/100.` }
+}
+
+function formatXMLSignatureWrappingReport(r: XMLSignatureWrappingResult): string {
+  const l: string[] = ['# XML Signature Wrapping Analysis', `**Severity:** ${r.severity} | **Score:** ${r.xmlSignatureWrappingScore}/100`, '']
+  if (r.reference.length > 0) { l.push('## Reference (' + r.reference.length + ')'); r.reference.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.transform.length > 0) { l.push('## Transform (' + r.transform.length + ')'); r.transform.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.validation.length > 0) { l.push('## Validation (' + r.validation.length + ')'); r.validation.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.55.0: INSECURE RANDOMNESS ====================
+
+interface InsecureRandomResult { totalIssues: number; severity: Severity; prng: { line: number; issue: string; suggestion: string }[]; seed: { line: number; issue: string; suggestion: string }[]; range: { line: number; issue: string; suggestion: string }[]; insecureRandomScore: number; summary: string }
+
+function analyzeInsecureRandom(code: string): InsecureRandomResult {
+  const lines = code.split('\n')
+  const prng: InsecureRandomResult['prng'] = []
+  const seed: InsecureRandomResult['seed'] = []
+  const range: InsecureRandomResult['range'] = []
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+    if (line.match(/Math\.random|random\(\)|java\.util\.Random|rand\(\)/i) && !line.match(/crypto|secureRandom|secrets\.|os\.urandom/i)) {
+      prng.push({ line: i + 1, issue: 'Insecure PRNG used for security-sensitive operation', suggestion: 'Use crypto-safe random (crypto.randomBytes, SecureRandom, secrets module); predictable PRNGs enable token guessing' })
+    }
+    if (line.match(/seed.*random|random.*seed|srand|seed.*time|time.*seed/i) && !line.match(/crypto.*seed|hardware.*seed/i)) {
+      seed.push({ line: i + 1, issue: 'PRNG seeded with predictable value (time)', suggestion: 'Seed with entropy source (os.urandom, /dev/urandom); time-based seeds are guessable' })
+    }
+    if (line.match(/random.*%|%.*random|random.*mod|mod.*random|rand.*%/i)) {
+      range.push({ line: i + 1, issue: 'Modulo bias in random range reduction', suggestion: 'Use rejection sampling or crypto.randomInt; modulo bias skews distribution' })
+    }
+    if (line.match(/token.*random|random.*token|nonce.*random|random.*nonce|uuid.*random/i) && line.match(/Math\.random|rand\(/i)) {
+      prng.push({ line: i + 1, issue: 'Security token/nonce generated with insecure random', suggestion: 'Use crypto.randomBytes or secrets.token_hex for tokens; insecure random enables token prediction' })
+    }
+  })
+  const totalIssues = prng.length + seed.length + range.length
+  const insecureRandomScore = Math.max(0, 100 - prng.length * 10 - seed.length * 8 - range.length * 7)
+  const severity: Severity = totalIssues > 3 ? 'critical' : totalIssues > 1 ? 'error' : totalIssues > 0 ? 'warning' : 'info'
+  return { totalIssues, severity, prng, seed, range, insecureRandomScore, summary: `Insecure Randomness: ${totalIssues} issue(s) found. Score: ${insecureRandomScore}/100.` }
+}
+
+function formatInsecureRandomReport(r: InsecureRandomResult): string {
+  const l: string[] = ['# Insecure Randomness Analysis', `**Severity:** ${r.severity} | **Score:** ${r.insecureRandomScore}/100`, '']
+  if (r.prng.length > 0) { l.push('## PRNG (' + r.prng.length + ')'); r.prng.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.seed.length > 0) { l.push('## Seed (' + r.seed.length + ')'); r.seed.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.range.length > 0) { l.push('## Range (' + r.range.length + ')'); r.range.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.55.0: MISSING CONTENT-LENGTH ====================
+
+interface MissingContentLengthResult { totalIssues: number; severity: Severity; response: { line: number; issue: string; suggestion: string }[]; request: { line: number; issue: string; suggestion: string }[]; chunked: { line: number; issue: string; suggestion: string }[]; missingContentLengthScore: number; summary: string }
+
+function analyzeMissingContentLength(code: string): MissingContentLengthResult {
+  const lines = code.split('\n')
+  const response: MissingContentLengthResult['response'] = []
+  const request: MissingContentLengthResult['request'] = []
+  const chunked: MissingContentLengthResult['chunked'] = []
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+    if (line.match(/res\.send|res\.end|res\.write|response\.send|response\.end/i) && !line.match(/content-length|contentLength|Transfer-Encoding|chunked/i)) {
+      response.push({ line: i + 1, issue: 'HTTP response without Content-Length or Transfer-Encoding', suggestion: 'Set Content-Length or use chunked encoding; missing length enables request smuggling' })
+    }
+    if (line.match(/fetch\(|http\.request|axios|request\(/i) && line.match(/body|data|payload/i) && !line.match(/content-length|contentLength|Content-Length/i)) {
+      request.push({ line: i + 1, issue: 'HTTP request with body but no Content-Length header', suggestion: 'Set Content-Length for body requests; missing length causes smuggling/desync' })
+    }
+    if (line.match(/Transfer-Encoding.*chunked|chunked.*encoding/i) && !line.match(/content-length.*0|dual.*header|smuggl/i)) {
+      chunked.push({ line: i + 1, issue: 'Chunked encoding without Content-Length conflict protection', suggestion: 'Remove Content-Length when using chunked; dual headers enable request smuggling' })
+    }
+  })
+  const totalIssues = response.length + request.length + chunked.length
+  const missingContentLengthScore = Math.max(0, 100 - response.length * 8 - request.length * 10 - chunked.length * 10)
+  const severity: Severity = chunked.length > 0 ? 'error' : totalIssues > 2 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+  return { totalIssues, severity, response, request, chunked, missingContentLengthScore, summary: `Missing Content-Length: ${totalIssues} issue(s) found. Score: ${missingContentLengthScore}/100.` }
+}
+
+function formatMissingContentLengthReport(r: MissingContentLengthResult): string {
+  const l: string[] = ['# Missing Content-Length Analysis', `**Severity:** ${r.severity} | **Score:** ${r.missingContentLengthScore}/100`, '']
+  if (r.response.length > 0) { l.push('## Response (' + r.response.length + ')'); r.response.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.request.length > 0) { l.push('## Request (' + r.request.length + ')'); r.request.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.chunked.length > 0) { l.push('## Chunked (' + r.chunked.length + ')'); r.chunked.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.55.0: COOKIE PREFIX BYPASS ====================
+
+interface CookiePrefixBypassResult { totalIssues: number; severity: Severity; prefix: { line: number; issue: string; suggestion: string }[]; attribute: { line: number; issue: string; suggestion: string }[]; validation: { line: number; issue: string; suggestion: string }[]; cookiePrefixBypassScore: number; summary: string }
+
+function analyzeCookiePrefixBypass(code: string): CookiePrefixBypassResult {
+  const lines = code.split('\n')
+  const prefix: CookiePrefixBypassResult['prefix'] = []
+  const attribute: CookiePrefixBypassResult['attribute'] = []
+  const validation: CookiePrefixBypassResult['validation'] = []
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+    if (line.match(/Set-Cookie|setCookie|cookie.*set/i) && !line.match(/__Host-|__Secure-/i)) {
+      prefix.push({ line: i + 1, issue: 'Cookie without __Host- or __Secure- prefix', suggestion: 'Use __Host- prefix for cookies requiring Secure+Path=/+no Domain; prefix prevents subdomain bypass' })
+    }
+    if (line.match(/Set-Cookie|setCookie/i) && !line.match(/Secure|HttpOnly|SameSite/i)) {
+      attribute.push({ line: i + 1, issue: 'Cookie missing Secure/HttpOnly/SameSite attributes', suggestion: 'Set Secure, HttpOnly, and SameSite; missing attributes enable XSS/CSRF theft' })
+    }
+    if (line.match(/document\.cookie|cookie.*read|read.*cookie/i) && !line.match(/__Host-|__Secure-|prefix.*check/i)) {
+      validation.push({ line: i + 1, issue: 'Cookie read without prefix validation', suggestion: 'Validate __Host-/__Secure- prefix on server; prefix bypass enables session fixation' })
+    }
+  })
+  const totalIssues = prefix.length + attribute.length + validation.length
+  const cookiePrefixBypassScore = Math.max(0, 100 - prefix.length * 8 - attribute.length * 10 - validation.length * 7)
+  const severity: Severity = attribute.length > 0 ? 'error' : totalIssues > 2 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+  return { totalIssues, severity, prefix, attribute, validation, cookiePrefixBypassScore, summary: `Cookie Prefix Bypass: ${totalIssues} issue(s) found. Score: ${cookiePrefixBypassScore}/100.` }
+}
+
+function formatCookiePrefixBypassReport(r: CookiePrefixBypassResult): string {
+  const l: string[] = ['# Cookie Prefix Bypass Analysis', `**Severity:** ${r.severity} | **Score:** ${r.cookiePrefixBypassScore}/100`, '']
+  if (r.prefix.length > 0) { l.push('## Prefix (' + r.prefix.length + ')'); r.prefix.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.attribute.length > 0) { l.push('## Attribute (' + r.attribute.length + ')'); r.attribute.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.validation.length > 0) { l.push('## Validation (' + r.validation.length + ')'); r.validation.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.55.0: UNICODE NORMALIZATION ====================
+
+interface UnicodeNormalizationResult { totalIssues: number; severity: Severity; normalization: { line: number; issue: string; suggestion: string }[]; homoglyph: { line: number; issue: string; suggestion: string }[]; comparison: { line: number; issue: string; suggestion: string }[]; unicodeNormalizationScore: number; summary: string }
+
+function analyzeUnicodeNormalization(code: string): UnicodeNormalizationResult {
+  const lines = code.split('\n')
+  const normalization: UnicodeNormalizationResult['normalization'] = []
+  const homoglyph: UnicodeNormalizationResult['homoglyph'] = []
+  const comparison: UnicodeNormalizationResult['comparison'] = []
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+    if (line.match(/username|email|identifier|name.*input|input.*name/i) && !line.match(/normalize|NFC|NFKC|NFD|unicode.*normal/i)) {
+      normalization.push({ line: i + 1, issue: 'User identifier without Unicode normalization', suggestion: 'Normalize to NFC/NFKC before storage/comparison; unnormalized strings enable homoglyph attacks' })
+    }
+    if (line.match(/string.*equal|equal.*string|===.*string|string.*===|compare.*string/i) && !line.match(/normalize|localeCompare|collate/i)) {
+      comparison.push({ line: i + 1, issue: 'String comparison without normalization or collation', suggestion: 'Normalize before comparison or use localeCompare; raw comparison misses homoglyph variants' })
+    }
+    if (line.match(/punycode|idn|international.*domain|unicode.*domain/i) && !line.match(/normalize|homoglyph.*check|confusable/i)) {
+      homoglyph.push({ line: i + 1, issue: 'International domain handling without homoglyph detection', suggestion: 'Check for confusable/homoglyph characters; lookalike domains enable phishing' })
+    }
+  })
+  const totalIssues = normalization.length + homoglyph.length + comparison.length
+  const unicodeNormalizationScore = Math.max(0, 100 - normalization.length * 8 - homoglyph.length * 10 - comparison.length * 7)
+  const severity: Severity = homoglyph.length > 0 ? 'error' : totalIssues > 2 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+  return { totalIssues, severity, normalization, homoglyph, comparison, unicodeNormalizationScore, summary: `Unicode Normalization: ${totalIssues} issue(s) found. Score: ${unicodeNormalizationScore}/100.` }
+}
+
+function formatUnicodeNormalizationReport(r: UnicodeNormalizationResult): string {
+  const l: string[] = ['# Unicode Normalization Analysis', `**Severity:** ${r.severity} | **Score:** ${r.unicodeNormalizationScore}/100`, '']
+  if (r.normalization.length > 0) { l.push('## Normalization (' + r.normalization.length + ')'); r.normalization.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.homoglyph.length > 0) { l.push('## Homoglyph (' + r.homoglyph.length + ')'); r.homoglyph.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.comparison.length > 0) { l.push('## Comparison (' + r.comparison.length + ')'); r.comparison.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.55.0: WEBSOCKET ORIGIN BYPASS ====================
+
+interface WebSocketOriginBypassResult { totalIssues: number; severity: Severity; origin: { line: number; issue: string; suggestion: string }[]; handshake: { line: number; issue: string; suggestion: string }[]; frame: { line: number; issue: string; suggestion: string }[]; webSocketOriginBypassScore: number; summary: string }
+
+function analyzeWebSocketOriginBypass(code: string): WebSocketOriginBypassResult {
+  const lines = code.split('\n')
+  const origin: WebSocketOriginBypassResult['origin'] = []
+  const handshake: WebSocketOriginBypassResult['handshake'] = []
+  const frame: WebSocketOriginBypassResult['frame'] = []
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+    if (line.match(/WebSocket|ws:\/\/|wss:\/\//i) && !line.match(/origin.*check|check.*origin|verify.*origin|allowedOrigin/i)) {
+      origin.push({ line: i + 1, issue: 'WebSocket connection without origin verification', suggestion: 'Verify Origin header during handshake; missing origin check enables CSWSH' })
+    }
+    if (line.match(/upgrade.*websocket|websocket.*upgrade|connection.*upgrade/i) && !line.match(/origin|sec-websocket-origin|allowed.*origin/i)) {
+      handshake.push({ line: i + 1, issue: 'WebSocket upgrade without origin validation', suggestion: 'Validate Origin on upgrade request; unvalidated upgrade accepts any origin' })
+    }
+    if (line.match(/ws.*send|websocket.*send|send.*frame/i) && !line.match(/frame.*valid|valid.*frame|mask.*check/i)) {
+      frame.push({ line: i + 1, issue: 'WebSocket frame sent without validation', suggestion: 'Validate frame content and masking; unvalidated frames enable injection' })
+    }
+  })
+  const totalIssues = origin.length + handshake.length + frame.length
+  const webSocketOriginBypassScore = Math.max(0, 100 - origin.length * 10 - handshake.length * 8 - frame.length * 7)
+  const severity: Severity = origin.length > 0 ? 'error' : totalIssues > 2 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+  return { totalIssues, severity, origin, handshake, frame, webSocketOriginBypassScore, summary: `WebSocket Origin Bypass: ${totalIssues} issue(s) found. Score: ${webSocketOriginBypassScore}/100.` }
+}
+
+function formatWebSocketOriginBypassReport(r: WebSocketOriginBypassResult): string {
+  const l: string[] = ['# WebSocket Origin Bypass Analysis', `**Severity:** ${r.severity} | **Score:** ${r.webSocketOriginBypassScore}/100`, '']
+  if (r.origin.length > 0) { l.push('## Origin (' + r.origin.length + ')'); r.origin.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.handshake.length > 0) { l.push('## Handshake (' + r.handshake.length + ')'); r.handshake.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.frame.length > 0) { l.push('## Frame (' + r.frame.length + ')'); r.frame.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.55.0: MISSING X-FRAME-OPTIONS ====================
+
+interface MissingXFrameOptionsResult { totalIssues: number; severity: Severity; frame: { line: number; issue: string; suggestion: string }[]; csp: { line: number; issue: string; suggestion: string }[]; embed: { line: number; issue: string; suggestion: string }[]; missingXFrameOptionsScore: number; summary: string }
+
+function analyzeMissingXFrameOptions(code: string): MissingXFrameOptionsResult {
+  const lines = code.split('\n')
+  const frame: MissingXFrameOptionsResult['frame'] = []
+  const csp: MissingXFrameOptionsResult['csp'] = []
+  const embed: MissingXFrameOptionsResult['embed'] = []
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+    if (line.match(/X-Frame-Options|X-Frame/i) && !line.match(/DENY|SAMEORIGIN|ALLOW-FROM/i)) {
+      frame.push({ line: i + 1, issue: 'X-Frame-Options header with invalid value', suggestion: 'Use DENY or SAMEORIGIN; invalid values provide no clickjacking protection' })
+    }
+    if (line.match(/Content-Security-Policy|CSP/i) && !line.match(/frame-ancestors|frame\.ancestors/i)) {
+      csp.push({ line: i + 1, issue: 'CSP header without frame-ancestors directive', suggestion: 'Add frame-ancestors to CSP; missing directive allows framing by any origin' })
+    }
+    if (line.match(/iframe|embed.*page|page.*embed|load.*frame|frame.*load/i) && !line.match(/X-Frame-Options|frame-ancestors|sandbox/i)) {
+      embed.push({ line: i + 1, issue: 'Page embeddable without frame protection', suggestion: 'Set X-Frame-Options DENY or CSP frame-ancestors; unprotected pages enable clickjacking' })
+    }
+  })
+  const totalIssues = frame.length + csp.length + embed.length
+  const missingXFrameOptionsScore = Math.max(0, 100 - frame.length * 8 - csp.length * 10 - embed.length * 10)
+  const severity: Severity = embed.length > 0 ? 'error' : totalIssues > 2 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+  return { totalIssues, severity, frame, csp, embed, missingXFrameOptionsScore, summary: `Missing X-Frame-Options: ${totalIssues} issue(s) found. Score: ${missingXFrameOptionsScore}/100.` }
+}
+
+function formatMissingXFrameOptionsReport(r: MissingXFrameOptionsResult): string {
+  const l: string[] = ['# Missing X-Frame-Options Analysis', `**Severity:** ${r.severity} | **Score:** ${r.missingXFrameOptionsScore}/100`, '']
+  if (r.frame.length > 0) { l.push('## Frame (' + r.frame.length + ')'); r.frame.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.csp.length > 0) { l.push('## CSP (' + r.csp.length + ')'); r.csp.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.embed.length > 0) { l.push('## Embed (' + r.embed.length + ')'); r.embed.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.55.0: SQL CONCATENATION ====================
+
+interface SQLConcatenationResult { totalIssues: number; severity: Severity; query: { line: number; issue: string; suggestion: string }[]; dynamic: { line: number; issue: string; suggestion: string }[]; orderBy: { line: number; issue: string; suggestion: string }[]; sqlConcatenationScore: number; summary: string }
+
+function analyzeSQLConcatenation(code: string): SQLConcatenationResult {
+  const lines = code.split('\n')
+  const query: SQLConcatenationResult['query'] = []
+  const dynamic: SQLConcatenationResult['dynamic'] = []
+  const orderBy: SQLConcatenationResult['orderBy'] = []
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+    if (line.match(/SELECT|INSERT|UPDATE|DELETE/i) && line.match(/\+|\$\{|template|`.*\$\{\|concat/i) && !line.match(/prepare|parameteriz|bind|placeholder|\?.*param/)) {
+      query.push({ line: i + 1, issue: 'SQL query constructed via string concatenation/interpolation', suggestion: 'Use parameterized queries; string concatenation enables SQL injection' })
+    }
+    if (line.match(/ORDER\s+BY|GROUP\s+BY/i) && line.match(/\+|\$\{|template|concat|user.*input|req\./i) && !line.match(/whitelist|allow.*column|column.*valid/i)) {
+      orderBy.push({ line: i + 1, issue: 'Dynamic ORDER BY/GROUP BY with user input', suggestion: 'Whitelist allowed columns; dynamic ORDER BY enables SQL injection via column names' })
+    }
+    if (line.match(/table.*name|column.*name|from.*\$\{|into.*\$\{/i) && !line.match(/whitelist|schema.*valid|meta.*check/i)) {
+      dynamic.push({ line: i + 1, issue: 'Dynamic table/column name from user input', suggestion: 'Whitelist table/column names; dynamic identifiers enable SQL injection' })
+    }
+  })
+  const totalIssues = query.length + dynamic.length + orderBy.length
+  const sqlConcatenationScore = Math.max(0, 100 - query.length * 10 - dynamic.length * 8 - orderBy.length * 10)
+  const severity: Severity = totalIssues > 3 ? 'critical' : totalIssues > 1 ? 'error' : totalIssues > 0 ? 'warning' : 'info'
+  return { totalIssues, severity, query, dynamic, orderBy, sqlConcatenationScore, summary: `SQL Concatenation: ${totalIssues} issue(s) found. Score: ${sqlConcatenationScore}/100.` }
+}
+
+function formatSQLConcatenationReport(r: SQLConcatenationResult): string {
+  const l: string[] = ['# SQL Concatenation Analysis', `**Severity:** ${r.severity} | **Score:** ${r.sqlConcatenationScore}/100`, '']
+  if (r.query.length > 0) { l.push('## Query (' + r.query.length + ')'); r.query.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.dynamic.length > 0) { l.push('## Dynamic (' + r.dynamic.length + ')'); r.dynamic.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.orderBy.length > 0) { l.push('## OrderBy (' + r.orderBy.length + ')'); r.orderBy.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
 // ==================== V0.49.0: PATH TRAVERSAL PREVENTION ====================
 
 interface PathTraversalPreventionResult { totalIssues: number; severity: Severity; traversal: { line: number; issue: string; suggestion: string }[]; symlink: { line: number; issue: string; suggestion: string }[]; canonical: { line: number; issue: string; suggestion: string }[]; pathTraversalScore: number; summary: string }
@@ -35691,5 +35977,93 @@ ctx.tools.register(defineTool({
   }
 }))
 
-console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design, container_security, ml_pipeline, api_deprecation, design_system, pwa_compliance, type_system, green_computing, realtime_collab, a11y_deep, i18n_deep, css_architecture, state_machine, web_components, resilience, module_federation, review_automation, observability, migration_safety, edge_computing, api_versioning, wasm_advanced, feature_toggles, email_deliverability, seo_analysis, monorepo_boundaries, ddd_patterns, mf_runtime, realtime_protocols, data_pipeline, gateway_deep, test_rigor, quality_gate, graphql_schema, event_sourcing_integrity, rate_limiting, migration_safety, auth_hardening, distributed_tracing, infrastructure_as_code, review_automation, contract_testing, sec_headers_deep, privacy_compliance, concurrency_patterns, cloud_native, error_recovery, system_design, dependency_injection, api_versioning, serialization_perf, memory_allocation, build_pipeline, error_messages, logging_discipline, config_as_code, component_interface, token_hygiene, query_antipatterns, websocket_lifecycle, graphql_perf, deprecation_tracking, code_splitting_audit, css_arch_deep, sec_dep_audit, webhook_signature, oauth_security, email_infra, health_check_depth, cors_security, feature_rollout, secret_lifecycle, rate_limit_strategy, container_security_scan, grpc_security, data_residency, deployment_progressive, obs_exemplar, data_pipeline_quality, service_mesh, plugin_architecture, mobile_app_security, data_masking, core_web_vitals, infra_cost, api_gateway_config, css_in_js_perf, crdt_state_sync, resource_quota, browser_compat_audit, floating_point, snapshot_testing, event_schema, form_validation, retry_idempotency, a11y_semantics, race_condition, cache_invalidation, data_loader_opt, event_versioning, connection_lifecycle, csp_nonce, struct_error_ctx, stream_backpressure, identifier_collision, graphql_query_depth, auth_token_rotation, mq_dead_letter, file_upload_sec, query_plan, encryption_at_rest, ws_connection_state, rate_limit_policy, payment_idempotency, cron_reliability, immutable_data, data_residency_compliance, response_envelope, compression_negotiation, dns_health, graceful_degradation, api_deprecation_strategy, db_safety, log_sampling, slo_tracking, api_key_mgmt, data_lineage, infra_drift, schema_evolution, wasm_interop, data_partition, plugin_lifecycle, time_sync, feature_store, vector_db, api_composition, audit_trail, graphql_cost, session_mgmt, csv_injection, tls_config, distributed_lock, event_dedup, allocator_pattern, webhook_retry, money_handling, pagination, resource_leak, c4_architecture, semaphore, dns_optimization, content_negotiation, retry_budget, cache_stampede, gateway_routing, search_sanitization, rate_limit_headers, data_consistency, mobile_hardening, build_config, grpc_interceptors, memory_alignment, saga_orchestration, ws_backpressure, bff_pattern, immutable_infra, csp_reporting, token_bucket, circuit_breaker, change_data_capture, api_federation, cache_warming, conn_multiplex, least_privilege, tracing_sampling, json_patch, event_snapshot, adaptive_rate, graceful_retry, encryption_transit, image_scanning, deadlock_detect, deprecation_comm, metrics_cardinality, api_key_rotation, data_retention, flag_cleanup, log_redaction, sli_slo, graceful_degrade, pagination_consistency, dep_drift, cqrs_pattern, outbox_idempotency, api_version_negotiation, connection_backpressure, graceful_startup, secret_detection, error_code_registry, cache_key_design, db_migration_safety, retry_strategy, health_check_completeness, log_structuring, event_schema_evolution, graceful_shutdown_timing, config_hot_reload, mutual_tls, dead_letter_queue, rate_limit_header, websocket_pool, container_image_opt, dns_prefetch_config, async_memory_leak, api_idempotency_key, service_mesh_policy, pagination_safety, background_job_idempotency, feature_flag_lifecycle, request_deduplication, connection_leak, payload_compression, cors_preflight_cache, timestamp_monotonicity, search_query_safety, api_response_cache, thread_pool_starvation, db_slow_query, url_validation, memory_alignment_audit, cache_stampede_guard, log_injection_prevention, temp_file_security, jwt_token_validation, file_permission_audit, dns_rebinding_protection, integer_overflow_detection, command_injection_prevention, csrf_token_validation, path_traversal_prevention, insecure_deserialization, mass_assignment, weak_cryptography, ssti_injection, file_upload_validation, hardcoded_secrets, unsafe_reflection, xxe_injection_prevention, prototype_pollution, async_race_condition, clickjacking_protection, insecure_cors_config, unrestricted_file_deletion, content_type_header, weak_password_policy, crlf_injection_prevention, session_timeout_policy, zip_slip_prevention, ssrf_detection, process_env_leak, redos_complexity, null_byte_injection, mime_type_spoofing, subdomain_takeover, jwt_algorithm_confusion, oauth_flow_security, grpc_metadata_leak, websocket_security, dependency_confusion, timing_attack, unsafe_yaml_load, api_latency, cross_service_health, consumer_offset, config_value, db_connection_pool, background_job, canary_release, certificate_validation, memory_safety, input_sanitization, crypto_random, session_fixation, open_redirect, xml_bomb, ldap_injection, graphql_injection, nosql_injection, graphql_depth_limit, path_normalization, buffer_overread, http_parameter_pollution, dom_clobbering, postmessage_security`)
+ctx.tools.register(defineTool({
+  name: 'xml_signature_wrapping',
+  description: 'Analyze XML signature wrapping: reference integrity, transform validation, schema enforcement.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeXMLSignatureWrapping(args.code)
+    return formatXMLSignatureWrappingReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'insecure_random',
+  description: 'Analyze insecure randomness: PRNG choice, seed quality, modulo bias, token generation.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeInsecureRandom(args.code)
+    return formatInsecureRandomReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'missing_content_length',
+  description: 'Analyze missing Content-Length: response headers, request body length, chunked encoding conflicts.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeMissingContentLength(args.code)
+    return formatMissingContentLengthReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'cookie_prefix_bypass',
+  description: 'Analyze cookie prefix bypass: __Host-/__Secure- prefix, attribute validation, subdomain protection.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeCookiePrefixBypass(args.code)
+    return formatCookiePrefixBypassReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'unicode_normalization',
+  description: 'Analyze Unicode normalization: NFC/NFKC normalization, homoglyph detection, string comparison.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeUnicodeNormalization(args.code)
+    return formatUnicodeNormalizationReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'websocket_origin_bypass',
+  description: 'Analyze WebSocket origin bypass: origin verification, handshake validation, frame integrity.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeWebSocketOriginBypass(args.code)
+    return formatWebSocketOriginBypassReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'missing_x_frame_options',
+  description: 'Analyze missing X-Frame-Options: frame protection, CSP frame-ancestors, clickjacking prevention.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeMissingXFrameOptions(args.code)
+    return formatMissingXFrameOptionsReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'sql_concatenation',
+  description: 'Analyze SQL concatenation: query interpolation, dynamic identifiers, ORDER BY injection.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeSQLConcatenation(args.code)
+    return formatSQLConcatenationReport(result)
+  }
+}))
+
+console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design, container_security, ml_pipeline, api_deprecation, design_system, pwa_compliance, type_system, green_computing, realtime_collab, a11y_deep, i18n_deep, css_architecture, state_machine, web_components, resilience, module_federation, review_automation, observability, migration_safety, edge_computing, api_versioning, wasm_advanced, feature_toggles, email_deliverability, seo_analysis, monorepo_boundaries, ddd_patterns, mf_runtime, realtime_protocols, data_pipeline, gateway_deep, test_rigor, quality_gate, graphql_schema, event_sourcing_integrity, rate_limiting, migration_safety, auth_hardening, distributed_tracing, infrastructure_as_code, review_automation, contract_testing, sec_headers_deep, privacy_compliance, concurrency_patterns, cloud_native, error_recovery, system_design, dependency_injection, api_versioning, serialization_perf, memory_allocation, build_pipeline, error_messages, logging_discipline, config_as_code, component_interface, token_hygiene, query_antipatterns, websocket_lifecycle, graphql_perf, deprecation_tracking, code_splitting_audit, css_arch_deep, sec_dep_audit, webhook_signature, oauth_security, email_infra, health_check_depth, cors_security, feature_rollout, secret_lifecycle, rate_limit_strategy, container_security_scan, grpc_security, data_residency, deployment_progressive, obs_exemplar, data_pipeline_quality, service_mesh, plugin_architecture, mobile_app_security, data_masking, core_web_vitals, infra_cost, api_gateway_config, css_in_js_perf, crdt_state_sync, resource_quota, browser_compat_audit, floating_point, snapshot_testing, event_schema, form_validation, retry_idempotency, a11y_semantics, race_condition, cache_invalidation, data_loader_opt, event_versioning, connection_lifecycle, csp_nonce, struct_error_ctx, stream_backpressure, identifier_collision, graphql_query_depth, auth_token_rotation, mq_dead_letter, file_upload_sec, query_plan, encryption_at_rest, ws_connection_state, rate_limit_policy, payment_idempotency, cron_reliability, immutable_data, data_residency_compliance, response_envelope, compression_negotiation, dns_health, graceful_degradation, api_deprecation_strategy, db_safety, log_sampling, slo_tracking, api_key_mgmt, data_lineage, infra_drift, schema_evolution, wasm_interop, data_partition, plugin_lifecycle, time_sync, feature_store, vector_db, api_composition, audit_trail, graphql_cost, session_mgmt, csv_injection, tls_config, distributed_lock, event_dedup, allocator_pattern, webhook_retry, money_handling, pagination, resource_leak, c4_architecture, semaphore, dns_optimization, content_negotiation, retry_budget, cache_stampede, gateway_routing, search_sanitization, rate_limit_headers, data_consistency, mobile_hardening, build_config, grpc_interceptors, memory_alignment, saga_orchestration, ws_backpressure, bff_pattern, immutable_infra, csp_reporting, token_bucket, circuit_breaker, change_data_capture, api_federation, cache_warming, conn_multiplex, least_privilege, tracing_sampling, json_patch, event_snapshot, adaptive_rate, graceful_retry, encryption_transit, image_scanning, deadlock_detect, deprecation_comm, metrics_cardinality, api_key_rotation, data_retention, flag_cleanup, log_redaction, sli_slo, graceful_degrade, pagination_consistency, dep_drift, cqrs_pattern, outbox_idempotency, api_version_negotiation, connection_backpressure, graceful_startup, secret_detection, error_code_registry, cache_key_design, db_migration_safety, retry_strategy, health_check_completeness, log_structuring, event_schema_evolution, graceful_shutdown_timing, config_hot_reload, mutual_tls, dead_letter_queue, rate_limit_header, websocket_pool, container_image_opt, dns_prefetch_config, async_memory_leak, api_idempotency_key, service_mesh_policy, pagination_safety, background_job_idempotency, feature_flag_lifecycle, request_deduplication, connection_leak, payload_compression, cors_preflight_cache, timestamp_monotonicity, search_query_safety, api_response_cache, thread_pool_starvation, db_slow_query, url_validation, memory_alignment_audit, cache_stampede_guard, log_injection_prevention, temp_file_security, jwt_token_validation, file_permission_audit, dns_rebinding_protection, integer_overflow_detection, command_injection_prevention, csrf_token_validation, path_traversal_prevention, insecure_deserialization, mass_assignment, weak_cryptography, ssti_injection, file_upload_validation, hardcoded_secrets, unsafe_reflection, xxe_injection_prevention, prototype_pollution, async_race_condition, clickjacking_protection, insecure_cors_config, unrestricted_file_deletion, content_type_header, weak_password_policy, crlf_injection_prevention, session_timeout_policy, zip_slip_prevention, ssrf_detection, process_env_leak, redos_complexity, null_byte_injection, mime_type_spoofing, subdomain_takeover, jwt_algorithm_confusion, oauth_flow_security, grpc_metadata_leak, websocket_security, dependency_confusion, timing_attack, unsafe_yaml_load, api_latency, cross_service_health, consumer_offset, config_value, db_connection_pool, background_job, canary_release, certificate_validation, memory_safety, input_sanitization, crypto_random, session_fixation, open_redirect, xml_bomb, ldap_injection, graphql_injection, nosql_injection, graphql_depth_limit, path_normalization, buffer_overread, http_parameter_pollution, dom_clobbering, postmessage_security, xml_signature_wrapping, insecure_random, missing_content_length, cookie_prefix_bypass, unicode_normalization, websocket_origin_bypass, missing_x_frame_options, sql_concatenation`)
 }

@@ -1,7 +1,7 @@
 {
   "name": "dsh-tool-codereview",
-  "version": "0.54.0",
-  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 406 tools, GraphQL Injection, NoSQL Injection, GraphQL Depth Limit, Path Normalization, Buffer Overread, HTTP Parameter Pollution, DOM Clobbering, PostMessage Security",
+  "version": "0.55.0",
+  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 414 tools, XML Signature Wrapping, Insecure Randomness, Missing Content-Length, Cookie Prefix Bypass, Unicode Normalization, WebSocket Origin Bypass, Missing X-Frame-Options, SQL Concatenation",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
