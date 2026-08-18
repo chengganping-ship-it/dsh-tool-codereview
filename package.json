@@ -1,7 +1,7 @@
 {
   "name": "dsh-tool-codereview",
-  "version": "0.64.0",
-  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 486 tools, Model Inversion Detection, Tool Definition Exposure, Prompt Template Injection, WASM Memory Safety, Container Privilege Escalation, Secrets Staleness, API Schema Violation, Embedding Drift",
+  "version": "0.65.0",
+  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 494 tools, Agent Tool Chaining Audit, LLM Context Window Overflow, Vector Index Staleness, Model Weight Integrity, Prompt Caching Safety, Tool Call Recursion, RAG Retrieval Threshold, Agent Observability Gap",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",

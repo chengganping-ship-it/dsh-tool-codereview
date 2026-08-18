@@ -82,7 +82,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 export const name = 'dsh-tool-codereview'
 export const inject = ['tools']
 
-const VERSION = '0.64.0'
+const VERSION = '0.65.0'
 
 // ==================== TYPES ====================
 
@@ -30997,6 +30997,279 @@ function formatLLMOutputValidationReport(r: LLMOutputValidationResult): string {
   return l.join('\n')
 }
 
+// ==================== V0.65.0: AGENT TOOL CHAINING AUDIT ====================
+
+interface AgentToolChainingAuditResult { totalIssues: number; severity: Severity; unsafeChaining: { line: number; issue: string; suggestion: string }[]; noCircuitBreaker: { line: number; issue: string; suggestion: string }[]; privilegeAccumulation: { line: number; issue: string; suggestion: string }[]; agentToolChainingAuditScore: number; summary: string }
+
+function analyzeAgentToolChainingAudit(code: string): AgentToolChainingAuditResult {
+  const lines = code.split('\n')
+  const unsafeChaining: { line: number; issue: string; suggestion: string }[] = []
+  const noCircuitBreaker: { line: number; issue: string; suggestion: string }[] = []
+  const privilegeAccumulation: { line: number; issue: string; suggestion: string }[] = []
+  lines.forEach((line, i) => {
+    if (/tool.*result.*next.*tool|chain.*tool.*call|output.*input.*pipeline/i.test(line) && !/validate|sanitize|check/i.test(line)) {
+      unsafeChaining.push({ line: i + 1, issue: 'Tool output chained to next tool without validation', suggestion: 'Validate and sanitize data between tool chain stages' })
+    }
+    if (/sequential.*tool|tool.*loop|retry.*tool.*call/i.test(line) && !/circuit.*break|timeout|max.*attempt/i.test(line)) {
+      noCircuitBreaker.push({ line: i + 1, issue: 'Tool chaining without circuit breaker or retry limit', suggestion: 'Add circuit breaker pattern with max retry and backoff' })
+    }
+    if (/escalat.*permission|elevate.*privilege|admin.*mode.*tool/i.test(line) && !/audit|log|approve/i.test(line)) {
+      privilegeAccumulation.push({ line: i + 1, issue: 'Tool chain accumulates privileges without oversight', suggestion: 'Implement privilege escalation approval gates' })
+    }
+  })
+  const totalIssues = unsafeChaining.length + noCircuitBreaker.length + privilegeAccumulation.length
+  const severity: Severity = totalIssues > 5 ? 'critical' : totalIssues > 2 ? 'error' : totalIssues > 0 ? 'warning' : 'info'
+  const agentToolChainingAuditScore = Math.max(0, 100 - totalIssues * 15)
+  return { totalIssues, severity, unsafeChaining, noCircuitBreaker, privilegeAccumulation, agentToolChainingAuditScore, summary: `Agent Tool Chaining Audit: ${totalIssues} issue(s). Score: ${agentToolChainingAuditScore}/100` }
+}
+
+function formatAgentToolChainingAuditReport(r: AgentToolChainingAuditResult): string {
+  const l: string[] = ['# Agent Tool Chaining Audit (OWASP Agentic AS2)', `**Severity:** ${r.severity} | **Score:** ${r.agentToolChainingAuditScore}/100`, '']
+  if (r.unsafeChaining.length > 0) { l.push('## Unsafe Tool Chaining (' + r.unsafeChaining.length + ')'); r.unsafeChaining.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.noCircuitBreaker.length > 0) { l.push('## Missing Circuit Breaker (' + r.noCircuitBreaker.length + ')'); r.noCircuitBreaker.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.privilegeAccumulation.length > 0) { l.push('## Privilege Accumulation (' + r.privilegeAccumulation.length + ')'); r.privilegeAccumulation.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.65.0: LLM CONTEXT WINDOW OVERFLOW ====================
+
+interface LLMContextWindowOverflowResult { totalIssues: number; severity: Severity; noTokenLimit: { line: number; issue: string; suggestion: string }[]; unboundedContext: { line: number; issue: string; suggestion: string }[]; missingTruncation: { line: number; issue: string; suggestion: string }[]; llmContextWindowOverflowScore: number; summary: string }
+
+function analyzeLLMContextWindowOverflow(code: string): LLMContextWindowOverflowResult {
+  const lines = code.split('\n')
+  const noTokenLimit: { line: number; issue: string; suggestion: string }[] = []
+  const unboundedContext: { line: number; issue: string; suggestion: string }[] = []
+  const missingTruncation: { line: number; issue: string; suggestion: string }[] = []
+  lines.forEach((line, i) => {
+    if (/messages.*push|context.*append|history.*add/i.test(line) && !/max.*token|truncat|limit|window/i.test(line)) {
+      noTokenLimit.push({ line: i + 1, issue: 'Message context grows without token limit', suggestion: 'Implement sliding window or token-count-based truncation' })
+    }
+    if (/full.*context|entire.*history|all.*messages/i.test(line) && !/summar|compress|truncat/i.test(line)) {
+      unboundedContext.push({ line: i + 1, issue: 'Full conversation history sent without compression', suggestion: 'Summarize older messages or use sliding window approach' })
+    }
+    if (/prompt.*construct|system.*prompt.*build/i.test(line) && !/truncat|max.*length|token.*count/i.test(line)) {
+      missingTruncation.push({ line: i + 1, issue: 'Prompt construction without truncation logic', suggestion: 'Add truncation to fit within model context window limits' })
+    }
+  })
+  const totalIssues = noTokenLimit.length + unboundedContext.length + missingTruncation.length
+  const severity: Severity = totalIssues > 5 ? 'critical' : totalIssues > 2 ? 'error' : totalIssues > 0 ? 'warning' : 'info'
+  const llmContextWindowOverflowScore = Math.max(0, 100 - totalIssues * 15)
+  return { totalIssues, severity, noTokenLimit, unboundedContext, missingTruncation, llmContextWindowOverflowScore, summary: `LLM Context Window Overflow: ${totalIssues} issue(s). Score: ${llmContextWindowOverflowScore}/100` }
+}
+
+function formatLLMContextWindowOverflowReport(r: LLMContextWindowOverflowResult): string {
+  const l: string[] = ['# LLM Context Window Overflow Analysis (OWASP LLM05)', `**Severity:** ${r.severity} | **Score:** ${r.llmContextWindowOverflowScore}/100`, '']
+  if (r.noTokenLimit.length > 0) { l.push('## Missing Token Limit (' + r.noTokenLimit.length + ')'); r.noTokenLimit.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.unboundedContext.length > 0) { l.push('## Unbounded Context Growth (' + r.unboundedContext.length + ')'); r.unboundedContext.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.missingTruncation.length > 0) { l.push('## Missing Truncation Logic (' + r.missingTruncation.length + ')'); r.missingTruncation.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.65.0: VECTOR INDEX STALENESS ====================
+
+interface VectorIndexStalenessResult { totalIssues: number; severity: Severity; noRefreshPolicy: { line: number; issue: string; suggestion: string }[]; staticIndex: { line: number; issue: string; suggestion: string }[]; noRebuildTrigger: { line: number; issue: string; suggestion: string }[]; vectorIndexStalenessScore: number; summary: string }
+
+function analyzeVectorIndexStaleness(code: string): VectorIndexStalenessResult {
+  const lines = code.split('\n')
+  const noRefreshPolicy: { line: number; issue: string; suggestion: string }[] = []
+  const staticIndex: { line: number; issue: string; suggestion: string }[] = []
+  const noRebuildTrigger: { line: number; issue: string; suggestion: string }[] = []
+  lines.forEach((line, i) => {
+    if (/vector.*index|embedding.*index|faiss|annoy|hnswlib/i.test(line) && !/refresh|rebuild|update|cron|schedule/i.test(line)) {
+      noRefreshPolicy.push({ line: i + 1, issue: 'Vector index without refresh policy', suggestion: 'Schedule periodic index rebuilds from latest data' })
+    }
+    if (/load.*index.*once|init.*index.*static|preload.*embedding/i.test(line)) {
+      staticIndex.push({ line: i + 1, issue: 'Static index loaded once without updates', suggestion: 'Implement incremental index update or scheduled rebuild' })
+    }
+    if (/insert.*vector|add.*embedding|new.*document/i.test(line) && !/rebuild|refresh|invalidate/i.test(line)) {
+      noRebuildTrigger.push({ line: i + 1, issue: 'New data added without index rebuild trigger', suggestion: 'Add trigger to rebuild index after data changes' })
+    }
+  })
+  const totalIssues = noRefreshPolicy.length + staticIndex.length + noRebuildTrigger.length
+  const severity: Severity = totalIssues > 5 ? 'critical' : totalIssues > 2 ? 'error' : totalIssues > 0 ? 'warning' : 'info'
+  const vectorIndexStalenessScore = Math.max(0, 100 - totalIssues * 15)
+  return { totalIssues, severity, noRefreshPolicy, staticIndex, noRebuildTrigger, vectorIndexStalenessScore, summary: `Vector Index Staleness: ${totalIssues} issue(s). Score: ${vectorIndexStalenessScore}/100` }
+}
+
+function formatVectorIndexStalenessReport(r: VectorIndexStalenessResult): string {
+  const l: string[] = ['# Vector Index Staleness Analysis (RAG Pipeline)', `**Severity:** ${r.severity} | **Score:** ${r.vectorIndexStalenessScore}/100`, '']
+  if (r.noRefreshPolicy.length > 0) { l.push('## Missing Refresh Policy (' + r.noRefreshPolicy.length + ')'); r.noRefreshPolicy.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.staticIndex.length > 0) { l.push('## Static Index (' + r.staticIndex.length + ')'); r.staticIndex.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.noRebuildTrigger.length > 0) { l.push('## No Rebuild Trigger (' + r.noRebuildTrigger.length + ')'); r.noRebuildTrigger.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.65.0: MODEL WEIGHT INTEGRITY ====================
+
+interface ModelWeightIntegrityResult { totalIssues: number; severity: Severity; noHashVerify: { line: number; issue: string; suggestion: string }[]; remoteLoadUnverified: { line: number; issue: string; suggestion: string }[]; noSignatureCheck: { line: number; issue: string; suggestion: string }[]; modelWeightIntegrityScore: number; summary: string }
+
+function analyzeModelWeightIntegrity(code: string): ModelWeightIntegrityResult {
+  const lines = code.split('\n')
+  const noHashVerify: { line: number; issue: string; suggestion: string }[] = []
+  const remoteLoadUnverified: { line: number; issue: string; suggestion: string }[] = []
+  const noSignatureCheck: { line: number; issue: string; suggestion: string }[] = []
+  lines.forEach((line, i) => {
+    if (/load.*weights|load.*model.*file|from_pretrained/i.test(line) && !/hash|checksum|verify|signature/i.test(line)) {
+      noHashVerify.push({ line: i + 1, issue: 'Model weights loaded without hash verification', suggestion: 'Verify model weight checksums against known good values' })
+    }
+    if (/https.*model|download.*weights|fetch.*checkpoint/i.test(line) && !/verify|signature|tls|certificate/i.test(line)) {
+      remoteLoadUnverified.push({ line: i + 1, issue: 'Remote model loaded without signature verification', suggestion: 'Verify model signature and use TLS for download' })
+    }
+    if (/model.*signature|weight.*sign/i.test(line) && !/verify|validate|check/i.test(line)) {
+      noSignatureCheck.push({ line: i + 1, issue: 'Signature present but not verified', suggestion: 'Always verify model signature before loading weights' })
+    }
+  })
+  const totalIssues = noHashVerify.length + remoteLoadUnverified.length + noSignatureCheck.length
+  const severity: Severity = totalIssues > 5 ? 'critical' : totalIssues > 2 ? 'error' : totalIssues > 0 ? 'warning' : 'info'
+  const modelWeightIntegrityScore = Math.max(0, 100 - totalIssues * 15)
+  return { totalIssues, severity, noHashVerify, remoteLoadUnverified, noSignatureCheck, modelWeightIntegrityScore, summary: `Model Weight Integrity: ${totalIssues} issue(s). Score: ${modelWeightIntegrityScore}/100` }
+}
+
+function formatModelWeightIntegrityReport(r: ModelWeightIntegrityResult): string {
+  const l: string[] = ['# Model Weight Integrity Analysis (ML Supply Chain)', `**Severity:** ${r.severity} | **Score:** ${r.modelWeightIntegrityScore}/100`, '']
+  if (r.noHashVerify.length > 0) { l.push('## Missing Hash Verification (' + r.noHashVerify.length + ')'); r.noHashVerify.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.remoteLoadUnverified.length > 0) { l.push('## Unverified Remote Load (' + r.remoteLoadUnverified.length + ')'); r.remoteLoadUnverified.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.noSignatureCheck.length > 0) { l.push('## Unverified Signature (' + r.noSignatureCheck.length + ')'); r.noSignatureCheck.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.65.0: PROMPT CACHING SAFETY ====================
+
+interface PromptCachingSafetyResult { totalIssues: number; severity: Severity; sharedCachePool: { line: number; issue: string; suggestion: string }[]; noCachePartition: { line: number; issue: string; suggestion: string }[]; sensitiveInCache: { line: number; issue: string; suggestion: string }[]; promptCachingSafetyScore: number; summary: string }
+
+function analyzePromptCachingSafety(code: string): PromptCachingSafetyResult {
+  const lines = code.split('\n')
+  const sharedCachePool: { line: number; issue: string; suggestion: string }[] = []
+  const noCachePartition: { line: number; issue: string; suggestion: string }[] = []
+  const sensitiveInCache: { line: number; issue: string; suggestion: string }[] = []
+  lines.forEach((line, i) => {
+    if (/prompt.*cache|cache.*prompt|kv.*cache.*reuse/i.test(line) && !/tenant|user|session|partition|isolate/i.test(line)) {
+      sharedCachePool.push({ line: i + 1, issue: 'Prompt cache shared without tenant isolation', suggestion: 'Partition prompt cache by user/tenant to prevent data leakage' })
+    }
+    if (/global.*cache|shared.*cache.*pool|redis.*cache/i.test(line) && !/namespace|prefix|tenant|isolate/i.test(line)) {
+      noCachePartition.push({ line: i + 1, issue: 'Global cache without namespace partitioning', suggestion: 'Use tenant-prefixed cache keys to isolate data' })
+    }
+    if (/cache.*store.*token|cache.*credential|cache.*secret/i.test(line)) {
+      sensitiveInCache.push({ line: i + 1, issue: 'Sensitive data stored in cache', suggestion: 'Never cache credentials or tokens in shared cache pools' })
+    }
+  })
+  const totalIssues = sharedCachePool.length + noCachePartition.length + sensitiveInCache.length
+  const severity: Severity = totalIssues > 5 ? 'critical' : totalIssues > 2 ? 'error' : totalIssues > 0 ? 'warning' : 'info'
+  const promptCachingSafetyScore = Math.max(0, 100 - totalIssues * 15)
+  return { totalIssues, severity, sharedCachePool, noCachePartition, sensitiveInCache, promptCachingSafetyScore, summary: `Prompt Caching Safety: ${totalIssues} issue(s). Score: ${promptCachingSafetyScore}/100` }
+}
+
+function formatPromptCachingSafetyReport(r: PromptCachingSafetyResult): string {
+  const l: string[] = ['# Prompt Caching Safety Analysis (OWASP LLM05 ext)', `**Severity:** ${r.severity} | **Score:** ${r.promptCachingSafetyScore}/100`, '']
+  if (r.sharedCachePool.length > 0) { l.push('## Shared Cache Pool (' + r.sharedCachePool.length + ')'); r.sharedCachePool.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.noCachePartition.length > 0) { l.push('## No Cache Partitioning (' + r.noCachePartition.length + ')'); r.noCachePartition.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.sensitiveInCache.length > 0) { l.push('## Sensitive Data in Cache (' + r.sensitiveInCache.length + ')'); r.sensitiveInCache.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.65.0: TOOL CALL RECURSION ====================
+
+interface ToolCallRecursionResult { totalIssues: number; severity: Severity; unboundedRecursion: { line: number; issue: string; suggestion: string }[]; noDepthLimit: { line: number; issue: string; suggestion: string }[]; cyclicDependency: { line: number; issue: string; suggestion: string }[]; toolCallRecursionScore: number; summary: string }
+
+function analyzeToolCallRecursion(code: string): ToolCallRecursionResult {
+  const lines = code.split('\n')
+  const unboundedRecursion: { line: number; issue: string; suggestion: string }[] = []
+  const noDepthLimit: { line: number; issue: string; suggestion: string }[] = []
+  const cyclicDependency: { line: number; issue: string; suggestion: string }[] = []
+  lines.forEach((line, i) => {
+    if (/recursive.*tool.*call|tool.*call.*self|execute.*tool.*recursive/i.test(line) && !/max.*depth|limit|guard/i.test(line)) {
+      unboundedRecursion.push({ line: i + 1, issue: 'Recursive tool call without depth guard', suggestion: 'Add maximum recursion depth limit with overflow protection' })
+    }
+    if (/tool.*depth|call.*depth|nesting.*level/i.test(line) && !/max|limit|threshold/i.test(line)) {
+      noDepthLimit.push({ line: i + 1, issue: 'Tool call depth tracking without limit enforcement', suggestion: 'Enforce strict maximum tool call nesting depth' })
+    }
+    if (/tool.*dependency.*graph|tool.*calls.*tool|chain.*of.*tools/i.test(line) && !/cycle.*detect|dag|topological/i.test(line)) {
+      cyclicDependency.push({ line: i + 1, issue: 'Tool dependency chain without cycle detection', suggestion: 'Implement cycle detection in tool call graph' })
+    }
+  })
+  const totalIssues = unboundedRecursion.length + noDepthLimit.length + cyclicDependency.length
+  const severity: Severity = totalIssues > 5 ? 'critical' : totalIssues > 2 ? 'error' : totalIssues > 0 ? 'warning' : 'info'
+  const toolCallRecursionScore = Math.max(0, 100 - totalIssues * 15)
+  return { totalIssues, severity, unboundedRecursion, noDepthLimit, cyclicDependency, toolCallRecursionScore, summary: `Tool Call Recursion: ${totalIssues} issue(s). Score: ${toolCallRecursionScore}/100` }
+}
+
+function formatToolCallRecursionReport(r: ToolCallRecursionResult): string {
+  const l: string[] = ['# Tool Call Recursion Analysis (OWASP Agentic AS2)', `**Severity:** ${r.severity} | **Score:** ${r.toolCallRecursionScore}/100`, '']
+  if (r.unboundedRecursion.length > 0) { l.push('## Unbounded Recursion (' + r.unboundedRecursion.length + ')'); r.unboundedRecursion.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.noDepthLimit.length > 0) { l.push('## No Depth Limit (' + r.noDepthLimit.length + ')'); r.noDepthLimit.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.cyclicDependency.length > 0) { l.push('## Cyclic Dependencies (' + r.cyclicDependency.length + ')'); r.cyclicDependency.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.65.0: RAG RETRIEVAL THRESHOLD ====================
+
+interface RAGRetrievalThresholdResult { totalIssues: number; severity: Severity; noRelevanceCutoff: { line: number; issue: string; suggestion: string }[]; lowThreshold: { line: number; issue: string; suggestion: string }[]; noResultFilter: { line: number; issue: string; suggestion: string }[]; ragRetrievalThresholdScore: number; summary: string }
+
+function analyzeRAGRetrievalThreshold(code: string): RAGRetrievalThresholdResult {
+  const lines = code.split('\n')
+  const noRelevanceCutoff: { line: number; issue: string; suggestion: string }[] = []
+  const lowThreshold: { line: number; issue: string; suggestion: string }[] = []
+  const noResultFilter: { line: number; issue: string; suggestion: string }[] = []
+  lines.forEach((line, i) => {
+    if (/retrieval.*result|search.*result|query.*vector/i.test(line) && !/threshold|cutoff|minimum.*score|filter/i.test(line)) {
+      noRelevanceCutoff.push({ line: i + 1, issue: 'Retrieval results accepted without relevance threshold', suggestion: 'Set minimum similarity score cutoff for retrieved documents' })
+    }
+    if (/threshold.*0\.[0-3]|similarity.*0\.[0-3]|score.*0\.[0-3]/i.test(line)) {
+      lowThreshold.push({ line: i + 1, issue: 'Very low relevance threshold may include irrelevant results', suggestion: 'Raise minimum similarity threshold to 0.5 or higher' })
+    }
+    if (/top[kK]\s*=|limit\s*=|num.*result/i.test(line) && !/threshold|score|relevance/i.test(line)) {
+      noResultFilter.push({ line: i + 1, issue: 'Results limited by count without quality filter', suggestion: 'Apply relevance filtering before selecting top-K results' })
+    }
+  })
+  const totalIssues = noRelevanceCutoff.length + lowThreshold.length + noResultFilter.length
+  const severity: Severity = totalIssues > 5 ? 'critical' : totalIssues > 2 ? 'error' : totalIssues > 0 ? 'warning' : 'info'
+  const ragRetrievalThresholdScore = Math.max(0, 100 - totalIssues * 15)
+  return { totalIssues, severity, noRelevanceCutoff, lowThreshold, noResultFilter, ragRetrievalThresholdScore, summary: `RAG Retrieval Threshold: ${totalIssues} issue(s). Score: ${ragRetrievalThresholdScore}/100` }
+}
+
+function formatRAGRetrievalThresholdReport(r: RAGRetrievalThresholdResult): string {
+  const l: string[] = ['# RAG Retrieval Threshold Analysis', `**Severity:** ${r.severity} | **Score:** ${r.ragRetrievalThresholdScore}/100`, '']
+  if (r.noRelevanceCutoff.length > 0) { l.push('## No Relevance Cutoff (' + r.noRelevanceCutoff.length + ')'); r.noRelevanceCutoff.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.lowThreshold.length > 0) { l.push('## Low Threshold (' + r.lowThreshold.length + ')'); r.lowThreshold.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.noResultFilter.length > 0) { l.push('## Missing Quality Filter (' + r.noResultFilter.length + ')'); r.noResultFilter.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.65.0: AGENT OBSERVABILITY GAP ====================
+
+interface AgentObservabilityGapResult { totalIssues: number; severity: Severity; noTracing: { line: number; issue: string; suggestion: string }[]; noMetrics: { line: number; issue: string; suggestion: string }[]; noAuditLog: { line: number; issue: string; suggestion: string }[]; agentObservabilityGapScore: number; summary: string }
+
+function analyzeAgentObservabilityGap(code: string): AgentObservabilityGapResult {
+  const lines = code.split('\n')
+  const noTracing: { line: number; issue: string; suggestion: string }[] = []
+  const noMetrics: { line: number; issue: string; suggestion: string }[] = []
+  const noAuditLog: { line: number; issue: string; suggestion: string }[] = []
+  const fullCode = code.toLowerCase()
+  lines.forEach((line, i) => {
+    if (/agent.*execute|invoke.*agent|run.*agent/i.test(line) && !/trace|span|opentelemetry|jaeger/i.test(line)) {
+      noTracing.push({ line: i + 1, issue: 'Agent execution without distributed tracing', suggestion: 'Add OpenTelemetry spans for agent execution flow' })
+    }
+    if (/tool.*complete|tool.*finish|tool.*success/i.test(line) && !/metric|counter|histogram|prometheus/i.test(line)) {
+      noMetrics.push({ line: i + 1, issue: 'Tool completion without metrics emission', suggestion: 'Emit metrics for tool success/failure rates and latency' })
+    }
+    if (/agent.*decision|tool.*selection|next.*action/i.test(line) && !/audit|log.*decision|record/i.test(line)) {
+      noAuditLog.push({ line: i + 1, issue: 'Agent decision without audit logging', suggestion: 'Log all agent decisions with context for audit trail' })
+    }
+  })
+  const totalIssues = noTracing.length + noMetrics.length + noAuditLog.length
+  const severity: Severity = totalIssues > 5 ? 'critical' : totalIssues > 2 ? 'error' : totalIssues > 0 ? 'warning' : 'info'
+  const agentObservabilityGapScore = Math.max(0, 100 - totalIssues * 15)
+  return { totalIssues, severity, noTracing, noMetrics, noAuditLog, agentObservabilityGapScore, summary: `Agent Observability Gap: ${totalIssues} issue(s). Score: ${agentObservabilityGapScore}/100` }
+}
+
+function formatAgentObservabilityGapReport(r: AgentObservabilityGapResult): string {
+  const l: string[] = ['# Agent Observability Gap Analysis', `**Severity:** ${r.severity} | **Score:** ${r.agentObservabilityGapScore}/100`, '']
+  if (r.noTracing.length > 0) { l.push('## Missing Distributed Tracing (' + r.noTracing.length + ')'); r.noTracing.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.noMetrics.length > 0) { l.push('## Missing Metrics (' + r.noMetrics.length + ')'); r.noMetrics.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.noAuditLog.length > 0) { l.push('## Missing Audit Log (' + r.noAuditLog.length + ')'); r.noAuditLog.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
 // ==================== V0.64.0: MODEL INVERSION DETECTION ====================
 
 interface ModelInversionDetectionResult { totalIssues: number; severity: Severity; verboseErrors: { line: number; issue: string; suggestion: string }[]; confidenceLeak: { line: number; issue: string; suggestion: string }[]; trainingDataEcho: { line: number; issue: string; suggestion: string }[]; modelInversionDetectionScore: number; summary: string }
@@ -39115,5 +39388,93 @@ ctx.tools.register(defineTool({
   }
 }))
 
-console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design, container_security, ml_pipeline, api_deprecation, design_system, pwa_compliance, type_system, green_computing, realtime_collab, a11y_deep, i18n_deep, css_architecture, state_machine, web_components, resilience, module_federation, review_automation, observability, migration_safety, edge_computing, api_versioning, wasm_advanced, feature_toggles, email_deliverability, seo_analysis, monorepo_boundaries, ddd_patterns, mf_runtime, realtime_protocols, data_pipeline, gateway_deep, test_rigor, quality_gate, graphql_schema, event_sourcing_integrity, rate_limiting, migration_safety, auth_hardening, distributed_tracing, infrastructure_as_code, review_automation, contract_testing, sec_headers_deep, privacy_compliance, concurrency_patterns, cloud_native, error_recovery, system_design, dependency_injection, api_versioning, serialization_perf, memory_allocation, build_pipeline, error_messages, logging_discipline, config_as_code, component_interface, token_hygiene, query_antipatterns, websocket_lifecycle, graphql_perf, deprecation_tracking, code_splitting_audit, css_arch_deep, sec_dep_audit, webhook_signature, oauth_security, email_infra, health_check_depth, cors_security, feature_rollout, secret_lifecycle, rate_limit_strategy, container_security_scan, grpc_security, data_residency, deployment_progressive, obs_exemplar, data_pipeline_quality, service_mesh, plugin_architecture, mobile_app_security, data_masking, core_web_vitals, infra_cost, api_gateway_config, css_in_js_perf, crdt_state_sync, resource_quota, browser_compat_audit, floating_point, snapshot_testing, event_schema, form_validation, retry_idempotency, a11y_semantics, race_condition, cache_invalidation, data_loader_opt, event_versioning, connection_lifecycle, csp_nonce, struct_error_ctx, stream_backpressure, identifier_collision, graphql_query_depth, auth_token_rotation, mq_dead_letter, file_upload_sec, query_plan, encryption_at_rest, ws_connection_state, rate_limit_policy, payment_idempotency, cron_reliability, immutable_data, data_residency_compliance, response_envelope, compression_negotiation, dns_health, graceful_degradation, api_deprecation_strategy, db_safety, log_sampling, slo_tracking, api_key_mgmt, data_lineage, infra_drift, schema_evolution, wasm_interop, data_partition, plugin_lifecycle, time_sync, feature_store, vector_db, api_composition, audit_trail, graphql_cost, session_mgmt, csv_injection, tls_config, distributed_lock, event_dedup, allocator_pattern, webhook_retry, money_handling, pagination, resource_leak, c4_architecture, semaphore, dns_optimization, content_negotiation, retry_budget, cache_stampede, gateway_routing, search_sanitization, rate_limit_headers, data_consistency, mobile_hardening, build_config, grpc_interceptors, memory_alignment, saga_orchestration, ws_backpressure, bff_pattern, immutable_infra, csp_reporting, token_bucket, circuit_breaker, change_data_capture, api_federation, cache_warming, conn_multiplex, least_privilege, tracing_sampling, json_patch, event_snapshot, adaptive_rate, graceful_retry, encryption_transit, image_scanning, deadlock_detect, deprecation_comm, metrics_cardinality, api_key_rotation, data_retention, flag_cleanup, log_redaction, sli_slo, graceful_degrade, pagination_consistency, dep_drift, cqrs_pattern, outbox_idempotency, api_version_negotiation, connection_backpressure, graceful_startup, secret_detection, error_code_registry, cache_key_design, db_migration_safety, retry_strategy, health_check_completeness, log_structuring, event_schema_evolution, graceful_shutdown_timing, config_hot_reload, mutual_tls, dead_letter_queue, rate_limit_header, websocket_pool, container_image_opt, dns_prefetch_config, async_memory_leak, api_idempotency_key, service_mesh_policy, pagination_safety, background_job_idempotency, feature_flag_lifecycle, request_deduplication, connection_leak, payload_compression, cors_preflight_cache, timestamp_monotonicity, search_query_safety, api_response_cache, thread_pool_starvation, db_slow_query, url_validation, memory_alignment_audit, cache_stampede_guard, log_injection_prevention, temp_file_security, jwt_token_validation, file_permission_audit, dns_rebinding_protection, integer_overflow_detection, command_injection_prevention, csrf_token_validation, path_traversal_prevention, insecure_deserialization, mass_assignment, weak_cryptography, ssti_injection, file_upload_validation, hardcoded_secrets, unsafe_reflection, xxe_injection_prevention, prototype_pollution, async_race_condition, clickjacking_protection, insecure_cors_config, unrestricted_file_deletion, content_type_header, weak_password_policy, crlf_injection_prevention, session_timeout_policy, zip_slip_prevention, ssrf_detection, process_env_leak, redos_complexity, null_byte_injection, mime_type_spoofing, subdomain_takeover, jwt_algorithm_confusion, oauth_flow_security, grpc_metadata_leak, websocket_security, dependency_confusion, timing_attack, unsafe_yaml_load, api_latency, cross_service_health, consumer_offset, config_value, db_connection_pool, background_job, canary_release, certificate_validation, memory_safety, input_sanitization, crypto_random, session_fixation, open_redirect, xml_bomb, ldap_injection, graphql_injection, nosql_injection, graphql_depth_limit, path_normalization, buffer_overread, http_parameter_pollution, dom_clobbering, postmessage_security, xml_signature_wrapping, insecure_random, missing_content_length, cookie_prefix_bypass, unicode_normalization, websocket_origin_bypass, missing_x_frame_options, sql_concatenation, missing_strict_transport_security, insecure_direct_object_reference, authentication_bypass, privilege_escalation, missing_csrf_protection, insecure_jwt_storage, missing_rate_limiting, debug_mode_enabled, unsafe_eval_usage, sql_injection_orm, race_condition_toctou, memory_corruption_risk, insecure_webhook_verification, api_version_deprecation, prototype_pollution_vuln, dns_rebinding_risk, host_header_injection, csv_formula_injection, log_forging_risk, missing_csp_directive, insecure_cookie_scope, tabnabbing_risk, subresource_integrity, missing_permissions_policy, cors_safelist, iframe_sandbox_policy, report_to_header, nel_header, expect_ct_header, cors_credentials, service_worker_scope, client_hints, expose_headers, redirect_chain, url_parser_confusion, websocket_upgrade, cross_origin_resource_policy, hsts_include_subdomains, mixed_content, cors_max_age, cors_strict_origin, insecure_preload, missing_x_content_type_options, dns_prefetch_leak, insecure_form_action, missing_integrity, insecure_download, missing_cross_origin_opener_policy, agent_prompt_injection, agent_tool_misuse, agent_indirect_injection, agent_memory_isolation, agent_output_sanitization, llm_system_prompt_leak, llm_excessive_agency, llm_output_validation, mcp_server_security, mcp_tool_injection, mcp_credential_leak, supply_chain_integrity, dependency_hash_verify, rag_data_poisoning, sec_fetch_metadata, origin_agent_cluster, model_inversion_detection, tool_definition_exposure, prompt_template_injection, wasm_memory_safety, container_privilege_escalation, secrets_staleness, api_schema_violation, embedding_drift`)
+ctx.tools.register(defineTool({
+  name: 'agent_tool_chaining_audit',
+  description: 'Analyze Agent Tool Chaining: unsafe tool chaining, missing circuit breakers, privilege accumulation.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeAgentToolChainingAudit(args.code)
+    return formatAgentToolChainingAuditReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'llm_context_window_overflow',
+  description: 'Analyze LLM Context Window Overflow: missing token limits, unbounded context growth, no truncation.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeLLMContextWindowOverflow(args.code)
+    return formatLLMContextWindowOverflowReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'vector_index_staleness',
+  description: 'Analyze Vector Index Staleness: no refresh policy, static indices, missing rebuild triggers.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeVectorIndexStaleness(args.code)
+    return formatVectorIndexStalenessReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'model_weight_integrity',
+  description: 'Analyze Model Weight Integrity: missing hash verification, unverified remote loads, unsigned weights.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeModelWeightIntegrity(args.code)
+    return formatModelWeightIntegrityReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'prompt_caching_safety',
+  description: 'Analyze Prompt Caching Safety: shared cache pools, no tenant isolation, sensitive data in cache.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzePromptCachingSafety(args.code)
+    return formatPromptCachingSafetyReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'tool_call_recursion',
+  description: 'Analyze Tool Call Recursion: unbounded recursion, no depth limit, cyclic dependencies.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeToolCallRecursion(args.code)
+    return formatToolCallRecursionReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'rag_retrieval_threshold',
+  description: 'Analyze RAG Retrieval Threshold: no relevance cutoff, low thresholds, missing quality filters.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeRAGRetrievalThreshold(args.code)
+    return formatRAGRetrievalThresholdReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'agent_observability_gap',
+  description: 'Analyze Agent Observability Gap: missing distributed tracing, no metrics, absent audit logs.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeAgentObservabilityGap(args.code)
+    return formatAgentObservabilityGapReport(result)
+  }
+}))
+
+console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design, container_security, ml_pipeline, api_deprecation, design_system, pwa_compliance, type_system, green_computing, realtime_collab, a11y_deep, i18n_deep, css_architecture, state_machine, web_components, resilience, module_federation, review_automation, observability, migration_safety, edge_computing, api_versioning, wasm_advanced, feature_toggles, email_deliverability, seo_analysis, monorepo_boundaries, ddd_patterns, mf_runtime, realtime_protocols, data_pipeline, gateway_deep, test_rigor, quality_gate, graphql_schema, event_sourcing_integrity, rate_limiting, migration_safety, auth_hardening, distributed_tracing, infrastructure_as_code, review_automation, contract_testing, sec_headers_deep, privacy_compliance, concurrency_patterns, cloud_native, error_recovery, system_design, dependency_injection, api_versioning, serialization_perf, memory_allocation, build_pipeline, error_messages, logging_discipline, config_as_code, component_interface, token_hygiene, query_antipatterns, websocket_lifecycle, graphql_perf, deprecation_tracking, code_splitting_audit, css_arch_deep, sec_dep_audit, webhook_signature, oauth_security, email_infra, health_check_depth, cors_security, feature_rollout, secret_lifecycle, rate_limit_strategy, container_security_scan, grpc_security, data_residency, deployment_progressive, obs_exemplar, data_pipeline_quality, service_mesh, plugin_architecture, mobile_app_security, data_masking, core_web_vitals, infra_cost, api_gateway_config, css_in_js_perf, crdt_state_sync, resource_quota, browser_compat_audit, floating_point, snapshot_testing, event_schema, form_validation, retry_idempotency, a11y_semantics, race_condition, cache_invalidation, data_loader_opt, event_versioning, connection_lifecycle, csp_nonce, struct_error_ctx, stream_backpressure, identifier_collision, graphql_query_depth, auth_token_rotation, mq_dead_letter, file_upload_sec, query_plan, encryption_at_rest, ws_connection_state, rate_limit_policy, payment_idempotency, cron_reliability, immutable_data, data_residency_compliance, response_envelope, compression_negotiation, dns_health, graceful_degradation, api_deprecation_strategy, db_safety, log_sampling, slo_tracking, api_key_mgmt, data_lineage, infra_drift, schema_evolution, wasm_interop, data_partition, plugin_lifecycle, time_sync, feature_store, vector_db, api_composition, audit_trail, graphql_cost, session_mgmt, csv_injection, tls_config, distributed_lock, event_dedup, allocator_pattern, webhook_retry, money_handling, pagination, resource_leak, c4_architecture, semaphore, dns_optimization, content_negotiation, retry_budget, cache_stampede, gateway_routing, search_sanitization, rate_limit_headers, data_consistency, mobile_hardening, build_config, grpc_interceptors, memory_alignment, saga_orchestration, ws_backpressure, bff_pattern, immutable_infra, csp_reporting, token_bucket, circuit_breaker, change_data_capture, api_federation, cache_warming, conn_multiplex, least_privilege, tracing_sampling, json_patch, event_snapshot, adaptive_rate, graceful_retry, encryption_transit, image_scanning, deadlock_detect, deprecation_comm, metrics_cardinality, api_key_rotation, data_retention, flag_cleanup, log_redaction, sli_slo, graceful_degrade, pagination_consistency, dep_drift, cqrs_pattern, outbox_idempotency, api_version_negotiation, connection_backpressure, graceful_startup, secret_detection, error_code_registry, cache_key_design, db_migration_safety, retry_strategy, health_check_completeness, log_structuring, event_schema_evolution, graceful_shutdown_timing, config_hot_reload, mutual_tls, dead_letter_queue, rate_limit_header, websocket_pool, container_image_opt, dns_prefetch_config, async_memory_leak, api_idempotency_key, service_mesh_policy, pagination_safety, background_job_idempotency, feature_flag_lifecycle, request_deduplication, connection_leak, payload_compression, cors_preflight_cache, timestamp_monotonicity, search_query_safety, api_response_cache, thread_pool_starvation, db_slow_query, url_validation, memory_alignment_audit, cache_stampede_guard, log_injection_prevention, temp_file_security, jwt_token_validation, file_permission_audit, dns_rebinding_protection, integer_overflow_detection, command_injection_prevention, csrf_token_validation, path_traversal_prevention, insecure_deserialization, mass_assignment, weak_cryptography, ssti_injection, file_upload_validation, hardcoded_secrets, unsafe_reflection, xxe_injection_prevention, prototype_pollution, async_race_condition, clickjacking_protection, insecure_cors_config, unrestricted_file_deletion, content_type_header, weak_password_policy, crlf_injection_prevention, session_timeout_policy, zip_slip_prevention, ssrf_detection, process_env_leak, redos_complexity, null_byte_injection, mime_type_spoofing, subdomain_takeover, jwt_algorithm_confusion, oauth_flow_security, grpc_metadata_leak, websocket_security, dependency_confusion, timing_attack, unsafe_yaml_load, api_latency, cross_service_health, consumer_offset, config_value, db_connection_pool, background_job, canary_release, certificate_validation, memory_safety, input_sanitization, crypto_random, session_fixation, open_redirect, xml_bomb, ldap_injection, graphql_injection, nosql_injection, graphql_depth_limit, path_normalization, buffer_overread, http_parameter_pollution, dom_clobbering, postmessage_security, xml_signature_wrapping, insecure_random, missing_content_length, cookie_prefix_bypass, unicode_normalization, websocket_origin_bypass, missing_x_frame_options, sql_concatenation, missing_strict_transport_security, insecure_direct_object_reference, authentication_bypass, privilege_escalation, missing_csrf_protection, insecure_jwt_storage, missing_rate_limiting, debug_mode_enabled, unsafe_eval_usage, sql_injection_orm, race_condition_toctou, memory_corruption_risk, insecure_webhook_verification, api_version_deprecation, prototype_pollution_vuln, dns_rebinding_risk, host_header_injection, csv_formula_injection, log_forging_risk, missing_csp_directive, insecure_cookie_scope, tabnabbing_risk, subresource_integrity, missing_permissions_policy, cors_safelist, iframe_sandbox_policy, report_to_header, nel_header, expect_ct_header, cors_credentials, service_worker_scope, client_hints, expose_headers, redirect_chain, url_parser_confusion, websocket_upgrade, cross_origin_resource_policy, hsts_include_subdomains, mixed_content, cors_max_age, cors_strict_origin, insecure_preload, missing_x_content_type_options, dns_prefetch_leak, insecure_form_action, missing_integrity, insecure_download, missing_cross_origin_opener_policy, agent_prompt_injection, agent_tool_misuse, agent_indirect_injection, agent_memory_isolation, agent_output_sanitization, llm_system_prompt_leak, llm_excessive_agency, llm_output_validation, mcp_server_security, mcp_tool_injection, mcp_credential_leak, supply_chain_integrity, dependency_hash_verify, rag_data_poisoning, sec_fetch_metadata, origin_agent_cluster, model_inversion_detection, tool_definition_exposure, prompt_template_injection, wasm_memory_safety, container_privilege_escalation, secrets_staleness, api_schema_violation, embedding_drift, agent_tool_chaining_audit, llm_context_window_overflow, vector_index_staleness, model_weight_integrity, prompt_caching_safety, tool_call_recursion, rag_retrieval_threshold, agent_observability_gap`)
 }
