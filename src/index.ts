@@ -82,7 +82,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 export const name = 'dsh-tool-codereview'
 export const inject = ['tools']
 
-const VERSION = '0.50.0'
+const VERSION = '0.51.0'
 
 // ==================== TYPES ====================
 
@@ -27461,6 +27461,328 @@ function formatTimestampMonotonicityReport(r: TimestampMonotonicityResult): stri
   return lines.join('\n')
 }
 
+// ==================== V0.51.0: CRLF INJECTION PREVENTION ====================
+
+interface CrlfInjectionPreventionResult { totalIssues: number; severity: Severity; header: { line: number; issue: string; suggestion: string }[]; log: { line: number; issue: string; suggestion: string }[]; response: { line: number; issue: string; suggestion: string }[]; crlfScore: number; summary: string }
+
+function analyzeCrlfInjectionPrevention(code: string): CrlfInjectionPreventionResult {
+  const lines = code.split('\n')
+  const header: CrlfInjectionPreventionResult['header'] = []
+  const log: CrlfInjectionPreventionResult['log'] = []
+  const response: CrlfInjectionPreventionResult['response'] = []
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+    if (line.match(/res\.set\(|res\.header\(|response\.header|setHeader\(/i) && line.match(/request|req\.param|req\.query|user|input/i) && !line.match(/sanitiz|escap|strip|remove.*\\r|remove.*\\n/i)) {
+      header.push({ line: i + 1, issue: 'HTTP header set from user input without CRLF sanitization', suggestion: 'Strip \\r\\n from header values; CRLF injection enables header injection and response splitting' })
+    }
+    if (line.match(/log\.|console\.|logger\.|logging\./i) && line.match(/\\r|\\n|%0d|%0a|%0D|%0A/i) && !line.match(/sanitiz|escap|strip/i)) {
+      log.push({ line: i + 1, issue: 'Log entry contains CRLF characters', suggestion: 'Sanitize CRLF in log entries; CRLF injection corrupts log files and injects fake entries' })
+    }
+    if (line.match(/res\.writeHead|res\.redirect|Location:/i) && line.match(/request|req\.|user|param/i) && !line.match(/sanitiz|escap|valid|check/i)) {
+      response.push({ line: i + 1, issue: 'Redirect/Location header from user input without validation', suggestion: 'Validate redirect targets; CRLF in Location enables response splitting attacks' })
+    }
+    if (line.match(/\\r\\n|\\\\r\\\\n|%0d%0a|%0D%0A/i) && line.match(/input|param|query|user/i)) {
+      header.push({ line: i + 1, issue: 'CRLF sequence detected in user input context', suggestion: 'Block CRLF sequences in user input; CRLF injection manipulates HTTP responses' })
+    }
+  })
+  const totalIssues = header.length + log.length + response.length
+  const crlfScore = Math.max(0, 100 - header.length * 10 - log.length * 10 - response.length * 7)
+  const severity: Severity = header.length > 0 ? 'error' : log.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+  return { totalIssues, severity, header, log, response, crlfScore, summary: header.length + ' header gap(s), ' + log.length + ' log gap(s), ' + response.length + ' response gap(s)' }
+}
+
+function formatCrlfInjectionPreventionReport(r: CrlfInjectionPreventionResult): string {
+  const l: string[] = []
+  l.push('# CRLF Injection Prevention Analysis'); l.push('')
+  l.push('**CRLF Score:** ' + r.crlfScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase()); l.push('')
+  l.push('> ' + r.summary); l.push('')
+  if (r.header.length > 0) { l.push('## Header (' + r.header.length + ')'); r.header.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.log.length > 0) { l.push('## Log (' + r.log.length + ')'); r.log.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.response.length > 0) { l.push('## Response (' + r.response.length + ')'); r.response.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.51.0: SESSION TIMEOUT POLICY ====================
+
+interface SessionTimeoutPolicyResult { totalIssues: number; severity: Severity; timeout: { line: number; issue: string; suggestion: string }[]; idle: { line: number; issue: string; suggestion: string }[]; renew: { line: number; issue: string; suggestion: string }[]; sessionTimeoutScore: number; summary: string }
+
+function analyzeSessionTimeoutPolicy(code: string): SessionTimeoutPolicyResult {
+  const lines = code.split('\n')
+  const timeout: SessionTimeoutPolicyResult['timeout'] = []
+  const idle: SessionTimeoutPolicyResult['idle'] = []
+  const renew: SessionTimeoutPolicyResult['renew'] = []
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+    if (line.match(/session|cookie|JWT|token/i) && line.match(/expire|maxAge|max-age/i) && !line.match(/\d+|time|duration|second|minute|hour/i)) {
+      timeout.push({ line: i + 1, issue: 'Session/token expiration not set or missing value', suggestion: 'Set explicit expiration time; sessions without expiry remain valid indefinitely' })
+    }
+    if (line.match(/session|cookie|JWT/i) && !line.match(/expire|maxAge|timeout|ttl|idle/i)) {
+      idle.push({ line: i + 1, issue: 'Session/token without expiration/timeout', suggestion: 'Add expiration and idle timeout; permanent sessions enable long-term hijacking' })
+    }
+    if (line.match(/session.*renew|token.*refresh|renew/i) && !line.match(/rotate|limit|max.*age|absolute/i)) {
+      renew.push({ line: i + 1, issue: 'Session renewal without absolute timeout', suggestion: 'Set absolute timeout alongside renewal; unlimited renewal extends session forever' })
+    }
+    if (line.match(/remember.*me|persistent.*cookie|forever/i) && !line.match(/secure|httpOnly|sameSite|timeout|expire/i)) {
+      renew.push({ line: i + 1, issue: 'Persistent/remember-me cookie without security attributes', suggestion: 'Set secure, httpOnly, sameSite on persistent cookies; persistent cookies survive browser close' })
+    }
+  })
+  const totalIssues = timeout.length + idle.length + renew.length
+  const sessionTimeoutScore = Math.max(0, 100 - timeout.length * 7 - idle.length * 10 - renew.length * 7)
+  const severity: Severity = idle.length > 0 ? 'warning' : timeout.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+  return { totalIssues, severity, timeout, idle, renew, sessionTimeoutScore, summary: timeout.length + ' timeout gap(s), ' + idle.length + ' idle gap(s), ' + renew.length + ' renew gap(s)' }
+}
+
+function formatSessionTimeoutPolicyReport(r: SessionTimeoutPolicyResult): string {
+  const l: string[] = []
+  l.push('# Session Timeout Policy Analysis'); l.push('')
+  l.push('**Session Timeout Score:** ' + r.sessionTimeoutScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase()); l.push('')
+  l.push('> ' + r.summary); l.push('')
+  if (r.timeout.length > 0) { l.push('## Timeout (' + r.timeout.length + ')'); r.timeout.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.idle.length > 0) { l.push('## Idle (' + r.idle.length + ')'); r.idle.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.renew.length > 0) { l.push('## Renew (' + r.renew.length + ')'); r.renew.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.51.0: ZIP SLIP PREVENTION ====================
+
+interface ZipSlipPreventionResult { totalIssues: number; severity: Severity; path: { line: number; issue: string; suggestion: string }[]; extract: { line: number; issue: string; suggestion: string }[]; target: { line: number; issue: string; suggestion: string }[]; zipSlipScore: number; summary: string }
+
+function analyzeZipSlipPrevention(code: string): ZipSlipPreventionResult {
+  const lines = code.split('\n')
+  const path: ZipSlipPreventionResult['path'] = []
+  const extract: ZipSlipPreventionResult['extract'] = []
+  const target: ZipSlipPreventionResult['target'] = []
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+    if (line.match(/\.zip|unzip|extractall|extractAll|tar\.extract|gzip|gunzip|decompress/i) && !line.match(/path.*check|traversal|normalize|canonical|safe.*path/i)) {
+      extract.push({ line: i + 1, issue: 'Archive extraction without path traversal check', suggestion: 'Validate extracted paths against target directory; zip slip writes files outside destination' })
+    }
+    if (line.match(/entry\.name|file\.name|entryName|getNextEntry|namelist/i) && line.match(/write|save|writeFile|createWriteStream/i) && !line.match(/traversal|normalize|canonical|safe|prefix.*check/i)) {
+      path.push({ line: i + 1, issue: 'Archive entry name used as file path without validation', suggestion: 'Validate entry names contain no path components; ../ names write outside target dir' })
+    }
+    if (line.match(/tar\(|zip\(|gzip\(|archive\(/i) && !line.match(/filter|check|validate|safe/i)) {
+      target.push({ line: i + 1, issue: 'Archive creation without path validation', suggestion: 'Validate paths before adding to archive; relative paths enable slip on extraction' })
+    }
+    if (line.match(/\.\.\/|\.\.\\\\|%2e%2e/i) && line.match(/zip|tar|gzip|archive|compress|extract/i)) {
+      path.push({ line: i + 1, issue: 'Path traversal sequence in archive context', suggestion: 'Block path traversal in archive entries; traversal sequences enable zip slip attacks' })
+    }
+  })
+  const totalIssues = path.length + extract.length + target.length
+  const zipSlipScore = Math.max(0, 100 - path.length * 10 - extract.length * 10 - target.length * 7)
+  const severity: Severity = path.length > 0 ? 'error' : extract.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+  return { totalIssues, severity, path, extract, target, zipSlipScore, summary: path.length + ' path gap(s), ' + extract.length + ' extract gap(s), ' + target.length + ' target gap(s)' }
+}
+
+function formatZipSlipPreventionReport(r: ZipSlipPreventionResult): string {
+  const l: string[] = []
+  l.push('# Zip Slip Prevention Analysis'); l.push('')
+  l.push('**Zip Slip Score:** ' + r.zipSlipScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase()); l.push('')
+  l.push('> ' + r.summary); l.push('')
+  if (r.path.length > 0) { l.push('## Path (' + r.path.length + ')'); r.path.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.extract.length > 0) { l.push('## Extract (' + r.extract.length + ')'); r.extract.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.target.length > 0) { l.push('## Target (' + r.target.length + ')'); r.target.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.51.0: SSRF DETECTION ====================
+
+interface SsrDetectionResult { totalIssues: number; severity: Severity; url: { line: number; issue: string; suggestion: string }[]; ip: { line: number; issue: string; suggestion: string }[]; protocol: { line: number; issue: string; suggestion: string }[]; ssrfScore: number; summary: string }
+
+function analyzeSsrfDetection(code: string): SsrDetectionResult {
+  const lines = code.split('\n')
+  const url: SsrDetectionResult['url'] = []
+  const ip: SsrDetectionResult['ip'] = []
+  const protocol: SsrDetectionResult['protocol'] = []
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+    if (line.match(/fetch\(|https?:\/\/|axios|request\(|urllib|requests\.|curl_exec/i) && line.match(/user|input|param|query|body|request/i) && !line.match(/valid|check|allowlist|whitelist|private.*block|internal.*block/i)) {
+      url.push({ line: i + 1, issue: 'HTTP request to user-controlled URL without validation', suggestion: 'Validate URLs and block private IPs; SSRF enables accessing internal services' })
+    }
+    if (line.match(/127\.0\.0\.1|192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[01])\.|169\.254\.|localhost|0\.0\.0\.0|::1|internal|intranet|\.local/i) && !line.match(/block|deny|reject|filter|check|valid/i)) {
+      ip.push({ line: i + 1, issue: 'Private/internal IP address referenced without access control', suggestion: 'Block requests to private IPs; SSRF attacks target internal services via private ranges' })
+    }
+    if (line.match(/file:\/\/|gopher:\/\/|dict:\/\/|ftp:\/\/|ldap:\/\//i) && !line.match(/block|deny|reject|filter/i)) {
+      protocol.push({ line: i + 1, issue: 'Dangerous URL protocol scheme used', suggestion: 'Block non-HTTP protocols (file://, gopher://); alternative protocols enable local file reads' })
+    }
+    if (line.match(/dns.*resolve|resolve.*dns|nslookup|gethostbyname/i) && line.match(/user|input|param/i) && !line.match(/valid|check|safe|filter/i)) {
+      url.push({ line: i + 1, issue: 'DNS resolution of user input without validation', suggestion: 'Validate DNS targets; DNS resolution enables SSRF via rebinding' })
+    }
+  })
+  const totalIssues = url.length + ip.length + protocol.length
+  const ssrfScore = Math.max(0, 100 - url.length * 10 - ip.length * 10 - protocol.length * 10)
+  const severity: Severity = ip.length > 0 ? 'error' : url.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+  return { totalIssues, severity, url, ip, protocol, ssrfScore, summary: url.length + ' URL gap(s), ' + ip.length + ' IP gap(s), ' + protocol.length + ' protocol gap(s)' }
+}
+
+function formatSsrfDetectionReport(r: SsrDetectionResult): string {
+  const l: string[] = []
+  l.push('# SSRF Detection Analysis'); l.push('')
+  l.push('**SSRF Score:** ' + r.ssrfScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase()); l.push('')
+  l.push('> ' + r.summary); l.push('')
+  if (r.url.length > 0) { l.push('## URL (' + r.url.length + ')'); r.url.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.ip.length > 0) { l.push('## IP (' + r.ip.length + ')'); r.ip.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.protocol.length > 0) { l.push('## Protocol (' + r.protocol.length + ')'); r.protocol.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.51.0: PROCESS ENV LEAK ====================
+
+interface ProcessEnvLeakResult { totalIssues: number; severity: Severity; env: { line: number; issue: string; suggestion: string }[]; log: { line: number; issue: string; suggestion: string }[]; client: { line: number; issue: string; suggestion: string }[]; envLeakScore: number; summary: string }
+
+function analyzeProcessEnvLeak(code: string): ProcessEnvLeakResult {
+  const lines = code.split('\n')
+  const env: ProcessEnvLeakResult['env'] = []
+  const log: ProcessEnvLeakResult['log'] = []
+  const client: ProcessEnvLeakResult['client'] = []
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+    if (line.match(/process\.env|os\.environ|getenv\(|ENV\[/i) && line.match(/log|console|print|write|res\.send|res\.json/i) && !line.match(/filter|redact|sanitiz|safe/i)) {
+      log.push({ line: i + 1, issue: 'Environment variables logged/leaked to output', suggestion: 'Filter env vars before logging; environment contains secrets and credentials' })
+    }
+    if (line.match(/process\.env|os\.environ/i) && line.match(/res\.send|res\.json|res\.write|ctx\.body|response\.send/i) && !line.match(/filter|specific|select|whitelist/i)) {
+      client.push({ line: i + 1, issue: 'Environment variables sent to client response', suggestion: 'Never send full env to client; env vars expose secrets and configuration' })
+    }
+    if (line.match(/dotenv|\.env/i) && line.match(/res\.|response\.|ctx\.|send\(/i) && !line.match(/filter|specific|select|whitelist/i)) {
+      client.push({ line: i + 1, issue: '.env file contents exposed in response', suggestion: 'Never expose .env contents; dotenv files contain sensitive configuration' })
+    }
+    if (line.match(/stack.*trace|error\.trace|traceback|getTrace/i) && line.match(/res\.|response\.|ctx\.|send\(/i) && !line.match(/filter|sanitiz|safe.*error|generic/i)) {
+      env.push({ line: i + 1, issue: 'Stack trace sent to client', suggestion: 'Send generic error messages; stack traces reveal paths, versions, and code structure' })
+    }
+  })
+  const totalIssues = env.length + log.length + client.length
+  const envLeakScore = Math.max(0, 100 - client.length * 10 - log.length * 7 - env.length * 7)
+  const severity: Severity = client.length > 0 ? 'error' : log.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+  return { totalIssues, severity, env, log, client, envLeakScore, summary: env.length + ' env gap(s), ' + log.length + ' log gap(s), ' + client.length + ' client gap(s)' }
+}
+
+function formatProcessEnvLeakReport(r: ProcessEnvLeakResult): string {
+  const l: string[] = []
+  l.push('# Process Env Leak Analysis'); l.push('')
+  l.push('**Env Leak Score:** ' + r.envLeakScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase()); l.push('')
+  l.push('> ' + r.summary); l.push('')
+  if (r.env.length > 0) { l.push('## Env (' + r.env.length + ')'); r.env.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.log.length > 0) { l.push('## Log (' + r.log.length + ')'); r.log.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.client.length > 0) { l.push('## Client (' + r.client.length + ')'); r.client.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.51.0: ReDoS COMPLEXITY ====================
+
+interface RedosComplexityResult { totalIssues: number; severity: Severity; nested: { line: number; issue: string; suggestion: string }[]; quantifier: { line: number; issue: string; suggestion: string }[]; backtrack: { line: number; issue: string; suggestion: string }[]; redosScore: number; summary: string }
+
+function analyzeRedosComplexity(code: string): RedosComplexityResult {
+  const lines = code.split('\n')
+  const nested: RedosComplexityResult['nested'] = []
+  const quantifier: RedosComplexityResult['quantifier'] = []
+  const backtrack: RedosComplexityResult['backtrack'] = []
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+    if (line.match(/RegExp\(|new.*RegExp|regex|pattern|re\.(compile|match|search|findall)/i) && line.match(/\(.*\*.*\)|(\(.*\+.*\).*)+|(\(.*\).*)+\+/)) {
+      nested.push({ line: i + 1, issue: 'Regex with potentially nested quantifiers', suggestion: 'Simplify regex or add timeout; nested quantifiers cause exponential backtracking (ReDoS)' })
+    }
+    if (line.match(/\(\.\*\)|\(\.\+\)|\[.*\]\*|\[.*\]\+/i) && line.match(/if.*test|while.*match|until.*match/i)) {
+      backtrack.push({ line: i + 1, issue: 'Greedy quantifier in loop condition', suggestion: 'Avoid greedy quantifiers in loops; repeated matching with greedy patterns causes backtracking' })
+    }
+    if (line.match(/a\+b\+c\+|x\*y\*z\*|\.\+.*\.+|.*[a-z]\+[a-z]\+/i)) {
+      quantifier.push({ line: i + 1, issue: 'Multiple adjacent quantifiers in regex', suggestion: 'Restructure regex to avoid adjacent quantifiers; overlapping matches cause backtracking' })
+    }
+  })
+  const totalIssues = nested.length + quantifier.length + backtrack.length
+  const redosScore = Math.max(0, 100 - nested.length * 10 - quantifier.length * 7 - backtrack.length * 10)
+  const severity: Severity = nested.length > 0 ? 'error' : backtrack.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+  return { totalIssues, severity, nested, quantifier, backtrack, redosScore, summary: nested.length + ' nested gap(s), ' + quantifier.length + ' quantifier gap(s), ' + backtrack.length + ' backtrack gap(s)' }
+}
+
+function formatRedosComplexityReport(r: RedosComplexityResult): string {
+  const l: string[] = []
+  l.push('# ReDoS Complexity Analysis'); l.push('')
+  l.push('**ReDoS Score:** ' + r.redosScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase()); l.push('')
+  l.push('> ' + r.summary); l.push('')
+  if (r.nested.length > 0) { l.push('## Nested (' + r.nested.length + ')'); r.nested.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.quantifier.length > 0) { l.push('## Quantifier (' + r.quantifier.length + ')'); r.quantifier.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.backtrack.length > 0) { l.push('## Backtrack (' + r.backtrack.length + ')'); r.backtrack.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.51.0: NULL BYTE INJECTION ====================
+
+interface NullByteInjectionResult { totalIssues: number; severity: Severity; byte: { line: number; issue: string; suggestion: string }[]; extension: { line: number; issue: string; suggestion: string }[]; trunc: { line: number; issue: string; suggestion: string }[]; nullByteScore: number; summary: string }
+
+function analyzeNullByteInjection(code: string): NullByteInjectionResult {
+  const lines = code.split('\n')
+  const byte: NullByteInjectionResult['byte'] = []
+  const extension: NullByteInjectionResult['extension'] = []
+  const trunc: NullByteInjectionResult['trunc'] = []
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+    if (line.match(/\\0|\\x00|\\u0000|%00|\\0|chr\(0\)|0x00/i) && line.match(/file|path|name|include|require|upload/i)) {
+      byte.push({ line: i + 1, issue: 'Null byte in file path/name context', suggestion: 'Block null bytes in paths; null bytes truncate strings in C-based file operations' })
+    }
+    if (line.match(/.php|.jsp|.asp|.cgi/i) && line.match(/upload|file.*name|name.*file/i) && !line.match(/null.*byte|0x00|\\0|truncat/i)) {
+      extension.push({ line: i + 1, issue: 'File extension handling without null byte check', suggestion: 'Validate file extensions after null byte removal; null bytes bypass extension checks' })
+    }
+    if (line.match(/include.*user|require.*user|file.*user|user.*file/i) && !line.match(/null|0x00|\\0|sanitiz|filter/i)) {
+      trunc.push({ line: i + 1, issue: 'User-controlled include without null byte filter', suggestion: 'Filter null bytes from include paths; null bytes truncate to sensitive files' })
+    }
+  })
+  const totalIssues = byte.length + extension.length + trunc.length
+  const nullByteScore = Math.max(0, 100 - byte.length * 10 - extension.length * 10 - trunc.length * 7)
+  const severity: Severity = byte.length > 0 ? 'error' : extension.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+  return { totalIssues, severity, byte, extension, trunc, nullByteScore, summary: byte.length + ' byte gap(s), ' + extension.length + ' extension gap(s), ' + trunc.length + ' trunc gap(s)' }
+}
+
+function formatNullByteInjectionReport(r: NullByteInjectionResult): string {
+  const l: string[] = []
+  l.push('# Null Byte Injection Analysis'); l.push('')
+  l.push('**Null Byte Score:** ' + r.nullByteScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase()); l.push('')
+  l.push('> ' + r.summary); l.push('')
+  if (r.byte.length > 0) { l.push('## Byte (' + r.byte.length + ')'); r.byte.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.extension.length > 0) { l.push('## Extension (' + r.extension.length + ')'); r.extension.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.trunc.length > 0) { l.push('## Trunc (' + r.trunc.length + ')'); r.trunc.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.51.0: MIME TYPE SPOOFING ====================
+
+interface MimeTypeSpoofingResult { totalIssues: number; severity: Severity; extension: { line: number; issue: string; suggestion: string }[]; magic: { line: number; issue: string; suggestion: string }[]; content: { line: number; issue: string; suggestion: string }[]; mimeSpoofScore: number; summary: string }
+
+function analyzeMimeTypeSpoofing(code: string): MimeTypeSpoofingResult {
+  const lines = code.split('\n')
+  const extension: MimeTypeSpoofingResult['extension'] = []
+  const magic: MimeTypeSpoofingResult['magic'] = []
+  const content: MimeTypeSpoofingResult['content'] = []
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+    if (line.match(/\.extname|path\.ext|file\.extension|split\('\.'\)|extension\(|\.pop\(\)/i) && !line.match(/magic.*byte|content.*type|mime.*check|file.*header|signature/i)) {
+      extension.push({ line: i + 1, issue: 'File type determined by extension only', suggestion: 'Verify by magic bytes; extensions spoof easily (e.g., file.jpg.php)' })
+    }
+    if (line.match(/magic.*bytes|file.*signature|file.*header|content.*sniff|buffer\.slice/i) && !line.match(/check|compare|match|valid/i)) {
+      magic.push({ line: i + 1, issue: 'Magic bytes read but not validated against expected types', suggestion: 'Compare magic bytes against whitelist; reading without validation provides no security' })
+    }
+    if (line.match(/Content-Type.*user|Content-Type.*request|Content-Type.*client/i) && !line.match(/valid|check|whitelist|allowlist|server.*determine/i)) {
+      content.push({ line: i + 1, issue: 'Content-Type trusted from client request', suggestion: 'Determine type server-side; client Content-Type is easily spoofed' })
+    }
+    if (line.match(/accept.*image|accept.*pdf|accept.*file/i) && !line.match(/magic.*byte|content.*check|server.*valid/i)) {
+      content.push({ line: i + 1, issue: 'File accepted by declared type without server validation', suggestion: 'Validate file content server-side; declared types enable malicious uploads' })
+    }
+  })
+  const totalIssues = extension.length + magic.length + content.length
+  const mimeSpoofScore = Math.max(0, 100 - extension.length * 10 - magic.length * 7 - content.length * 7)
+  const severity: Severity = extension.length > 0 ? 'warning' : content.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+  return { totalIssues, severity, extension, magic, content, mimeSpoofScore, summary: extension.length + ' extension gap(s), ' + magic.length + ' magic gap(s), ' + content.length + ' content gap(s)' }
+}
+
+function formatMimeTypeSpoofingReport(r: MimeTypeSpoofingResult): string {
+  const l: string[] = []
+  l.push('# MIME Type Spoofing Analysis'); l.push('')
+  l.push('**MIME Spoof Score:** ' + r.mimeSpoofScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase()); l.push('')
+  l.push('> ' + r.summary); l.push('')
+  if (r.extension.length > 0) { l.push('## Extension (' + r.extension.length + ')'); r.extension.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.magic.length > 0) { l.push('## Magic (' + r.magic.length + ')'); r.magic.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.content.length > 0) { l.push('## Content (' + r.content.length + ')'); r.content.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
 // ==================== V0.50.0: XXE INJECTION PREVENTION ====================
 
 interface XxeInjectionPreventionResult { totalIssues: number; severity: Severity; parser: { line: number; issue: string; suggestion: string }[]; entity: { line: number; issue: string; suggestion: string }[]; dtd: { line: number; issue: string; suggestion: string }[]; xxeScore: number; summary: string }
@@ -28742,6 +29064,526 @@ function formatCacheStampedeGuardReport(r: CacheStampedeGuardResult): string {
   if (r.expiration.length > 0) { l.push('## Expiration (' + r.expiration.length + ')'); r.expiration.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
   if (r.warmup.length > 0) { l.push('## Warmup (' + r.warmup.length + ')'); r.warmup.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
   return l.join('\n')
+}
+
+// ==================== V0.43.0: CQRS PATTERN ====================
+
+interface CQRSPatternResult {
+  totalIssues: number
+  severity: Severity
+  command: { line: number; issue: string; suggestion: string }[]
+  query: { line: number; issue: string; suggestion: string }[]
+  cqrsScore: number
+  summary: string
+}
+
+function analyzeCQRSPattern(code: string): CQRSPatternResult {
+  const lines = code.split('\n')
+  const command: CQRSPatternResult['command'] = []
+  const query: CQRSPatternResult['query'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/cqrs|command.*query|query.*command|command.*handler|query.*handler/i) && !line.match(/command.*model|query.*model|separate.*model|different.*model/i)) {
+      command.push({ line: i + 1, issue: 'CQRS without separate read/write models', suggestion: 'Use separate models for commands (write) and queries (read); shared models create coupling and compromise optimization' })
+    }
+
+    if (line.match(/command.*validat|validat.*command|command.*check/i) && !line.match(/validat.*before|command.*pipe|command.*middleware|command.*pipe.*validat/i)) {
+      command.push({ line: i + 1, issue: 'Command validation without pipeline/middleware', suggestion: 'Validate commands in pipeline before handler; separation keeps handlers focused on business logic' })
+    }
+
+    if (line.match(/query.*cach|cache.*query|query.*optim|optim.*query/i) && !line.match(/query.*cache.*ttl|query.*cache.*invalid|query.*cache.*expir|query.*fresh/i)) {
+      query.push({ line: i + 1, issue: 'Query cache without invalidation/freshness', suggestion: 'Define cache TTL and invalidation strategy for queries; stale query caches serve outdated data' })
+    }
+
+    if (line.match(/cqrs.*sync|sync.*cqrs|write.*read.*sync|read.*write.*sync/i) && !line.match(/eventual.*consisten|sync.*delay|read.*after.*write|wait.*for.*sync/i)) {
+      query.push({ line: i + 1, issue: 'CQRS read-write sync without consistency expectation', suggestion: 'Define eventual consistency expectation; handle read-after-write delay in client (redirect to write model)' })
+    }
+  })
+
+  const totalIssues = command.length + query.length
+  const cqrsScore = Math.max(0, 100 - command.length * 8 - query.length * 8)
+  const severity: Severity = command.length > 0 ? 'info' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, command, query, cqrsScore,
+    summary: command.length + ' command gap(s), ' + query.length + ' query gap(s)' }
+}
+
+function formatCQRSPatternReport(r: CQRSPatternResult): string {
+  const lines: string[] = []
+  lines.push('# CQRS Pattern Analysis')
+  lines.push('')
+  lines.push('**CQRS Score:** ' + r.cqrsScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.command.length > 0) {
+    lines.push('## Command (' + r.command.length + ')')
+    r.command.forEach(c => lines.push('- Line ' + c.line + ': ' + c.suggestion))
+    lines.push('')
+  }
+  if (r.query.length > 0) {
+    lines.push('## Query (' + r.query.length + ')')
+    r.query.forEach(q => lines.push('- Line ' + q.line + ': ' + q.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.43.0: OUTBOX IDEMPOTENCY ====================
+
+interface OutboxIdempotencyResult {
+  totalIssues: number
+  severity: Severity
+  dedup: { line: number; issue: string; suggestion: string }[]
+  idem: { line: number; issue: string; suggestion: string }[]
+  outboxIdemScore: number
+  summary: string
+}
+
+function analyzeOutboxIdempotency(code: string): OutboxIdempotencyResult {
+  const lines = code.split('\n')
+  const dedup: OutboxIdempotencyResult['dedup'] = []
+  const idem: OutboxIdempotencyResult['idem'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/outbox.*idem|idem.*outbox|outbox.*dedup|dedup.*outbox/i) && !line.match(/idempotency.*key|dedup.*key|dedup.*window|dedup.*period/i)) {
+      dedup.push({ line: i + 1, issue: 'Outbox idempotency without dedup key/window', suggestion: 'Define dedup key and retention window; indefinite dedup storage grows unbounded' })
+    }
+
+    if (line.match(/idempotency.*key|idempotent.*key|idempotency.*header|idempotency.*header/i) && !line.match(/key.*expir|key.*ttl|key.*retention|key.*cleanup/i)) {
+      idem.push({ line: i + 1, issue: 'Idempotency key without expiration/cleanup', suggestion: 'Set idempotency key TTL and cleanup; permanent dedup storage is wasteful' })
+    }
+
+    if (line.match(/duplicate.*detect|detect.*duplicate|duplicate.*check|check.*duplicate/i) && !line.match(/detect.*window|detect.*period|detect.*time.*bound/i)) {
+      dedup.push({ line: i + 1, issue: 'Duplicate detection without time window', suggestion: 'Bound duplicate detection to time window (e.g., 24h); indefinite detection grows storage and latency' })
+    }
+
+    if (line.match(/idempotency.*respon|respon.*idempotent|idempotency.*replay|idempotent.*replay/i) && !line.match(/respon.*cache|respon.*store|respon.*persist|respon.*format/i)) {
+      idem.push({ line: i + 1, issue: 'Idempotent response without storage format', suggestion: 'Store original response for idempotent replay; replay must return identical response including status code' })
+    }
+  })
+
+  const totalIssues = dedup.length + idem.length
+  const outboxIdemScore = Math.max(0, 100 - dedup.length * 8 - idem.length * 8)
+  const severity: Severity = dedup.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, dedup, idem, outboxIdemScore,
+    summary: dedup.length + ' dedup gap(s), ' + idem.length + ' idem gap(s)' }
+}
+
+function formatOutboxIdempotencyReport(r: OutboxIdempotencyResult): string {
+  const lines: string[] = []
+  lines.push('# Outbox Idempotency Analysis')
+  lines.push('')
+  lines.push('**Outbox Idem Score:** ' + r.outboxIdemScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.dedup.length > 0) {
+    lines.push('## Dedup (' + r.dedup.length + ')')
+    r.dedup.forEach(d => lines.push('- Line ' + d.line + ': ' + d.suggestion))
+    lines.push('')
+  }
+  if (r.idem.length > 0) {
+    lines.push('## Idem (' + r.idem.length + ')')
+    r.idem.forEach(d => lines.push('- Line ' + d.line + ': ' + d.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.43.0: API VERSION NEGOTIATION ====================
+
+interface APIVersionNegotiationResult {
+  totalIssues: number
+  severity: Severity
+  version: { line: number; issue: string; suggestion: string }[]
+  negotiate: { line: number; issue: string; suggestion: string }[]
+  versionNegScore: number
+  summary: string
+}
+
+function analyzeAPIVersionNegotiation(code: string): APIVersionNegotiationResult {
+  const lines = code.split('\n')
+  const version: APIVersionNegotiationResult['version'] = []
+  const negotiate: APIVersionNegotiationResult['negotiate'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/api.*version|version.*api|version.*negotiat|negotiat.*version/i) && !line.match(/version.*header|version.*accept|version.*content.*type|version.*param/i)) {
+      negotiate.push({ line: i + 1, issue: 'API version negotiation without header/param strategy', suggestion: 'Use Accept header or custom header for version negotiation; URL versioning couples version to resource identity' })
+    }
+
+    if (line.match(/version.*deprecat|deprecat.*version|version.*sunset|sunset.*version/i) && !line.match(/deprecat.*compat|deprecat.*support|deprecat.*end.*of.*life|deprecat.*migrat.*path/i)) {
+      version.push({ line: i + 1, issue: 'Version deprecation without support window', suggestion: 'Define deprecation support window (e.g., 12 months); clients need time to migrate before EOL' })
+    }
+
+    if (line.match(/version.*compat|compat.*version|backward.*compat|compat.*backward/i) && !line.match(/compat.*test|compat.*verif|compat.*automate|compat.*ci/i)) {
+      version.push({ line: i + 1, issue: 'Version compatibility without automated verification', suggestion: 'Automate compatibility testing in CI; manual compat checks are unreliable and delay releases' })
+    }
+
+    if (line.match(/version.*default|default.*version|fallback.*version|version.*fallback/i) && !line.match(/default.*latest|default.*stable|default.*announce|default.*document/i)) {
+      negotiate.push({ line: i + 1, issue: 'Default version without documentation/announcement', suggestion: 'Document default version explicitly; changes to default version surprise existing clients' })
+    }
+  })
+
+  const totalIssues = version.length + negotiate.length
+  const versionNegScore = Math.max(0, 100 - version.length * 8 - negotiate.length * 8)
+  const severity: Severity = version.length > 0 ? 'info' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, version, negotiate, versionNegScore,
+    summary: version.length + ' version gap(s), ' + negotiate.length + ' negotiate gap(s)' }
+}
+
+function formatAPIVersionNegotiationReport(r: APIVersionNegotiationResult): string {
+  const lines: string[] = []
+  lines.push('# API Version Negotiation Analysis')
+  lines.push('')
+  lines.push('**Version Neg Score:** ' + r.versionNegScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.version.length > 0) {
+    lines.push('## Version (' + r.version.length + ')')
+    r.version.forEach(v => lines.push('- Line ' + v.line + ': ' + v.suggestion))
+    lines.push('')
+  }
+  if (r.negotiate.length > 0) {
+    lines.push('## Negotiate (' + r.negotiate.length + ')')
+    r.negotiate.forEach(n => lines.push('- Line ' + n.line + ': ' + n.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.43.0: CONNECTION BACKPRESSURE ====================
+
+interface ConnectionBackpressureResult {
+  totalIssues: number
+  severity: Severity
+  backpressure: { line: number; issue: string; suggestion: string }[]
+  flow: { line: number; issue: string; suggestion: string }[]
+  connBPScore: number
+  summary: string
+}
+
+function analyzeConnectionBackpressure(code: string): ConnectionBackpressureResult {
+  const lines = code.split('\n')
+  const backpressure: ConnectionBackpressureResult['backpressure'] = []
+  const flow: ConnectionBackpressureResult['flow'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/connection.*backpressure|backpressure.*connection|conn.*backpressure/i) && !line.match(/backpressure.*signal|backpressure.*notif|backpressure.*metric|backpressure.*detect/i)) {
+      backpressure.push({ line: i + 1, issue: 'Connection backpressure without signal mechanism', suggestion: 'Signal backpressure to producer via pause/flow control; undetected backpressure causes buffer bloat' })
+    }
+
+    if (line.match(/flow.*control|control.*flow|tcp.*window|window.*flow/i) && !line.match(/window.*size|window.*scale|window.*tun|window.*auto/i)) {
+      flow.push({ line: i + 1, issue: 'Flow control without window tuning', suggestion: 'Tune TCP window size for BDP (bandwidth-delay product); default windows underutilize high-bandwidth links' })
+    }
+
+    if (line.match(/backpressure.*queue|queue.*backpressure|backpressure.*buffer/i) && !line.match(/queue.*bound|queue.*limit|queue.*max|queue.*drop/i)) {
+      backpressure.push({ line: i + 1, issue: 'Backpressure queue without bound/drop policy', suggestion: 'Bound backpressure queue and define drop policy (drop-tail, drop-head, or backpressure upstream)' })
+    }
+
+    if (line.match(/flow.*stall|stall.*flow|flow.*block|block.*flow/i) && !line.match(/stall.*detect|stall.*timeout|stall.*recover|stall.*alert/i)) {
+      flow.push({ line: i + 1, issue: 'Flow stall without detection/recovery', suggestion: 'Detect flow stalls with timeout; stalled flows waste connection resources and mask failures' })
+    }
+  })
+
+  const totalIssues = backpressure.length + flow.length
+  const connBPScore = Math.max(0, 100 - backpressure.length * 8 - flow.length * 8)
+  const severity: Severity = backpressure.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, backpressure, flow, connBPScore,
+    summary: backpressure.length + ' backpressure gap(s), ' + flow.length + ' flow gap(s)' }
+}
+
+function formatConnectionBackpressureReport(r: ConnectionBackpressureResult): string {
+  const lines: string[] = []
+  lines.push('# Connection Backpressure Analysis')
+  lines.push('')
+  lines.push('**Conn BP Score:** ' + r.connBPScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.backpressure.length > 0) {
+    lines.push('## Backpressure (' + r.backpressure.length + ')')
+    r.backpressure.forEach(b => lines.push('- Line ' + b.line + ': ' + b.suggestion))
+    lines.push('')
+  }
+  if (r.flow.length > 0) {
+    lines.push('## Flow (' + r.flow.length + ')')
+    r.flow.forEach(f => lines.push('- Line ' + f.line + ': ' + f.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.43.0: GRACEFUL STARTUP ====================
+
+interface GracefulStartupResult {
+  totalIssues: number
+  severity: Severity
+  startup: { line: number; issue: string; suggestion: string }[]
+  readiness: { line: number; issue: string; suggestion: string }[]
+  startupScore: number
+  summary: string
+}
+
+function analyzeGracefulStartup(code: string): GracefulStartupResult {
+  const lines = code.split('\n')
+  const startup: GracefulStartupResult['startup'] = []
+  const readiness: GracefulStartupResult['readiness'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/graceful.*startup|startup.*graceful|startup.*init|init.*startup/i) && !line.match(/startup.*order|startup.*sequenc|startup.*depend|startup.*parallel/i)) {
+      startup.push({ line: i + 1, issue: 'Graceful startup without startup order/sequence', suggestion: 'Define startup order for dependencies; parallel startup with hidden dependencies causes race conditions' })
+    }
+
+    if (line.match(/readiness.*probe|probe.*readiness|readiness.*check|check.*readiness/i) && !line.match(/readiness.*depend|readiness.*upstream|readiness.*deep|readiness.*full/i)) {
+      readiness.push({ line: i + 1, issue: 'Readiness probe without dependency verification', suggestion: 'Verify upstream dependencies in readiness probe; shallow readiness reports ready before dependencies available' })
+    }
+
+    if (line.match(/startup.*timeout|timeout.*startup|startup.*deadline|deadline.*startup/i) && !line.match(/startup.*fail|startup.*abort|startup.*fatal|startup.*error/i)) {
+      startup.push({ line: i + 1, issue: 'Startup timeout without failure action', suggestion: 'Abort with error on startup timeout; partial startup with timeout causes undefined behavior' })
+    }
+
+    if (line.match(/health.*startup|startup.*health|startup.*check|check.*startup/i) && !line.match(/startup.*complet|startup.*signal|startup.*notify|startup.*event/i)) {
+      readiness.push({ line: i + 1, issue: 'Startup health check without completion signal', suggestion: 'Signal startup completion to orchestrator; premature traffic before full readiness causes errors' })
+    }
+  })
+
+  const totalIssues = startup.length + readiness.length
+  const startupScore = Math.max(0, 100 - startup.length * 8 - readiness.length * 8)
+  const severity: Severity = startup.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, startup, readiness, startupScore,
+    summary: startup.length + ' startup gap(s), ' + readiness.length + ' readiness gap(s)' }
+}
+
+function formatGracefulStartupReport(r: GracefulStartupResult): string {
+  const lines: string[] = []
+  lines.push('# Graceful Startup Analysis')
+  lines.push('')
+  lines.push('**Startup Score:** ' + r.startupScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.startup.length > 0) {
+    lines.push('## Startup (' + r.startup.length + ')')
+    r.startup.forEach(s => lines.push('- Line ' + s.line + ': ' + s.suggestion))
+    lines.push('')
+  }
+  if (r.readiness.length > 0) {
+    lines.push('## Readiness (' + r.readiness.length + ')')
+    r.readiness.forEach(r => lines.push('- Line ' + r.line + ': ' + r.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.43.0: SECRET DETECTION ====================
+
+interface SecretDetectionResult {
+  totalIssues: number
+  severity: Severity
+  secret: { line: number; issue: string; suggestion: string }[]
+  storage: { line: number; issue: string; suggestion: string }[]
+  secretScore: number
+  summary: string
+}
+
+function analyzeSecretDetection(code: string): SecretDetectionResult {
+  const lines = code.split('\n')
+  const secret: SecretDetectionResult['secret'] = []
+  const storage: SecretDetectionResult['storage'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/hard.*code.*secret|hardcode.*secret|secret.*hardcode|embedded.*secret/i) && !line.match(/secret.*detect|secret.*scan|secret.*prevent|secret.*audit/i)) {
+      secret.push({ line: i + 1, issue: 'Hardcoded secret without detection/scan', suggestion: 'Scan codebase for hardcoded secrets (API keys, tokens); use secret detection in pre-commit hooks' })
+    }
+
+    if (line.match(/secret.*vault|vault.*secret|secret.*manager|manager.*secret/i) && !line.match(/secret.*rotat|secret.*audit|secret.*access.*log|secret.*least.*priv/i)) {
+      storage.push({ line: i + 1, issue: 'Secret vault without rotation/access audit', suggestion: 'Rotate secrets regularly and audit access; static secrets in vaults still pose risk if compromised' })
+    }
+
+    if (line.match(/api.*key.*in.*code|token.*in.*code|password.*in.*code|credential.*in.*code/i) && !line.match(/api.*key.*env|token.*env|password.*env|credential.*env/i)) {
+      secret.push({ line: i + 1, issue: 'Credential in code instead of environment/vault', suggestion: 'Move credentials to environment variables or secret vault; code credentials leak with repository' })
+    }
+
+    if (line.match(/secret.*log|log.*secret|secret.*print|print.*secret/i) && !line.match(/secret.*redact|secret.*mask|secret.*strip|secret.*allowlist/i)) {
+      storage.push({ line: i + 1, issue: 'Secret logging without redaction', suggestion: 'Redact secrets in logs; define secret patterns for automatic log masking' })
+    }
+  })
+
+  const totalIssues = secret.length + storage.length
+  const secretScore = Math.max(0, 100 - secret.length * 10 - storage.length * 10)
+  const severity: Severity = secret.length > 0 ? 'error' : totalIssues > 0 ? 'warning' : 'info'
+
+  return { totalIssues, severity, secret, storage, secretScore,
+    summary: secret.length + ' secret gap(s), ' + storage.length + ' storage gap(s)' }
+}
+
+function formatSecretDetectionReport(r: SecretDetectionResult): string {
+  const lines: string[] = []
+  lines.push('# Secret Detection Analysis')
+  lines.push('')
+  lines.push('**Secret Score:** ' + r.secretScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.secret.length > 0) {
+    lines.push('## Secret (' + r.secret.length + ')')
+    r.secret.forEach(s => lines.push('- Line ' + s.line + ': ' + s.suggestion))
+    lines.push('')
+  }
+  if (r.storage.length > 0) {
+    lines.push('## Storage (' + r.storage.length + ')')
+    r.storage.forEach(s => lines.push('- Line ' + s.line + ': ' + s.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.43.0: ERROR CODE REGISTRY ====================
+
+interface ErrorCodeRegistryResult {
+  totalIssues: number
+  severity: Severity
+  registry: { line: number; issue: string; suggestion: string }[]
+  document: { line: number; issue: string; suggestion: string }[]
+  errorCodeScore: number
+  summary: string
+}
+
+function analyzeErrorCodeRegistry(code: string): ErrorCodeRegistryResult {
+  const lines = code.split('\n')
+  const registry: ErrorCodeRegistryResult['registry'] = []
+  const document: ErrorCodeRegistryResult['document'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/error.*code.*registry|registry.*error.*code|error.*code.*catalog|catalog.*error/i) && !line.match(/code.*unique|code.*namespac|code.*domain|code.*hierarch/i)) {
+      registry.push({ line: i + 1, issue: 'Error code registry without uniqueness/namespace', suggestion: 'Namespace error codes by domain; unique codes across services prevent collisions and misrouting' })
+    }
+
+    if (line.match(/error.*code.*document|document.*error.*code|error.*code.*spec/i) && !line.match(/code.*descri|code.*action|code.*resolut|code.*example/i)) {
+      document.push({ line: i + 1, issue: 'Error code documentation without description/resolution', suggestion: 'Document error codes with description, resolution steps, and examples; opaque codes are unactionable' })
+    }
+
+    if (line.match(/error.*code.*map|map.*error.*code|error.*code.*lookup/i) && !line.match(/code.*version|code.*compat|code.*stable|code.*deprecat/i)) {
+      registry.push({ line: i + 1, issue: 'Error code map without versioning/stability', suggestion: 'Version error code mappings; breaking changes to codes break client error handling logic' })
+    }
+
+    if (line.match(/error.*code.*local|local.*error.*code|error.*code.*i18n|i18n.*error.*code/i) && !line.match(/local.*mapp|local.*resolv|local.*fallback|local.*default/i)) {
+      document.push({ line: i + 1, issue: 'Localized error code without fallback', suggestion: 'Include default/fallback language in error code; missing localization should not expose internal codes' })
+    }
+  })
+
+  const totalIssues = registry.length + document.length
+  const errorCodeScore = Math.max(0, 100 - registry.length * 8 - document.length * 8)
+  const severity: Severity = registry.length > 0 ? 'info' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, registry, document, errorCodeScore,
+    summary: registry.length + ' registry gap(s), ' + document.length + ' document gap(s)' }
+}
+
+function formatErrorCodeRegistryReport(r: ErrorCodeRegistryResult): string {
+  const lines: string[] = []
+  lines.push('# Error Code Registry Analysis')
+  lines.push('')
+  lines.push('**Error Code Score:** ' + r.errorCodeScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.registry.length > 0) {
+    lines.push('## Registry (' + r.registry.length + ')')
+    r.registry.forEach(r => lines.push('- Line ' + r.line + ': ' + r.suggestion))
+    lines.push('')
+  }
+  if (r.document.length > 0) {
+    lines.push('## Document (' + r.document.length + ')')
+    r.document.forEach(d => lines.push('- Line ' + d.line + ': ' + d.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.43.0: CACHE KEY DESIGN ====================
+
+interface CacheKeyDesignResult {
+  totalIssues: number
+  severity: Severity
+  key: { line: number; issue: string; suggestion: string }[]
+  namespac: { line: number; issue: string; suggestion: string }[]
+  cacheKeyScore: number
+  summary: string
+}
+
+function analyzeCacheKeyDesign(code: string): CacheKeyDesignResult {
+  const lines = code.split('\n')
+  const key: CacheKeyDesignResult['key'] = []
+  const namespac: CacheKeyDesignResult['namespac'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/cache.*key|key.*cache|cache.*namespace|namespace.*cache/i) && !line.match(/key.*version|key.*namespac|key.*prefix|key.*segment/i)) {
+      key.push({ line: i + 1, issue: 'Cache key without versioning/namespace', suggestion: 'Namespace cache keys with prefix and version; global keyspace causes collisions across services' })
+    }
+
+    if (line.match(/cache.*key.*user|user.*cache.*key|cache.*key.*tenant|tenant.*cache.*key/i) && !line.match(/key.*isolat|key.*separat|key.*boundar|key.*scope/i)) {
+      namespac.push({ line: i + 1, issue: 'User/tenant cache key without isolation', suggestion: 'Isolate keys by tenant boundary; shared keyspace across tenants risks data leakage' })
+    }
+
+    if (line.match(/cache.*key.*collis|collis.*cache.*key|key.*collis|collis.*key/i) && !line.match(/collis.*prevent|collis.*detect|collis.*avoid|collis.*hash/i)) {
+      key.push({ line: i + 1, issue: 'Cache key collision without prevention', suggestion: 'Use hash or structured keys to prevent collisions; key collisions silently overwrite cached data' })
+    }
+
+    if (line.match(/cache.*key.*ttl|ttl.*cache.*key|key.*expir|expir.*key/i) && !line.match(/ttl.*per.*key|ttl.*variab|ttl.*configur|ttl.*default/i)) {
+      namespac.push({ line: i + 1, issue: 'Cache key TTL without per-key configuration', suggestion: 'Allow per-key TTL configuration; uniform TTL across all keys wastes memory or serves stale data' })
+    }
+  })
+
+  const totalIssues = key.length + namespac.length
+  const cacheKeyScore = Math.max(0, 100 - key.length * 8 - namespac.length * 8)
+  const severity: Severity = namespac.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, key, namespac, cacheKeyScore,
+    summary: key.length + ' key gap(s), ' + namespac.length + ' namespac gap(s)' }
+}
+
+function formatCacheKeyDesignReport(r: CacheKeyDesignResult): string {
+  const lines: string[] = []
+  lines.push('# Cache Key Design Analysis')
+  lines.push('')
+  lines.push('**Cache Key Score:** ' + r.cacheKeyScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.key.length > 0) {
+    lines.push('## Key (' + r.key.length + ')')
+    r.key.forEach(k => lines.push('- Line ' + k.line + ': ' + k.suggestion))
+    lines.push('')
+  }
+  if (r.namespac.length > 0) {
+    lines.push('## Namespace (' + r.namespac.length + ')')
+    r.namespac.forEach(n => lines.push('- Line ' + n.line + ': ' + n.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
 }
 
 // ==================== PLUGIN REGISTRATION ====================
@@ -33580,5 +34422,93 @@ ctx.tools.register(defineTool({
   }
 }))
 
-console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design, container_security, ml_pipeline, api_deprecation, design_system, pwa_compliance, type_system, green_computing, realtime_collab, a11y_deep, i18n_deep, css_architecture, state_machine, web_components, resilience, module_federation, review_automation, observability, migration_safety, edge_computing, api_versioning, wasm_advanced, feature_toggles, email_deliverability, seo_analysis, monorepo_boundaries, ddd_patterns, mf_runtime, realtime_protocols, data_pipeline, gateway_deep, test_rigor, quality_gate, graphql_schema, event_sourcing_integrity, rate_limiting, migration_safety, auth_hardening, distributed_tracing, infrastructure_as_code, review_automation, contract_testing, sec_headers_deep, privacy_compliance, concurrency_patterns, cloud_native, error_recovery, system_design, dependency_injection, api_versioning, serialization_perf, memory_allocation, build_pipeline, error_messages, logging_discipline, config_as_code, component_interface, token_hygiene, query_antipatterns, websocket_lifecycle, graphql_perf, deprecation_tracking, code_splitting_audit, css_arch_deep, sec_dep_audit, webhook_signature, oauth_security, email_infra, health_check_depth, cors_security, feature_rollout, secret_lifecycle, rate_limit_strategy, container_security_scan, grpc_security, data_residency, deployment_progressive, obs_exemplar, data_pipeline_quality, service_mesh, plugin_architecture, mobile_app_security, data_masking, core_web_vitals, infra_cost, api_gateway_config, css_in_js_perf, crdt_state_sync, resource_quota, browser_compat_audit, floating_point, snapshot_testing, event_schema, form_validation, retry_idempotency, a11y_semantics, race_condition, cache_invalidation, data_loader_opt, event_versioning, connection_lifecycle, csp_nonce, struct_error_ctx, stream_backpressure, identifier_collision, graphql_query_depth, auth_token_rotation, mq_dead_letter, file_upload_sec, query_plan, encryption_at_rest, ws_connection_state, rate_limit_policy, payment_idempotency, cron_reliability, immutable_data, data_residency_compliance, response_envelope, compression_negotiation, dns_health, graceful_degradation, api_deprecation_strategy, db_safety, log_sampling, slo_tracking, api_key_mgmt, data_lineage, infra_drift, schema_evolution, wasm_interop, data_partition, plugin_lifecycle, time_sync, feature_store, vector_db, api_composition, audit_trail, graphql_cost, session_mgmt, csv_injection, tls_config, distributed_lock, event_dedup, allocator_pattern, webhook_retry, money_handling, pagination, resource_leak, c4_architecture, semaphore, dns_optimization, content_negotiation, retry_budget, cache_stampede, gateway_routing, search_sanitization, rate_limit_headers, data_consistency, mobile_hardening, build_config, grpc_interceptors, memory_alignment, saga_orchestration, ws_backpressure, bff_pattern, immutable_infra, csp_reporting, token_bucket, circuit_breaker, change_data_capture, api_federation, cache_warming, conn_multiplex, least_privilege, tracing_sampling, json_patch, event_snapshot, adaptive_rate, graceful_retry, encryption_transit, image_scanning, deadlock_detect, deprecation_comm, metrics_cardinality, api_key_rotation, data_retention, flag_cleanup, log_redaction, sli_slo, graceful_degrade, pagination_consistency, dep_drift, cqrs_pattern, outbox_idempotency, api_version_negotiation, connection_backpressure, graceful_startup, secret_detection, error_code_registry, cache_key_design, db_migration_safety, retry_strategy, health_check_completeness, log_structuring, event_schema_evolution, graceful_shutdown_timing, config_hot_reload, mutual_tls, dead_letter_queue, rate_limit_header, websocket_pool, container_image_opt, dns_prefetch_config, async_memory_leak, api_idempotency_key, service_mesh_policy, pagination_safety, background_job_idempotency, feature_flag_lifecycle, request_deduplication, connection_leak, payload_compression, cors_preflight_cache, timestamp_monotonicity, search_query_safety, api_response_cache, thread_pool_starvation, db_slow_query, url_validation, memory_alignment_audit, cache_stampede_guard, log_injection_prevention, temp_file_security, jwt_token_validation, file_permission_audit, dns_rebinding_protection, integer_overflow_detection, command_injection_prevention, csrf_token_validation, path_traversal_prevention, insecure_deserialization, mass_assignment, weak_cryptography, ssti_injection, file_upload_validation, hardcoded_secrets, unsafe_reflection, xxe_injection_prevention, prototype_pollution, async_race_condition, clickjacking_protection, insecure_cors_config, unrestricted_file_deletion, content_type_header, weak_password_policy`)
+ctx.tools.register(defineTool({
+  name: 'crlf_injection_prevention',
+  description: 'Analyze CRLF injection prevention: header sanitization, log injection, response splitting.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeCrlfInjectionPrevention(args.code)
+    return formatCrlfInjectionPreventionReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'session_timeout_policy',
+  description: 'Analyze session timeout policy: expiration, idle timeout, renewal limits, persistent cookies.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeSessionTimeoutPolicy(args.code)
+    return formatSessionTimeoutPolicyReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'zip_slip_prevention',
+  description: 'Analyze zip slip prevention: archive extraction paths, entry names, traversal sequences.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeZipSlipPrevention(args.code)
+    return formatZipSlipPreventionReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'ssrf_detection',
+  description: 'Analyze SSRF vulnerabilities: user-controlled URLs, private IPs, dangerous protocols.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeSsrfDetection(args.code)
+    return formatSsrfDetectionReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'process_env_leak',
+  description: 'Analyze process environment leaks: env vars in logs, stack traces, client responses.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeProcessEnvLeak(args.code)
+    return formatProcessEnvLeakReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'redos_complexity',
+  description: 'Analyze ReDoS complexity: nested quantifiers, greedy loops, adjacent quantifiers.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeRedosComplexity(args.code)
+    return formatRedosComplexityReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'null_byte_injection',
+  description: 'Analyze null byte injection: file paths, extension bypass, include truncation.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeNullByteInjection(args.code)
+    return formatNullByteInjectionReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'mime_type_spoofing',
+  description: 'Analyze MIME type spoofing: extension-only checks, magic bytes, client Content-Type trust.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeMimeTypeSpoofing(args.code)
+    return formatMimeTypeSpoofingReport(result)
+  }
+}))
+
+console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design, container_security, ml_pipeline, api_deprecation, design_system, pwa_compliance, type_system, green_computing, realtime_collab, a11y_deep, i18n_deep, css_architecture, state_machine, web_components, resilience, module_federation, review_automation, observability, migration_safety, edge_computing, api_versioning, wasm_advanced, feature_toggles, email_deliverability, seo_analysis, monorepo_boundaries, ddd_patterns, mf_runtime, realtime_protocols, data_pipeline, gateway_deep, test_rigor, quality_gate, graphql_schema, event_sourcing_integrity, rate_limiting, migration_safety, auth_hardening, distributed_tracing, infrastructure_as_code, review_automation, contract_testing, sec_headers_deep, privacy_compliance, concurrency_patterns, cloud_native, error_recovery, system_design, dependency_injection, api_versioning, serialization_perf, memory_allocation, build_pipeline, error_messages, logging_discipline, config_as_code, component_interface, token_hygiene, query_antipatterns, websocket_lifecycle, graphql_perf, deprecation_tracking, code_splitting_audit, css_arch_deep, sec_dep_audit, webhook_signature, oauth_security, email_infra, health_check_depth, cors_security, feature_rollout, secret_lifecycle, rate_limit_strategy, container_security_scan, grpc_security, data_residency, deployment_progressive, obs_exemplar, data_pipeline_quality, service_mesh, plugin_architecture, mobile_app_security, data_masking, core_web_vitals, infra_cost, api_gateway_config, css_in_js_perf, crdt_state_sync, resource_quota, browser_compat_audit, floating_point, snapshot_testing, event_schema, form_validation, retry_idempotency, a11y_semantics, race_condition, cache_invalidation, data_loader_opt, event_versioning, connection_lifecycle, csp_nonce, struct_error_ctx, stream_backpressure, identifier_collision, graphql_query_depth, auth_token_rotation, mq_dead_letter, file_upload_sec, query_plan, encryption_at_rest, ws_connection_state, rate_limit_policy, payment_idempotency, cron_reliability, immutable_data, data_residency_compliance, response_envelope, compression_negotiation, dns_health, graceful_degradation, api_deprecation_strategy, db_safety, log_sampling, slo_tracking, api_key_mgmt, data_lineage, infra_drift, schema_evolution, wasm_interop, data_partition, plugin_lifecycle, time_sync, feature_store, vector_db, api_composition, audit_trail, graphql_cost, session_mgmt, csv_injection, tls_config, distributed_lock, event_dedup, allocator_pattern, webhook_retry, money_handling, pagination, resource_leak, c4_architecture, semaphore, dns_optimization, content_negotiation, retry_budget, cache_stampede, gateway_routing, search_sanitization, rate_limit_headers, data_consistency, mobile_hardening, build_config, grpc_interceptors, memory_alignment, saga_orchestration, ws_backpressure, bff_pattern, immutable_infra, csp_reporting, token_bucket, circuit_breaker, change_data_capture, api_federation, cache_warming, conn_multiplex, least_privilege, tracing_sampling, json_patch, event_snapshot, adaptive_rate, graceful_retry, encryption_transit, image_scanning, deadlock_detect, deprecation_comm, metrics_cardinality, api_key_rotation, data_retention, flag_cleanup, log_redaction, sli_slo, graceful_degrade, pagination_consistency, dep_drift, cqrs_pattern, outbox_idempotency, api_version_negotiation, connection_backpressure, graceful_startup, secret_detection, error_code_registry, cache_key_design, db_migration_safety, retry_strategy, health_check_completeness, log_structuring, event_schema_evolution, graceful_shutdown_timing, config_hot_reload, mutual_tls, dead_letter_queue, rate_limit_header, websocket_pool, container_image_opt, dns_prefetch_config, async_memory_leak, api_idempotency_key, service_mesh_policy, pagination_safety, background_job_idempotency, feature_flag_lifecycle, request_deduplication, connection_leak, payload_compression, cors_preflight_cache, timestamp_monotonicity, search_query_safety, api_response_cache, thread_pool_starvation, db_slow_query, url_validation, memory_alignment_audit, cache_stampede_guard, log_injection_prevention, temp_file_security, jwt_token_validation, file_permission_audit, dns_rebinding_protection, integer_overflow_detection, command_injection_prevention, csrf_token_validation, path_traversal_prevention, insecure_deserialization, mass_assignment, weak_cryptography, ssti_injection, file_upload_validation, hardcoded_secrets, unsafe_reflection, xxe_injection_prevention, prototype_pollution, async_race_condition, clickjacking_protection, insecure_cors_config, unrestricted_file_deletion, content_type_header, weak_password_policy, crlf_injection_prevention, session_timeout_policy, zip_slip_prevention, ssrf_detection, process_env_leak, redos_complexity, null_byte_injection, mime_type_spoofing`)
 }

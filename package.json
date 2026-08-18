@@ -1,7 +1,7 @@
 {
   "name": "dsh-tool-codereview",
-  "version": "0.50.0",
-  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 369 tools, XXE Injection Prevention, Prototype Pollution, Async Race Condition, Clickjacking Protection, Insecure CORS Config, Unrestricted File Deletion, Content-Type Header, Weak Password Policy",
+  "version": "0.51.0",
+  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 377 tools, CRLF Injection Prevention, Session Timeout Policy, Zip Slip Prevention, SSRF Detection, Process Env Leak, ReDoS Complexity, Null Byte Injection, MIME Type Spoofing",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
