@@ -1,7 +1,7 @@
 {
   "name": "dsh-tool-codereview",
-  "version": "0.59.0",
-  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 446 tools, CORS Safelist, Iframe Sandbox Policy, Report-To Header, NEL Header, Expect-CT Header, CORS Credentials, Service Worker Scope, Client Hints",
+  "version": "0.60.0",
+  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 454 tools, Expose Headers, Redirect Chain, URL Parser Confusion, WebSocket Upgrade, Cross-Origin Resource Policy, HSTS Include SubDomains, Mixed Content, CORS Max-Age",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
