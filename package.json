@@ -1,7 +1,7 @@
 {
   "name": "dsh-tool-codereview",
-  "version": "0.62.0",
-  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 470 tools, Agent Prompt Injection, Agent Tool Misuse, Agent Indirect Injection, Agent Memory Isolation, Agent Output Sanitization, LLM System Prompt Leak, LLM Excessive Agency, LLM Output Validation",
+  "version": "0.63.0",
+  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 478 tools, MCP Server Security, MCP Tool Injection, MCP Credential Leak, Supply Chain Integrity, Dependency Hash Verify, RAG Data Poisoning, Sec-Fetch Metadata, Origin-Agent-Cluster",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
