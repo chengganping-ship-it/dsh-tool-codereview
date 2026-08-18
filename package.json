@@ -1,7 +1,7 @@
 {
   "name": "dsh-tool-codereview",
-  "version": "0.48.0",
-  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 353 tools, Log Injection Prevention, Temp File Security, JWT Token Validation, File Permission Audit, DNS Rebinding Protection, Integer Overflow Detection, Command Injection Prevention, CSRF Token Validation",
+  "version": "0.49.0",
+  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 361 tools, Path Traversal Prevention, Insecure Deserialization, Mass Assignment, Weak Cryptography, SSTI Injection, File Upload Validation, Hardcoded Secrets, Unsafe Reflection",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
