@@ -1,7 +1,7 @@
 {
   "name": "dsh-tool-codereview",
-  "version": "0.61.0",
-  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 462 tools, CORS Strict Origin, Insecure Preload, X-Content-Type-Options, DNS Prefetch Leak, Insecure Form Action, Missing Integrity, Insecure Download, Cross-Origin-Opener-Policy",
+  "version": "0.62.0",
+  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 470 tools, Agent Prompt Injection, Agent Tool Misuse, Agent Indirect Injection, Agent Memory Isolation, Agent Output Sanitization, LLM System Prompt Leak, LLM Excessive Agency, LLM Output Validation",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",

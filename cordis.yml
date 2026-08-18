@@ -1,10 +1,10 @@
-# DeepSeek Harness Plugin: Code Review Assistant v0.61.0
-# Enterprise-grade code analysis toolkit with 462 comprehensive tools
+# DeepSeek Harness Plugin: Code Review Assistant v0.62.0
+# Enterprise-grade code analysis toolkit with 470 comprehensive tools
 
 - id: dsh-tool-codereview
   name: dsh-tool-codereview
-  version: 0.61.0
-  description: Enterprise Code Review & Security Scan - 462 tools including CORS Strict Origin, Insecure Preload, X-Content-Type-Options, DNS Prefetch Leak, Insecure Form Action, Missing Integrity, Insecure Download, Cross-Origin-Opener-Policy
+  version: 0.62.0
+  description: Enterprise Code Review & Security Scan - 470 tools including Agent Prompt Injection, Agent Tool Misuse, Agent Indirect Injection, Agent Memory Isolation, Agent Output Sanitization, LLM System Prompt Leak, LLM Excessive Agency, LLM Output Validation
   author: chengganping-ship-it
   tools:
     - code_review
@@ -466,3 +466,11 @@
     - missing_integrity
     - insecure_download
     - missing_cross_origin_opener_policy
+    - agent_prompt_injection
+    - agent_tool_misuse
+    - agent_indirect_injection
+    - agent_memory_isolation
+    - agent_output_sanitization
+    - llm_system_prompt_leak
+    - llm_excessive_agency
+    - llm_output_validation

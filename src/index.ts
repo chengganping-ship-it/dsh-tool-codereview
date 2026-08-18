@@ -82,7 +82,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 export const name = 'dsh-tool-codereview'
 export const inject = ['tools']
 
-const VERSION = '0.61.0'
+const VERSION = '0.62.0'
 
 // ==================== TYPES ====================
 
@@ -30773,6 +30773,230 @@ function formatMissingCrossOriginOpenerPolicyReport(r: MissingCrossOriginOpenerP
   return l.join('\n')
 }
 
+// ==================== V0.62.0: AGENT PROMPT INJECTION (OWASP AS1) ====================
+
+interface AgentPromptInjectionResult { totalIssues: number; severity: Severity; unvalidatedInput: { line: number; issue: string; suggestion: string }[]; noIntentFilter: { line: number; issue: string; suggestion: string }[]; toolOutputTrust: { line: number; issue: string; suggestion: string }[]; agentPromptInjectionScore: number; summary: string }
+
+function analyzeAgentPromptInjection(code: string): AgentPromptInjectionResult {
+  const lines = code.split('\n')
+  const unvalidatedInput: AgentPromptInjectionResult['unvalidatedInput'] = []
+  const noIntentFilter: AgentPromptInjectionResult['noIntentFilter'] = []
+  const toolOutputTrust: AgentPromptInjectionResult['toolOutputTrust'] = []
+  lines.forEach((line, i) => {
+    if (/(user_input|user_prompt|query|message)\s*=>|prompt.*\+|template.*\$\{|sprintf.*prompt/i.test(line) && !/validate|sanitize|filter|escape/i.test(line)) { unvalidatedInput.push({ line: i + 1, issue: 'User input directly concatenated into prompt without validation', suggestion: 'Validate and sanitize all user input before including in prompts' }) }
+    if (/classify_intent|intent_detection|intent_classification/i.test(line)) { } else if (/execute_tool|run_tool|call_tool/i.test(line) && /prompt|instruction/i.test(line)) { noIntentFilter.push({ line: i + 1, issue: 'Tool execution from prompt without intent classification', suggestion: 'Add intent classification layer before tool execution' }) }
+    if (/tool_result|tool_output|tool_response/i.test(line) && /prompt|context|instruction/i.test(line) && !/verify|validate|trust/i.test(line)) { toolOutputTrust.push({ line: i + 1, issue: 'Tool output trusted without verification in prompt context', suggestion: 'Implement trust levels for tool outputs used in prompts' }) }
+  })
+  const totalIssues = unvalidatedInput.length + noIntentFilter.length + toolOutputTrust.length
+  const severity: Severity = totalIssues > 5 ? 'critical' : totalIssues > 2 ? 'error' : totalIssues > 0 ? 'warning' : 'info'
+  const agentPromptInjectionScore = Math.max(0, 100 - totalIssues * 15)
+  return { totalIssues, severity, unvalidatedInput, noIntentFilter, toolOutputTrust, agentPromptInjectionScore, summary: `Agent Prompt Injection: ${totalIssues} issue(s). Score: ${agentPromptInjectionScore}/100` }
+}
+
+function formatAgentPromptInjectionReport(r: AgentPromptInjectionResult): string {
+  const l: string[] = ['# Agent Prompt Injection Analysis (OWASP Agentic AS1)', `**Severity:** ${r.severity} | **Score:** ${r.agentPromptInjectionScore}/100`, '']
+  if (r.unvalidatedInput.length > 0) { l.push('## Unvalidated Input (' + r.unvalidatedInput.length + ')'); r.unvalidatedInput.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.noIntentFilter.length > 0) { l.push('## No Intent Filter (' + r.noIntentFilter.length + ')'); r.noIntentFilter.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.toolOutputTrust.length > 0) { l.push('## Tool Output Trust (' + r.toolOutputTrust.length + ')'); r.toolOutputTrust.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.62.0: AGENT TOOL MISUSE (OWASP AS2) ====================
+
+interface AgentToolMisuseResult { totalIssues: number; severity: Severity; excessivePerms: { line: number; issue: string; suggestion: string }[]; noSandbox: { line: number; issue: string; suggestion: string }[]; noRateLimit: { line: number; issue: string; suggestion: string }[]; agentToolMisuseScore: number; summary: string }
+
+function analyzeAgentToolMisuse(code: string): AgentToolMisuseResult {
+  const lines = code.split('\n')
+  const excessivePerms: AgentToolMisuseResult['excessivePerms'] = []
+  const noSandbox: AgentToolMisuseResult['noSandbox'] = []
+  const noRateLimit: AgentToolMisuseResult['noRateLimit'] = []
+  lines.forEach((line, i) => {
+    if (/permissions?\s*:\s*\[.*(?:admin|root|all|write|delete)/i.test(line) || /scope\s*:\s*["']write-all["']/i.test(line)) { excessivePerms.push({ line: i + 1, issue: 'Agent tool has excessive permissions (admin/root/all)', suggestion: 'Apply least-privilege principle to tool permissions' }) }
+    if (/exec\(|child_process|spawn\(|execSync|execFile/i.test(line) && !/sandbox|isolate|deny|blocklist|allowlist/i.test(line)) { noSandbox.push({ line: i + 1, issue: 'Process execution without sandboxing/restrictions', suggestion: 'Add sandboxing or command allowlist for process execution' }) }
+    if (/tool_use|tool_call|execute_tool/i.test(line) && !/rate.?limit|throttle|quota/i.test(code.substring(Math.max(0, i * 50), i * 50 + 500))) { noRateLimit.push({ line: i + 1, issue: 'Tool execution without rate limiting', suggestion: 'Add rate limiting to prevent tool abuse/DoS' }) }
+  })
+  const totalIssues = excessivePerms.length + noSandbox.length + noRateLimit.length
+  const severity: Severity = totalIssues > 5 ? 'critical' : totalIssues > 2 ? 'error' : totalIssues > 0 ? 'warning' : 'info'
+  const agentToolMisuseScore = Math.max(0, 100 - totalIssues * 15)
+  return { totalIssues, severity, excessivePerms, noSandbox, noRateLimit, agentToolMisuseScore, summary: `Agent Tool Misuse: ${totalIssues} issue(s). Score: ${agentToolMisuseScore}/100` }
+}
+
+function formatAgentToolMisuseReport(r: AgentToolMisuseResult): string {
+  const l: string[] = ['# Agent Tool Misuse Analysis (OWASP Agentic AS2)', `**Severity:** ${r.severity} | **Score:** ${r.agentToolMisuseScore}/100`, '']
+  if (r.excessivePerms.length > 0) { l.push('## Excessive Permissions (' + r.excessivePerms.length + ')'); r.excessivePerms.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.noSandbox.length > 0) { l.push('## No Sandbox (' + r.noSandbox.length + ')'); r.noSandbox.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.noRateLimit.length > 0) { l.push('## No Rate Limit (' + r.noRateLimit.length + ')'); r.noRateLimit.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.62.0: AGENT INDIRECT INJECTION (OWASP AS2) ====================
+
+interface AgentIndirectInjectionResult { totalIssues: number; severity: Severity; untrustedContext: { line: number; issue: string; suggestion: string }[]; noDataClassification: { line: number; issue: string; suggestion: string }[]; browserLeak: { line: number; issue: string; suggestion: string }[]; agentIndirectInjectionScore: number; summary: string }
+
+function analyzeAgentIndirectInjection(code: string): AgentIndirectInjectionResult {
+  const lines = code.split('\n')
+  const untrustedContext: AgentIndirectInjectionResult['untrustedContext'] = []
+  const noDataClassification: AgentIndirectInjectionResult['noDataClassification'] = []
+  const browserLeak: AgentIndirectInjectionResult['browserLeak'] = []
+  lines.forEach((line, i) => {
+    if (/fetch\(|axios|request\(|http\.get/i.test(line) && /response|data|body/i.test(line) && /context|memory|prompt/i.test(line) && !/sanitize|validate|clean/i.test(line)) { untrustedContext.push({ line: i + 1, issue: 'External data fetched and added to agent context without sanitization', suggestion: 'Sanitize external data before adding to agent context/memory' }) }
+    if (/email|read_email|scan_email/i.test(line) && /body|content|text/i.test(line) && !/trust|classification|trusted|untrusted/i.test(line)) { noDataClassification.push({ line: i + 1, issue: 'Email/external data used without trust classification', suggestion: 'Classify data as trusted/untrusted before agent processing' }) }
+    if (/browser|web_fetch|navigate|web_open/i.test(line) && !/sandbox|isolated|restricted/i.test(line)) { browserLeak.push({ line: i + 1, issue: 'Agent browser access without isolation restrictions', suggestion: 'Use isolated browser context to prevent data leakage' }) }
+  })
+  const totalIssues = untrustedContext.length + noDataClassification.length + browserLeak.length
+  const severity: Severity = totalIssues > 5 ? 'critical' : totalIssues > 2 ? 'error' : totalIssues > 0 ? 'warning' : 'info'
+  const agentIndirectInjectionScore = Math.max(0, 100 - totalIssues * 15)
+  return { totalIssues, severity, untrustedContext, noDataClassification, browserLeak, agentIndirectInjectionScore, summary: `Agent Indirect Injection: ${totalIssues} issue(s). Score: ${agentIndirectInjectionScore}/100` }
+}
+
+function formatAgentIndirectInjectionReport(r: AgentIndirectInjectionResult): string {
+  const l: string[] = ['# Agent Indirect Injection Analysis (OWASP Agentic AS2)', `**Severity:** ${r.severity} | **Score:** ${r.agentIndirectInjectionScore}/100`, '']
+  if (r.untrustedContext.length > 0) { l.push('## Untrusted Context (' + r.untrustedContext.length + ')'); r.untrustedContext.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.noDataClassification.length > 0) { l.push('## No Data Classification (' + r.noDataClassification.length + ')'); r.noDataClassification.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.browserLeak.length > 0) { l.push('## Browser Leak (' + r.browserLeak.length + ')'); r.browserLeak.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.62.0: AGENT MEMORY ISOLATION (OWASP AS5) ====================
+
+interface AgentMemoryIsolationResult { totalIssues: number; severity: Severity; sharedMemory: { line: number; issue: string; suggestion: string }[]; noScope: { line: number; issue: string; suggestion: string }[]; persistentLeak: { line: number; issue: string; suggestion: string }[]; agentMemoryIsolationScore: number; summary: string }
+
+function analyzeAgentMemoryIsolation(code: string): AgentMemoryIsolationResult {
+  const lines = code.split('\n')
+  const sharedMemory: AgentMemoryIsolationResult['sharedMemory'] = []
+  const noScope: AgentMemoryIsolationResult['noScope'] = []
+  const persistentLeak: AgentMemoryIsolationResult['persistentLeak'] = []
+  lines.forEach((line, i) => {
+    if (/global\.__memory|globalThis\.cache|global\.agentMemory/i.test(line)) { sharedMemory.push({ line: i + 1, issue: 'Agent memory stored in global scope (shared across sessions)', suggestion: 'Use isolated memory store per agent/session' }) }
+    if (/localStorage|sessionStorage/i.test(line) && /memory|context|history|conversation/i.test(line)) { noScope.push({ line: i + 1, issue: 'Agent memory in browser storage without scope isolation', suggestion: 'Use scoped storage with proper isolation' }) }
+    if (/save_persist|store_memory|cache_context/i.test(line) && !/expire|ttl|expir|cleanup|clear/i.test(line)) { persistentLeak.push({ line: i + 1, issue: 'Agent memory persisted without expiration/cleanup', suggestion: 'Add TTL or cleanup mechanism for persistent agent memory' }) }
+  })
+  const totalIssues = sharedMemory.length + noScope.length + persistentLeak.length
+  const severity: Severity = totalIssues > 5 ? 'critical' : totalIssues > 2 ? 'error' : totalIssues > 0 ? 'warning' : 'info'
+  const agentMemoryIsolationScore = Math.max(0, 100 - totalIssues * 15)
+  return { totalIssues, severity, sharedMemory, noScope, persistentLeak, agentMemoryIsolationScore, summary: `Agent Memory Isolation: ${totalIssues} issue(s). Score: ${agentMemoryIsolationScore}/100` }
+}
+
+function formatAgentMemoryIsolationReport(r: AgentMemoryIsolationResult): string {
+  const l: string[] = ['# Agent Memory Isolation Analysis (OWASP Agentic AS5)', `**Severity:** ${r.severity} | **Score:** ${r.agentMemoryIsolationScore}/100`, '']
+  if (r.sharedMemory.length > 0) { l.push('## Shared Memory (' + r.sharedMemory.length + ')'); r.sharedMemory.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.noScope.length > 0) { l.push('## No Scope (' + r.noScope.length + ')'); r.noScope.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.persistentLeak.length > 0) { l.push('## Persistent Leak (' + r.persistentLeak.length + ')'); r.persistentLeak.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.62.0: AGENT OUTPUT SANITIZATION (OWASP AS7) ====================
+
+interface AgentOutputSanitizationResult { totalIssues: number; severity: Severity; rawOutput: { line: number; issue: string; suggestion: string }[]; noExecFilter: { line: number; issue: string; suggestion: string }[]; piiLeak: { line: number; issue: string; suggestion: string }[]; agentOutputSanitizationScore: number; summary: string }
+
+function analyzeAgentOutputSanitization(code: string): AgentOutputSanitizationResult {
+  const lines = code.split('\n')
+  const rawOutput: AgentOutputSanitizationResult['rawOutput'] = []
+  const noExecFilter: AgentOutputSanitizationResult['noExecFilter'] = []
+  const piiLeak: AgentOutputSanitizationResult['piiLeak'] = []
+  lines.forEach((line, i) => {
+    if (/send_message|reply\(|respond\(|output.*=.*result/i.test(line) && /result|data|response/i.test(line) && !/sanitize|filter|escape|strip/i.test(line)) { rawOutput.push({ line: i + 1, issue: 'Agent output sent without sanitization', suggestion: 'Sanitize agent output before sending to user' }) }
+    if (/agent.*output|llm.*result|model.*response/i.test(line) && /eval\(|Function\(|exec\(|innerHTML/i.test(line)) { noExecFilter.push({ line: i + 1, issue: 'Agent output used in execution context without filtering', suggestion: 'Never pass agent output directly to eval/Function/innerHTML' }) }
+    if (/output.*include.*sensitive|reply.*contain.*pii|response.*has.*personal/i.test(line) || /console\.log.*password|console\.log.*token|console\.log.*secret/i.test(line)) { piiLeak.push({ line: i + 1, issue: 'Agent output may contain PII/sensitive data', suggestion: 'Filter PII and sensitive data from agent outputs' }) }
+  })
+  const totalIssues = rawOutput.length + noExecFilter.length + piiLeak.length
+  const severity: Severity = totalIssues > 5 ? 'critical' : totalIssues > 2 ? 'error' : totalIssues > 0 ? 'warning' : 'info'
+  const agentOutputSanitizationScore = Math.max(0, 100 - totalIssues * 15)
+  return { totalIssues, severity, rawOutput, noExecFilter, piiLeak, agentOutputSanitizationScore, summary: `Agent Output Sanitization: ${totalIssues} issue(s). Score: ${agentOutputSanitizationScore}/100` }
+}
+
+function formatAgentOutputSanitizationReport(r: AgentOutputSanitizationResult): string {
+  const l: string[] = ['# Agent Output Sanitization Analysis (OWASP Agentic AS7)', `**Severity:** ${r.severity} | **Score:** ${r.agentOutputSanitizationScore}/100`, '']
+  if (r.rawOutput.length > 0) { l.push('## Raw Output (' + r.rawOutput.length + ')'); r.rawOutput.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.noExecFilter.length > 0) { l.push('## No Exec Filter (' + r.noExecFilter.length + ')'); r.noExecFilter.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.piiLeak.length > 0) { l.push('## PII Leak (' + r.piiLeak.length + ')'); r.piiLeak.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.62.0: LLM SYSTEM PROMPT LEAK (OWASP LLM07) ====================
+
+interface LLMSystemPromptLeakResult { totalIssues: number; severity: Severity; hardcodedPrompt: { line: number; issue: string; suggestion: string }[]; secretsInPrompt: { line: number; issue: string; suggestion: string }[]; promptExposure: { line: number; issue: string; suggestion: string }[]; llmSystemPromptLeakScore: number; summary: string }
+
+function analyzeLLMSystemPromptLeak(code: string): LLMSystemPromptLeakResult {
+  const lines = code.split('\n')
+  const hardcodedPrompt: LLMSystemPromptLeakResult['hardcodedPrompt'] = []
+  const secretsInPrompt: LLMSystemPromptLeakResult['secretsInPrompt'] = []
+  const promptExposure: LLMSystemPromptLeakResult['promptExposure'] = []
+  lines.forEach((line, i) => {
+    if (/system_prompt|systemPrompt|system_message/i.test(line) && /=.*["'].{20,}["']/.test(line) && !/env\.|config\.|process\.env/i.test(line)) { hardcodedPrompt.push({ line: i + 1, issue: 'Hardcoded system prompt may leak to users', suggestion: 'Store system prompts externally, not in source code' }) }
+    if (/prompt|instruction|system/i.test(line) && /password|secret|api_key|token|credential/i.test(line)) { secretsInPrompt.push({ line: i + 1, issue: 'Secret/credential found in prompt definition', suggestion: 'Never embed secrets in prompts; use environment variables' }) }
+    if (/return.*prompt|export.*prompt|send.*system_message|response\.includes.*system/i.test(line)) { promptExposure.push({ line: i + 1, issue: 'System prompt may be exposed in API response', suggestion: 'Filter system prompts from API responses' }) }
+  })
+  const totalIssues = hardcodedPrompt.length + secretsInPrompt.length + promptExposure.length
+  const severity: Severity = totalIssues > 5 ? 'critical' : totalIssues > 2 ? 'error' : totalIssues > 0 ? 'warning' : 'info'
+  const llmSystemPromptLeakScore = Math.max(0, 100 - totalIssues * 15)
+  return { totalIssues, severity, hardcodedPrompt, secretsInPrompt, promptExposure, llmSystemPromptLeakScore, summary: `LLM System Prompt Leak: ${totalIssues} issue(s). Score: ${llmSystemPromptLeakScore}/100` }
+}
+
+function formatLLMSystemPromptLeakReport(r: LLMSystemPromptLeakResult): string {
+  const l: string[] = ['# LLM System Prompt Leak Analysis (OWASP LLM07)', `**Severity:** ${r.severity} | **Score:** ${r.llmSystemPromptLeakScore}/100`, '']
+  if (r.hardcodedPrompt.length > 0) { l.push('## Hardcoded Prompt (' + r.hardcodedPrompt.length + ')'); r.hardcodedPrompt.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.secretsInPrompt.length > 0) { l.push('## Secrets in Prompt (' + r.secretsInPrompt.length + ')'); r.secretsInPrompt.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.promptExposure.length > 0) { l.push('## Prompt Exposure (' + r.promptExposure.length + ')'); r.promptExposure.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.62.0: LLM EXCESSIVE AGENCY (OWASP LLM06) ====================
+
+interface LLMExcessiveAgencyResult { totalIssues: number; severity: Severity; noHumanApproval: { line: number; issue: string; suggestion: string }[]; unrestrictedTools: { line: number; issue: string; suggestion: string }[]; autoDelete: { line: number; issue: string; suggestion: string }[]; llmExcessiveAgencyScore: number; summary: string }
+
+function analyzeLLMExcessiveAgency(code: string): LLMExcessiveAgencyResult {
+  const lines = code.split('\n')
+  const noHumanApproval: LLMExcessiveAgencyResult['noHumanApproval'] = []
+  const unrestrictedTools: LLMExcessiveAgencyResult['unrestrictedTools'] = []
+  const autoDelete: LLMExcessiveAgencyResult['autoDelete'] = []
+  lines.forEach((line, i) => {
+    if (/delete|remove|drop|destroy/i.test(line) && /auto|automatic|llm|agent/i.test(line) && !/confirm|approval|review|human/i.test(line)) { noHumanApproval.push({ line: i + 1, issue: 'Destructive action without human approval', suggestion: 'Require human-in-the-loop approval for destructive actions' }) }
+    if (/tools?\s*:\s*\[.*\]/i.test(line) && /file|fs|database|db|email|shell/i.test(line) && !/restrict|limited|scoped/i.test(line)) { unrestrictedTools.push({ line: i + 1, issue: 'LLM agent has unrestricted access to powerful tools', suggestion: 'Restrict tool access based on task requirements' }) }
+    if (/auto.?delete|auto.?remove|self.?destruct|purge/i.test(line)) { autoDelete.push({ line: i + 1, issue: 'Automatic deletion capability without safeguards', suggestion: 'Add safeguards and confirmation for auto-delete operations' }) }
+  })
+  const totalIssues = noHumanApproval.length + unrestrictedTools.length + autoDelete.length
+  const severity: Severity = totalIssues > 5 ? 'critical' : totalIssues > 2 ? 'error' : totalIssues > 0 ? 'warning' : 'info'
+  const llmExcessiveAgencyScore = Math.max(0, 100 - totalIssues * 15)
+  return { totalIssues, severity, noHumanApproval, unrestrictedTools, autoDelete, llmExcessiveAgencyScore, summary: `LLM Excessive Agency: ${totalIssues} issue(s). Score: ${llmExcessiveAgencyScore}/100` }
+}
+
+function formatLLMExcessiveAgencyReport(r: LLMExcessiveAgencyResult): string {
+  const l: string[] = ['# LLM Excessive Agency Analysis (OWASP LLM06)', `**Severity:** ${r.severity} | **Score:** ${r.llmExcessiveAgencyScore}/100`, '']
+  if (r.noHumanApproval.length > 0) { l.push('## No Human Approval (' + r.noHumanApproval.length + ')'); r.noHumanApproval.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.unrestrictedTools.length > 0) { l.push('## Unrestricted Tools (' + r.unrestrictedTools.length + ')'); r.unrestrictedTools.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.autoDelete.length > 0) { l.push('## Auto Delete (' + r.autoDelete.length + ')'); r.autoDelete.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.62.0: LLM OUTPUT VALIDATION (OWASP LLM05) ====================
+
+interface LLMOutputValidationResult { totalIssues: number; severity: Severity; noOutputCheck: { line: number; issue: string; suggestion: string }[]; directExec: { line: number; issue: string; suggestion: string }[]; hallucinationRisk: { line: number; issue: string; suggestion: string }[]; llmOutputValidationScore: number; summary: string }
+
+function analyzeLLMOutputValidation(code: string): LLMOutputValidationResult {
+  const lines = code.split('\n')
+  const noOutputCheck: LLMOutputValidationResult['noOutputCheck'] = []
+  const directExec: LLMOutputValidationResult['directExec'] = []
+  const hallucinationRisk: LLMOutputValidationResult['hallucinationRisk'] = []
+  lines.forEach((line, i) => {
+    if (/llm.*output|model.*response|completion|generation/i.test(line) && /execute|run|process|use/i.test(line) && !/validate|verify|check|sanitize/i.test(line)) { noOutputCheck.push({ line: i + 1, issue: 'LLM output used without validation', suggestion: 'Validate LLM output before processing or execution' }) }
+    if (/(sql|query|command).*=.*(?:llm|model|completion|response)/i.test(line)) { directExec.push({ line: i + 1, issue: 'LLM output directly used in SQL/command (injection risk)', suggestion: 'Sanitize and parameterize LLM-generated SQL/commands' }) }
+    if (/generate.*code|code.*generation|auto.*code/i.test(line) && !/review|validate|test|sandbox/i.test(line)) { hallucinationRisk.push({ line: i + 1, issue: 'LLM-generated code without review/sandboxing', suggestion: 'Review and sandbox LLM-generated code before execution' }) }
+  })
+  const totalIssues = noOutputCheck.length + directExec.length + hallucinationRisk.length
+  const severity: Severity = totalIssues > 5 ? 'critical' : totalIssues > 2 ? 'error' : totalIssues > 0 ? 'warning' : 'info'
+  const llmOutputValidationScore = Math.max(0, 100 - totalIssues * 15)
+  return { totalIssues, severity, noOutputCheck, directExec, hallucinationRisk, llmOutputValidationScore, summary: `LLM Output Validation: ${totalIssues} issue(s). Score: ${llmOutputValidationScore}/100` }
+}
+
+function formatLLMOutputValidationReport(r: LLMOutputValidationResult): string {
+  const l: string[] = ['# LLM Output Validation Analysis (OWASP LLM05)', `**Severity:** ${r.severity} | **Score:** ${r.llmOutputValidationScore}/100`, '']
+  if (r.noOutputCheck.length > 0) { l.push('## No Output Check (' + r.noOutputCheck.length + ')'); r.noOutputCheck.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.directExec.length > 0) { l.push('## Direct Exec (' + r.directExec.length + ')'); r.directExec.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.hallucinationRisk.length > 0) { l.push('## Hallucination Risk (' + r.hallucinationRisk.length + ')'); r.hallucinationRisk.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
 // ==================== V0.49.0: PATH TRAVERSAL PREVENTION ====================
 
 interface PathTraversalPreventionResult { totalIssues: number; severity: Severity; traversal: { line: number; issue: string; suggestion: string }[]; symlink: { line: number; issue: string; suggestion: string }[]; canonical: { line: number; issue: string; suggestion: string }[]; pathTraversalScore: number; summary: string }
@@ -38129,5 +38353,93 @@ ctx.tools.register(defineTool({
   }
 }))
 
-console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design, container_security, ml_pipeline, api_deprecation, design_system, pwa_compliance, type_system, green_computing, realtime_collab, a11y_deep, i18n_deep, css_architecture, state_machine, web_components, resilience, module_federation, review_automation, observability, migration_safety, edge_computing, api_versioning, wasm_advanced, feature_toggles, email_deliverability, seo_analysis, monorepo_boundaries, ddd_patterns, mf_runtime, realtime_protocols, data_pipeline, gateway_deep, test_rigor, quality_gate, graphql_schema, event_sourcing_integrity, rate_limiting, migration_safety, auth_hardening, distributed_tracing, infrastructure_as_code, review_automation, contract_testing, sec_headers_deep, privacy_compliance, concurrency_patterns, cloud_native, error_recovery, system_design, dependency_injection, api_versioning, serialization_perf, memory_allocation, build_pipeline, error_messages, logging_discipline, config_as_code, component_interface, token_hygiene, query_antipatterns, websocket_lifecycle, graphql_perf, deprecation_tracking, code_splitting_audit, css_arch_deep, sec_dep_audit, webhook_signature, oauth_security, email_infra, health_check_depth, cors_security, feature_rollout, secret_lifecycle, rate_limit_strategy, container_security_scan, grpc_security, data_residency, deployment_progressive, obs_exemplar, data_pipeline_quality, service_mesh, plugin_architecture, mobile_app_security, data_masking, core_web_vitals, infra_cost, api_gateway_config, css_in_js_perf, crdt_state_sync, resource_quota, browser_compat_audit, floating_point, snapshot_testing, event_schema, form_validation, retry_idempotency, a11y_semantics, race_condition, cache_invalidation, data_loader_opt, event_versioning, connection_lifecycle, csp_nonce, struct_error_ctx, stream_backpressure, identifier_collision, graphql_query_depth, auth_token_rotation, mq_dead_letter, file_upload_sec, query_plan, encryption_at_rest, ws_connection_state, rate_limit_policy, payment_idempotency, cron_reliability, immutable_data, data_residency_compliance, response_envelope, compression_negotiation, dns_health, graceful_degradation, api_deprecation_strategy, db_safety, log_sampling, slo_tracking, api_key_mgmt, data_lineage, infra_drift, schema_evolution, wasm_interop, data_partition, plugin_lifecycle, time_sync, feature_store, vector_db, api_composition, audit_trail, graphql_cost, session_mgmt, csv_injection, tls_config, distributed_lock, event_dedup, allocator_pattern, webhook_retry, money_handling, pagination, resource_leak, c4_architecture, semaphore, dns_optimization, content_negotiation, retry_budget, cache_stampede, gateway_routing, search_sanitization, rate_limit_headers, data_consistency, mobile_hardening, build_config, grpc_interceptors, memory_alignment, saga_orchestration, ws_backpressure, bff_pattern, immutable_infra, csp_reporting, token_bucket, circuit_breaker, change_data_capture, api_federation, cache_warming, conn_multiplex, least_privilege, tracing_sampling, json_patch, event_snapshot, adaptive_rate, graceful_retry, encryption_transit, image_scanning, deadlock_detect, deprecation_comm, metrics_cardinality, api_key_rotation, data_retention, flag_cleanup, log_redaction, sli_slo, graceful_degrade, pagination_consistency, dep_drift, cqrs_pattern, outbox_idempotency, api_version_negotiation, connection_backpressure, graceful_startup, secret_detection, error_code_registry, cache_key_design, db_migration_safety, retry_strategy, health_check_completeness, log_structuring, event_schema_evolution, graceful_shutdown_timing, config_hot_reload, mutual_tls, dead_letter_queue, rate_limit_header, websocket_pool, container_image_opt, dns_prefetch_config, async_memory_leak, api_idempotency_key, service_mesh_policy, pagination_safety, background_job_idempotency, feature_flag_lifecycle, request_deduplication, connection_leak, payload_compression, cors_preflight_cache, timestamp_monotonicity, search_query_safety, api_response_cache, thread_pool_starvation, db_slow_query, url_validation, memory_alignment_audit, cache_stampede_guard, log_injection_prevention, temp_file_security, jwt_token_validation, file_permission_audit, dns_rebinding_protection, integer_overflow_detection, command_injection_prevention, csrf_token_validation, path_traversal_prevention, insecure_deserialization, mass_assignment, weak_cryptography, ssti_injection, file_upload_validation, hardcoded_secrets, unsafe_reflection, xxe_injection_prevention, prototype_pollution, async_race_condition, clickjacking_protection, insecure_cors_config, unrestricted_file_deletion, content_type_header, weak_password_policy, crlf_injection_prevention, session_timeout_policy, zip_slip_prevention, ssrf_detection, process_env_leak, redos_complexity, null_byte_injection, mime_type_spoofing, subdomain_takeover, jwt_algorithm_confusion, oauth_flow_security, grpc_metadata_leak, websocket_security, dependency_confusion, timing_attack, unsafe_yaml_load, api_latency, cross_service_health, consumer_offset, config_value, db_connection_pool, background_job, canary_release, certificate_validation, memory_safety, input_sanitization, crypto_random, session_fixation, open_redirect, xml_bomb, ldap_injection, graphql_injection, nosql_injection, graphql_depth_limit, path_normalization, buffer_overread, http_parameter_pollution, dom_clobbering, postmessage_security, xml_signature_wrapping, insecure_random, missing_content_length, cookie_prefix_bypass, unicode_normalization, websocket_origin_bypass, missing_x_frame_options, sql_concatenation, missing_strict_transport_security, insecure_direct_object_reference, authentication_bypass, privilege_escalation, missing_csrf_protection, insecure_jwt_storage, missing_rate_limiting, debug_mode_enabled, unsafe_eval_usage, sql_injection_orm, race_condition_toctou, memory_corruption_risk, insecure_webhook_verification, api_version_deprecation, prototype_pollution_vuln, dns_rebinding_risk, host_header_injection, csv_formula_injection, log_forging_risk, missing_csp_directive, insecure_cookie_scope, tabnabbing_risk, subresource_integrity, missing_permissions_policy, cors_safelist, iframe_sandbox_policy, report_to_header, nel_header, expect_ct_header, cors_credentials, service_worker_scope, client_hints, expose_headers, redirect_chain, url_parser_confusion, websocket_upgrade, cross_origin_resource_policy, hsts_include_subdomains, mixed_content, cors_max_age, cors_strict_origin, insecure_preload, missing_x_content_type_options, dns_prefetch_leak, insecure_form_action, missing_integrity, insecure_download, missing_cross_origin_opener_policy`)
+ctx.tools.register(defineTool({
+  name: 'agent_prompt_injection',
+  description: 'Analyze Agent Prompt Injection (OWASP AS1): unvalidated input, no intent filter, tool output trust.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeAgentPromptInjection(args.code)
+    return formatAgentPromptInjectionReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'agent_tool_misuse',
+  description: 'Analyze Agent Tool Misuse (OWASP AS2): excessive permissions, no sandbox, no rate limit.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeAgentToolMisuse(args.code)
+    return formatAgentToolMisuseReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'agent_indirect_injection',
+  description: 'Analyze Agent Indirect Injection (OWASP AS2): untrusted context, no data classification, browser leak.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeAgentIndirectInjection(args.code)
+    return formatAgentIndirectInjectionReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'agent_memory_isolation',
+  description: 'Analyze Agent Memory Isolation (OWASP AS5): shared memory, no scope, persistent leak.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeAgentMemoryIsolation(args.code)
+    return formatAgentMemoryIsolationReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'agent_output_sanitization',
+  description: 'Analyze Agent Output Sanitization (OWASP AS7): raw output, no exec filter, PII leak.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeAgentOutputSanitization(args.code)
+    return formatAgentOutputSanitizationReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'llm_system_prompt_leak',
+  description: 'Analyze LLM System Prompt Leak (OWASP LLM07): hardcoded prompt, secrets in prompt, prompt exposure.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeLLMSystemPromptLeak(args.code)
+    return formatLLMSystemPromptLeakReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'llm_excessive_agency',
+  description: 'Analyze LLM Excessive Agency (OWASP LLM06): no human approval, unrestricted tools, auto delete.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeLLMExcessiveAgency(args.code)
+    return formatLLMExcessiveAgencyReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'llm_output_validation',
+  description: 'Analyze LLM Output Validation (OWASP LLM05): no output check, direct exec, hallucination risk.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeLLMOutputValidation(args.code)
+    return formatLLMOutputValidationReport(result)
+  }
+}))
+
+console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design, container_security, ml_pipeline, api_deprecation, design_system, pwa_compliance, type_system, green_computing, realtime_collab, a11y_deep, i18n_deep, css_architecture, state_machine, web_components, resilience, module_federation, review_automation, observability, migration_safety, edge_computing, api_versioning, wasm_advanced, feature_toggles, email_deliverability, seo_analysis, monorepo_boundaries, ddd_patterns, mf_runtime, realtime_protocols, data_pipeline, gateway_deep, test_rigor, quality_gate, graphql_schema, event_sourcing_integrity, rate_limiting, migration_safety, auth_hardening, distributed_tracing, infrastructure_as_code, review_automation, contract_testing, sec_headers_deep, privacy_compliance, concurrency_patterns, cloud_native, error_recovery, system_design, dependency_injection, api_versioning, serialization_perf, memory_allocation, build_pipeline, error_messages, logging_discipline, config_as_code, component_interface, token_hygiene, query_antipatterns, websocket_lifecycle, graphql_perf, deprecation_tracking, code_splitting_audit, css_arch_deep, sec_dep_audit, webhook_signature, oauth_security, email_infra, health_check_depth, cors_security, feature_rollout, secret_lifecycle, rate_limit_strategy, container_security_scan, grpc_security, data_residency, deployment_progressive, obs_exemplar, data_pipeline_quality, service_mesh, plugin_architecture, mobile_app_security, data_masking, core_web_vitals, infra_cost, api_gateway_config, css_in_js_perf, crdt_state_sync, resource_quota, browser_compat_audit, floating_point, snapshot_testing, event_schema, form_validation, retry_idempotency, a11y_semantics, race_condition, cache_invalidation, data_loader_opt, event_versioning, connection_lifecycle, csp_nonce, struct_error_ctx, stream_backpressure, identifier_collision, graphql_query_depth, auth_token_rotation, mq_dead_letter, file_upload_sec, query_plan, encryption_at_rest, ws_connection_state, rate_limit_policy, payment_idempotency, cron_reliability, immutable_data, data_residency_compliance, response_envelope, compression_negotiation, dns_health, graceful_degradation, api_deprecation_strategy, db_safety, log_sampling, slo_tracking, api_key_mgmt, data_lineage, infra_drift, schema_evolution, wasm_interop, data_partition, plugin_lifecycle, time_sync, feature_store, vector_db, api_composition, audit_trail, graphql_cost, session_mgmt, csv_injection, tls_config, distributed_lock, event_dedup, allocator_pattern, webhook_retry, money_handling, pagination, resource_leak, c4_architecture, semaphore, dns_optimization, content_negotiation, retry_budget, cache_stampede, gateway_routing, search_sanitization, rate_limit_headers, data_consistency, mobile_hardening, build_config, grpc_interceptors, memory_alignment, saga_orchestration, ws_backpressure, bff_pattern, immutable_infra, csp_reporting, token_bucket, circuit_breaker, change_data_capture, api_federation, cache_warming, conn_multiplex, least_privilege, tracing_sampling, json_patch, event_snapshot, adaptive_rate, graceful_retry, encryption_transit, image_scanning, deadlock_detect, deprecation_comm, metrics_cardinality, api_key_rotation, data_retention, flag_cleanup, log_redaction, sli_slo, graceful_degrade, pagination_consistency, dep_drift, cqrs_pattern, outbox_idempotency, api_version_negotiation, connection_backpressure, graceful_startup, secret_detection, error_code_registry, cache_key_design, db_migration_safety, retry_strategy, health_check_completeness, log_structuring, event_schema_evolution, graceful_shutdown_timing, config_hot_reload, mutual_tls, dead_letter_queue, rate_limit_header, websocket_pool, container_image_opt, dns_prefetch_config, async_memory_leak, api_idempotency_key, service_mesh_policy, pagination_safety, background_job_idempotency, feature_flag_lifecycle, request_deduplication, connection_leak, payload_compression, cors_preflight_cache, timestamp_monotonicity, search_query_safety, api_response_cache, thread_pool_starvation, db_slow_query, url_validation, memory_alignment_audit, cache_stampede_guard, log_injection_prevention, temp_file_security, jwt_token_validation, file_permission_audit, dns_rebinding_protection, integer_overflow_detection, command_injection_prevention, csrf_token_validation, path_traversal_prevention, insecure_deserialization, mass_assignment, weak_cryptography, ssti_injection, file_upload_validation, hardcoded_secrets, unsafe_reflection, xxe_injection_prevention, prototype_pollution, async_race_condition, clickjacking_protection, insecure_cors_config, unrestricted_file_deletion, content_type_header, weak_password_policy, crlf_injection_prevention, session_timeout_policy, zip_slip_prevention, ssrf_detection, process_env_leak, redos_complexity, null_byte_injection, mime_type_spoofing, subdomain_takeover, jwt_algorithm_confusion, oauth_flow_security, grpc_metadata_leak, websocket_security, dependency_confusion, timing_attack, unsafe_yaml_load, api_latency, cross_service_health, consumer_offset, config_value, db_connection_pool, background_job, canary_release, certificate_validation, memory_safety, input_sanitization, crypto_random, session_fixation, open_redirect, xml_bomb, ldap_injection, graphql_injection, nosql_injection, graphql_depth_limit, path_normalization, buffer_overread, http_parameter_pollution, dom_clobbering, postmessage_security, xml_signature_wrapping, insecure_random, missing_content_length, cookie_prefix_bypass, unicode_normalization, websocket_origin_bypass, missing_x_frame_options, sql_concatenation, missing_strict_transport_security, insecure_direct_object_reference, authentication_bypass, privilege_escalation, missing_csrf_protection, insecure_jwt_storage, missing_rate_limiting, debug_mode_enabled, unsafe_eval_usage, sql_injection_orm, race_condition_toctou, memory_corruption_risk, insecure_webhook_verification, api_version_deprecation, prototype_pollution_vuln, dns_rebinding_risk, host_header_injection, csv_formula_injection, log_forging_risk, missing_csp_directive, insecure_cookie_scope, tabnabbing_risk, subresource_integrity, missing_permissions_policy, cors_safelist, iframe_sandbox_policy, report_to_header, nel_header, expect_ct_header, cors_credentials, service_worker_scope, client_hints, expose_headers, redirect_chain, url_parser_confusion, websocket_upgrade, cross_origin_resource_policy, hsts_include_subdomains, mixed_content, cors_max_age, cors_strict_origin, insecure_preload, missing_x_content_type_options, dns_prefetch_leak, insecure_form_action, missing_integrity, insecure_download, missing_cross_origin_opener_policy, agent_prompt_injection, agent_tool_misuse, agent_indirect_injection, agent_memory_isolation, agent_output_sanitization, llm_system_prompt_leak, llm_excessive_agency, llm_output_validation`)
 }
