@@ -82,7 +82,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 export const name = 'dsh-tool-codereview'
 export const inject = ['tools']
 
-const VERSION = '0.53.0'
+const VERSION = '0.54.0'
 
 // ==================== TYPES ====================
 
@@ -28671,6 +28671,286 @@ function formatLdapInjectionReport(r: LdapInjectionResult): string {
   return l.join('\n')
 }
 
+// ==================== V0.54.0: GRAPHQL INJECTION ====================
+
+interface GraphQLInjectionResult { totalIssues: number; severity: Severity; query: { line: number; issue: string; suggestion: string }[]; mutation: { line: number; issue: string; suggestion: string }[]; resolver: { line: number; issue: string; suggestion: string }[]; graphqlInjectionScore: number; summary: string }
+
+function analyzeGraphQLInjection(code: string): GraphQLInjectionResult {
+  const lines = code.split('\n')
+  const query: GraphQLInjectionResult['query'] = []
+  const mutation: GraphQLInjectionResult['mutation'] = []
+  const resolver: GraphQLInjectionResult['resolver'] = []
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+    if (line.match(/graphql|gql|apollo|graphql\.execute/i) && line.match(/user|input|param|query|req\./i) && !line.match(/validate|sanitize|prepare|parameterize/i)) {
+      query.push({ line: i + 1, issue: 'GraphQL query constructed from user input without sanitization', suggestion: 'Use parameterized GraphQL queries; string concatenation enables GraphQL injection' })
+    }
+    if (line.match(/mutation.*input|input.*mutation/i) && !line.match(/validate|constraint|type.*check|schema.*valid/i)) {
+      mutation.push({ line: i + 1, issue: 'GraphQL mutation input without validation', suggestion: 'Validate mutation input against schema; unvalidated mutations enable data manipulation' })
+    }
+    if (line.match(/resolver|field\.resolve/i) && line.match(/user|input|args/i) && !line.match(/auth|permission|guard|shield/i)) {
+      resolver.push({ line: i + 1, issue: 'GraphQL resolver without authorization check', suggestion: 'Add authorization to resolvers; unprotected resolvers expose data to unauthorized users' })
+    }
+  })
+  const totalIssues = query.length + mutation.length + resolver.length
+  const graphqlInjectionScore = Math.max(0, 100 - totalIssues * 15)
+  const severity: Severity = totalIssues > 3 ? 'critical' : totalIssues > 1 ? 'error' : totalIssues > 0 ? 'warning' : 'info'
+  return { totalIssues, severity, query, mutation, resolver, graphqlInjectionScore, summary: `GraphQL Injection: ${totalIssues} issue(s) found. Score: ${graphqlInjectionScore}/100.` }
+}
+
+function formatGraphQLInjectionReport(r: GraphQLInjectionResult): string {
+  const l: string[] = ['# GraphQL Injection Analysis', `**Severity:** ${r.severity} | **Score:** ${r.graphqlInjectionScore}/100`, '']
+  if (r.query.length > 0) { l.push('## Query (' + r.query.length + ')'); r.query.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.mutation.length > 0) { l.push('## Mutation (' + r.mutation.length + ')'); r.mutation.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.resolver.length > 0) { l.push('## Resolver (' + r.resolver.length + ')'); r.resolver.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.54.0: NOSQL INJECTION ====================
+
+interface NoSqlInjectionResult { totalIssues: number; severity: Severity; query: { line: number; issue: string; suggestion: string }[]; operator: { line: number; issue: string; suggestion: string }[]; filter: { line: number; issue: string; suggestion: string }[]; nosqlInjectionScore: number; summary: string }
+
+function analyzeNoSqlInjection(code: string): NoSqlInjectionResult {
+  const lines = code.split('\n')
+  const query: NoSqlInjectionResult['query'] = []
+  const operator: NoSqlInjectionResult['operator'] = []
+  const filter: NoSqlInjectionResult['filter'] = []
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+    if (line.match(/mongo|mongodb|cassandra|couchdb|redis.*command/i) && line.match(/user|input|param|query|req\./i) && !line.match(/validate|sanitize|type.*check|schema/i)) {
+      query.push({ line: i + 1, issue: 'NoSQL query constructed from user input without validation', suggestion: 'Validate and type-check NoSQL query inputs; user-controlled queries enable NoSQL injection' })
+    }
+    if (line.match(/\$where|\$gt|\$lt|\$ne|\$regex|\$exists|\$or/i) && line.match(/user|input|param/i) && !line.match(/validate|sanitize|literal/i)) {
+      operator.push({ line: i + 1, issue: 'NoSQL operator from user input enables injection', suggestion: 'Avoid user-controlled NoSQL operators; $where and $regex enable authentication bypass' })
+    }
+    if (line.match(/find\(|findOne\(|aggregate\(/i) && line.match(/user|input|param|req\./i) && !line.match(/validate|sanitize|type.*check/i)) {
+      filter.push({ line: i + 1, issue: 'NoSQL filter from user input without validation', suggestion: 'Validate filter objects; user-controlled filters enable data extraction' })
+    }
+  })
+  const totalIssues = query.length + operator.length + filter.length
+  const nosqlInjectionScore = Math.max(0, 100 - totalIssues * 15)
+  const severity: Severity = totalIssues > 3 ? 'critical' : totalIssues > 1 ? 'error' : totalIssues > 0 ? 'warning' : 'info'
+  return { totalIssues, severity, query, operator, filter, nosqlInjectionScore, summary: `NoSQL Injection: ${totalIssues} issue(s) found. Score: ${nosqlInjectionScore}/100.` }
+}
+
+function formatNoSqlInjectionReport(r: NoSqlInjectionResult): string {
+  const l: string[] = ['# NoSQL Injection Analysis', `**Severity:** ${r.severity} | **Score:** ${r.nosqlInjectionScore}/100`, '']
+  if (r.query.length > 0) { l.push('## Query (' + r.query.length + ')'); r.query.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.operator.length > 0) { l.push('## Operator (' + r.operator.length + ')'); r.operator.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.filter.length > 0) { l.push('## Filter (' + r.filter.length + ')'); r.filter.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.54.0: GRAPHQL DEPTH LIMIT ====================
+
+interface GraphQLDepthLimitResult { totalIssues: number; severity: Severity; depth: { line: number; issue: string; suggestion: string }[]; complexity: { line: number; issue: string; suggestion: string }[]; cost: { line: number; issue: string; suggestion: string }[]; graphqlDepthLimitScore: number; summary: string }
+
+function analyzeGraphQLDepthLimit(code: string): GraphQLDepthLimitResult {
+  const lines = code.split('\n')
+  const depth: GraphQLDepthLimitResult['depth'] = []
+  const complexity: GraphQLDepthLimitResult['complexity'] = []
+  const cost: GraphQLDepthLimitResult['cost'] = []
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+    if (line.match(/graphql|gql|apollo/i) && !line.match(/depth.*limit|max.*depth|query.*depth|depth.*check/i)) {
+      depth.push({ line: i + 1, issue: 'GraphQL without query depth limiting', suggestion: 'Set max query depth (e.g., 10); deep nested queries enable DoS via resource exhaustion' })
+    }
+    if (line.match(/graphql|gql|apollo/i) && !line.match(/complexity.*limit|max.*complexity|query.*complexity|cost.*analysis/i)) {
+      complexity.push({ line: i + 1, issue: 'GraphQL without query complexity analysis', suggestion: 'Implement complexity analysis; complex queries with aliases enable DoS' })
+    }
+    if (line.match(/graphql.*cost|cost.*graphql|query.*cost/i) && !line.match(/cost.*limit|cost.*max|cost.*threshold/i)) {
+      cost.push({ line: i + 1, issue: 'GraphQL cost analysis without limit', suggestion: 'Set cost limit for queries; unbounded cost analysis enables expensive query execution' })
+    }
+  })
+  const totalIssues = depth.length + complexity.length + cost.length
+  const graphqlDepthLimitScore = Math.max(0, 100 - totalIssues * 15)
+  const severity: Severity = totalIssues > 3 ? 'critical' : totalIssues > 1 ? 'error' : totalIssues > 0 ? 'warning' : 'info'
+  return { totalIssues, severity, depth, complexity, cost, graphqlDepthLimitScore, summary: `GraphQL Depth Limit: ${totalIssues} issue(s) found. Score: ${graphqlDepthLimitScore}/100.` }
+}
+
+function formatGraphQLDepthLimitReport(r: GraphQLDepthLimitResult): string {
+  const l: string[] = ['# GraphQL Depth Limit Analysis', `**Severity:** ${r.severity} | **Score:** ${r.graphqlDepthLimitScore}/100`, '']
+  if (r.depth.length > 0) { l.push('## Depth (' + r.depth.length + ')'); r.depth.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.complexity.length > 0) { l.push('## Complexity (' + r.complexity.length + ')'); r.complexity.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.cost.length > 0) { l.push('## Cost (' + r.cost.length + ')'); r.cost.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.54.0: PATH NORMALIZATION ====================
+
+interface PathNormalizationResult { totalIssues: number; severity: Severity; normalize: { line: number; issue: string; suggestion: string }[]; resolve: { line: number; issue: string; suggestion: string }[]; canonical: { line: number; issue: string; suggestion: string }[]; pathNormalizationScore: number; summary: string }
+
+function analyzePathNormalization(code: string): PathNormalizationResult {
+  const lines = code.split('\n')
+  const normalize: PathNormalizationResult['normalize'] = []
+  const resolve: PathNormalizationResult['resolve'] = []
+  const canonical: PathNormalizationResult['canonical'] = []
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+    if (line.match(/path\.join|path\.resolve|path\.normalize/i) && line.match(/user|input|param|query|req\./i) && !line.match(/valid|check|allowlist|whitelist|base.*dir/i)) {
+      normalize.push({ line: i + 1, issue: 'Path normalization from user input without base directory restriction', suggestion: 'Restrict to base directory; path traversal via ../ sequences escapes intended directory' })
+    }
+    if (line.match(/realpath|readlink|fs\.realpath/i) && !line.match(/base.*dir|root.*dir|sandbox|chroot/i)) {
+      resolve.push({ line: i + 1, issue: 'Real path resolution without sandbox restriction', suggestion: 'Sandbox realpath to base directory; resolved paths may point outside intended directory' })
+    }
+    if (line.match(/file.*path|path.*file|file.*name|name.*file/i) && line.match(/user|input|param/i) && !line.match(/normalize|canonical|valid|check/i)) {
+      canonical.push({ line: i + 1, issue: 'File path from user input without canonicalization', suggestion: 'Canonicalize file paths; non-canonical paths bypass access controls via symlinks or relative paths' })
+    }
+  })
+  const totalIssues = normalize.length + resolve.length + canonical.length
+  const pathNormalizationScore = Math.max(0, 100 - totalIssues * 15)
+  const severity: Severity = totalIssues > 3 ? 'critical' : totalIssues > 1 ? 'error' : totalIssues > 0 ? 'warning' : 'info'
+  return { totalIssues, severity, normalize, resolve, canonical, pathNormalizationScore, summary: `Path Normalization: ${totalIssues} issue(s) found. Score: ${pathNormalizationScore}/100.` }
+}
+
+function formatPathNormalizationReport(r: PathNormalizationResult): string {
+  const l: string[] = ['# Path Normalization Analysis', `**Severity:** ${r.severity} | **Score:** ${r.pathNormalizationScore}/100`, '']
+  if (r.normalize.length > 0) { l.push('## Normalize (' + r.normalize.length + ')'); r.normalize.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.resolve.length > 0) { l.push('## Resolve (' + r.resolve.length + ')'); r.resolve.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.canonical.length > 0) { l.push('## Canonical (' + r.canonical.length + ')'); r.canonical.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.54.0: BUFFER OVERREAD ====================
+
+interface BufferOverreadResult { totalIssues: number; severity: Severity; read: { line: number; issue: string; suggestion: string }[]; bound: { line: number; issue: string; suggestion: string }[]; size: { line: number; issue: string; suggestion: string }[]; bufferOverreadScore: number; summary: string }
+
+function analyzeBufferOverread(code: string): BufferOverreadResult {
+  const lines = code.split('\n')
+  const read: BufferOverreadResult['read'] = []
+  const bound: BufferOverreadResult['bound'] = []
+  const size: BufferOverreadResult['size'] = []
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+    if (line.match(/readFileSync|readFile|fs\.read/i) && !line.match(/size.*limit|length.*max|buffer.*size|chunk.*size/i)) {
+      read.push({ line: i + 1, issue: 'File read without size limit', suggestion: 'Set max read size; unbounded file reads enable memory exhaustion via large files' })
+    }
+    if (line.match(/Buffer\.read|readUInt|readInt|readFloat/i) && !line.match(/offset.*check|bound.*check|length.*check/i)) {
+      bound.push({ line: i + 1, issue: 'Buffer read without bounds checking', suggestion: 'Check offset and length before reading; out-of-bounds reads leak sensitive memory contents' })
+    }
+    if (line.match(/substring|substr|slice\.call|charAt/i) && line.match(/user|input|param/i) && !line.match(/length.*check|bound.*check|index.*valid/i)) {
+      size.push({ line: i + 1, issue: 'String operation from user input without bounds check', suggestion: 'Validate indices and lengths; user-controlled indices enable out-of-bounds access' })
+    }
+  })
+  const totalIssues = read.length + bound.length + size.length
+  const bufferOverreadScore = Math.max(0, 100 - totalIssues * 15)
+  const severity: Severity = totalIssues > 3 ? 'critical' : totalIssues > 1 ? 'error' : totalIssues > 0 ? 'warning' : 'info'
+  return { totalIssues, severity, read, bound, size, bufferOverreadScore, summary: `Buffer Overread: ${totalIssues} issue(s) found. Score: ${bufferOverreadScore}/100.` }
+}
+
+function formatBufferOverreadReport(r: BufferOverreadResult): string {
+  const l: string[] = ['# Buffer Overread Analysis', `**Severity:** ${r.severity} | **Score:** ${r.bufferOverreadScore}/100`, '']
+  if (r.read.length > 0) { l.push('## Read (' + r.read.length + ')'); r.read.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.bound.length > 0) { l.push('## Bounds (' + r.bound.length + ')'); r.bound.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.size.length > 0) { l.push('## Size (' + r.size.length + ')'); r.size.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.54.0: HTTP PARAMETER POLLUTION ====================
+
+interface HTTPParameterPollutionResult { totalIssues: number; severity: Severity; param: { line: number; issue: string; suggestion: string }[]; duplicate: { line: number; issue: string; suggestion: string }[]; parse: { line: number; issue: string; suggestion: string }[]; httpParameterPollutionScore: number; summary: string }
+
+function analyzeHTTPParameterPollution(code: string): HTTPParameterPollutionResult {
+  const lines = code.split('\n')
+  const param: HTTPParameterPollutionResult['param'] = []
+  const duplicate: HTTPParameterPollutionResult['duplicate'] = []
+  const parse: HTTPParameterPollutionResult['parse'] = []
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+    if (line.match(/req\.query|req\.body|req\.params|querystring/i) && !line.match(/first.*value|last.*value|array.*check|duplicate.*check/i)) {
+      param.push({ line: i + 1, issue: 'HTTP parameter access without duplicate detection', suggestion: 'Define behavior for duplicate parameters; HPP exploits ambiguity between first/last value' })
+    }
+    if (line.match(/parse.*query|query.*parse|body.*parse/i) && !line.match(/duplicate.*reject|duplicate.*error|strict.*mode/i)) {
+      duplicate.push({ line: i + 1, issue: 'Query/body parser without duplicate parameter handling', suggestion: 'Reject or normalize duplicate parameters; inconsistent parsing enables HPP attacks' })
+    }
+    if (line.match(/req\.query\[|req\.body\[|req\.params\[/i) && line.match(/user|input|param/i) && !line.match(/type.*check|array.*check|length.*check/i)) {
+      parse.push({ line: i + 1, issue: 'Direct parameter access without type validation', suggestion: 'Validate parameter type; HPP converts expected string to array bypassing validation' })
+    }
+  })
+  const totalIssues = param.length + duplicate.length + parse.length
+  const httpParameterPollutionScore = Math.max(0, 100 - totalIssues * 15)
+  const severity: Severity = totalIssues > 3 ? 'critical' : totalIssues > 1 ? 'error' : totalIssues > 0 ? 'warning' : 'info'
+  return { totalIssues, severity, param, duplicate, parse, httpParameterPollutionScore, summary: `HTTP Parameter Pollution: ${totalIssues} issue(s) found. Score: ${httpParameterPollutionScore}/100.` }
+}
+
+function formatHTTPParameterPollutionReport(r: HTTPParameterPollutionResult): string {
+  const l: string[] = ['# HTTP Parameter Pollution Analysis', `**Severity:** ${r.severity} | **Score:** ${r.httpParameterPollutionScore}/100`, '']
+  if (r.param.length > 0) { l.push('## Parameter (' + r.param.length + ')'); r.param.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.duplicate.length > 0) { l.push('## Duplicate (' + r.duplicate.length + ')'); r.duplicate.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.parse.length > 0) { l.push('## Parse (' + r.parse.length + ')'); r.parse.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.54.0: DOM CLOBBERING ====================
+
+interface DOMClobberingResult { totalIssues: number; severity: Severity; element: { line: number; issue: string; suggestion: string }[]; name: { line: number; issue: string; suggestion: string }[]; id: { line: number; issue: string; suggestion: string }[]; domClobberingScore: number; summary: string }
+
+function analyzeDOMClobbering(code: string): DOMClobberingResult {
+  const lines = code.split('\n')
+  const element: DOMClobberingResult['element'] = []
+  const name: DOMClobberingResult['name'] = []
+  const id: DOMClobberingResult['id'] = []
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+    if (line.match(/document\.getElementsByName|document\.forms|document\.all/i) && line.match(/user|input|param/i) && !line.match(/validate|check|type.*check/i)) {
+      element.push({ line: i + 1, issue: 'DOM access by name without validation (DOM clobbering risk)', suggestion: 'Validate DOM element types; attacker can inject elements with same name to override references' })
+    }
+    if (line.match(/name.*=.*user|name.*=.*input|name.*=.*param/i) && line.match(/form|input|button/i) && !line.match(/validate|sanitize|allowlist/i)) {
+      name.push({ line: i + 1, issue: 'Form element name from user input enables DOM clobbering', suggestion: 'Avoid user-controlled element names; clobbered names override JavaScript variables' })
+    }
+    if (line.match(/id.*=.*user|id.*=.*input|id.*=.*param/i) && line.match(/div|span|section|article/i) && !line.match(/validate|sanitize|allowlist/i)) {
+      id.push({ line: i + 1, issue: 'Element ID from user input enables DOM clobbering', suggestion: 'Avoid user-controlled element IDs; clobbered IDs create global JavaScript variables' })
+    }
+  })
+  const totalIssues = element.length + name.length + id.length
+  const domClobberingScore = Math.max(0, 100 - totalIssues * 15)
+  const severity: Severity = totalIssues > 3 ? 'critical' : totalIssues > 1 ? 'error' : totalIssues > 0 ? 'warning' : 'info'
+  return { totalIssues, severity, element, name, id, domClobberingScore, summary: `DOM Clobbering: ${totalIssues} issue(s) found. Score: ${domClobberingScore}/100.` }
+}
+
+function formatDOMClobberingReport(r: DOMClobberingResult): string {
+  const l: string[] = ['# DOM Clobbering Analysis', `**Severity:** ${r.severity} | **Score:** ${r.domClobberingScore}/100`, '']
+  if (r.element.length > 0) { l.push('## Element (' + r.element.length + ')'); r.element.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.name.length > 0) { l.push('## Name (' + r.name.length + ')'); r.name.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.id.length > 0) { l.push('## ID (' + r.id.length + ')'); r.id.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.54.0: POSTMESSAGE SECURITY ====================
+
+interface PostMessageSecurityResult { totalIssues: number; severity: Severity; origin: { line: number; issue: string; suggestion: string }[]; source: { line: number; issue: string; suggestion: string }[]; data: { line: number; issue: string; suggestion: string }[]; postMessageSecurityScore: number; summary: string }
+
+function analyzePostMessageSecurity(code: string): PostMessageSecurityResult {
+  const lines = code.split('\n')
+  const origin: PostMessageSecurityResult['origin'] = []
+  const source: PostMessageSecurityResult['source'] = []
+  const data: PostMessageSecurityResult['data'] = []
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+    if (line.match(/postMessage|window\.postMessage/i) && !line.match(/targetOrigin|origin.*check|allowlist|whitelist/i)) {
+      origin.push({ line: i + 1, issue: 'postMessage without targetOrigin restriction', suggestion: 'Always specify targetMessage origin; missing targetOrigin sends data to any origin' })
+    }
+    if (line.match(/addEventListener.*message|onmessage/i) && !line.match(/origin.*check|event\.origin|verify.*origin/i)) {
+      source.push({ line: i + 1, issue: 'Message event handler without origin verification', suggestion: 'Verify event.origin in message handler; unverified messages accept data from any origin' })
+    }
+    if (line.match(/event\.data|message\.data|e\.data/i) && !line.match(/validate|sanitize|type.*check|schema.*check/i)) {
+      data.push({ line: i + 1, issue: 'Message data used without validation', suggestion: 'Validate message data structure and content; untrusted data from postMessage enables XSS' })
+    }
+  })
+  const totalIssues = origin.length + source.length + data.length
+  const postMessageSecurityScore = Math.max(0, 100 - totalIssues * 15)
+  const severity: Severity = totalIssues > 3 ? 'critical' : totalIssues > 1 ? 'error' : totalIssues > 0 ? 'warning' : 'info'
+  return { totalIssues, severity, origin, source, data, postMessageSecurityScore, summary: `PostMessage Security: ${totalIssues} issue(s) found. Score: ${postMessageSecurityScore}/100.` }
+}
+
+function formatPostMessageSecurityReport(r: PostMessageSecurityResult): string {
+  const l: string[] = ['# PostMessage Security Analysis', `**Severity:** ${r.severity} | **Score:** ${r.postMessageSecurityScore}/100`, '']
+  if (r.origin.length > 0) { l.push('## Origin (' + r.origin.length + ')'); r.origin.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.source.length > 0) { l.push('## Source (' + r.source.length + ')'); r.source.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.data.length > 0) { l.push('## Data (' + r.data.length + ')'); r.data.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
 // ==================== V0.49.0: PATH TRAVERSAL PREVENTION ====================
 
 interface PathTraversalPreventionResult { totalIssues: number; severity: Severity; traversal: { line: number; issue: string; suggestion: string }[]; symlink: { line: number; issue: string; suggestion: string }[]; canonical: { line: number; issue: string; suggestion: string }[]; pathTraversalScore: number; summary: string }
@@ -35323,5 +35603,93 @@ ctx.tools.register(defineTool({
   }
 }))
 
-console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design, container_security, ml_pipeline, api_deprecation, design_system, pwa_compliance, type_system, green_computing, realtime_collab, a11y_deep, i18n_deep, css_architecture, state_machine, web_components, resilience, module_federation, review_automation, observability, migration_safety, edge_computing, api_versioning, wasm_advanced, feature_toggles, email_deliverability, seo_analysis, monorepo_boundaries, ddd_patterns, mf_runtime, realtime_protocols, data_pipeline, gateway_deep, test_rigor, quality_gate, graphql_schema, event_sourcing_integrity, rate_limiting, migration_safety, auth_hardening, distributed_tracing, infrastructure_as_code, review_automation, contract_testing, sec_headers_deep, privacy_compliance, concurrency_patterns, cloud_native, error_recovery, system_design, dependency_injection, api_versioning, serialization_perf, memory_allocation, build_pipeline, error_messages, logging_discipline, config_as_code, component_interface, token_hygiene, query_antipatterns, websocket_lifecycle, graphql_perf, deprecation_tracking, code_splitting_audit, css_arch_deep, sec_dep_audit, webhook_signature, oauth_security, email_infra, health_check_depth, cors_security, feature_rollout, secret_lifecycle, rate_limit_strategy, container_security_scan, grpc_security, data_residency, deployment_progressive, obs_exemplar, data_pipeline_quality, service_mesh, plugin_architecture, mobile_app_security, data_masking, core_web_vitals, infra_cost, api_gateway_config, css_in_js_perf, crdt_state_sync, resource_quota, browser_compat_audit, floating_point, snapshot_testing, event_schema, form_validation, retry_idempotency, a11y_semantics, race_condition, cache_invalidation, data_loader_opt, event_versioning, connection_lifecycle, csp_nonce, struct_error_ctx, stream_backpressure, identifier_collision, graphql_query_depth, auth_token_rotation, mq_dead_letter, file_upload_sec, query_plan, encryption_at_rest, ws_connection_state, rate_limit_policy, payment_idempotency, cron_reliability, immutable_data, data_residency_compliance, response_envelope, compression_negotiation, dns_health, graceful_degradation, api_deprecation_strategy, db_safety, log_sampling, slo_tracking, api_key_mgmt, data_lineage, infra_drift, schema_evolution, wasm_interop, data_partition, plugin_lifecycle, time_sync, feature_store, vector_db, api_composition, audit_trail, graphql_cost, session_mgmt, csv_injection, tls_config, distributed_lock, event_dedup, allocator_pattern, webhook_retry, money_handling, pagination, resource_leak, c4_architecture, semaphore, dns_optimization, content_negotiation, retry_budget, cache_stampede, gateway_routing, search_sanitization, rate_limit_headers, data_consistency, mobile_hardening, build_config, grpc_interceptors, memory_alignment, saga_orchestration, ws_backpressure, bff_pattern, immutable_infra, csp_reporting, token_bucket, circuit_breaker, change_data_capture, api_federation, cache_warming, conn_multiplex, least_privilege, tracing_sampling, json_patch, event_snapshot, adaptive_rate, graceful_retry, encryption_transit, image_scanning, deadlock_detect, deprecation_comm, metrics_cardinality, api_key_rotation, data_retention, flag_cleanup, log_redaction, sli_slo, graceful_degrade, pagination_consistency, dep_drift, cqrs_pattern, outbox_idempotency, api_version_negotiation, connection_backpressure, graceful_startup, secret_detection, error_code_registry, cache_key_design, db_migration_safety, retry_strategy, health_check_completeness, log_structuring, event_schema_evolution, graceful_shutdown_timing, config_hot_reload, mutual_tls, dead_letter_queue, rate_limit_header, websocket_pool, container_image_opt, dns_prefetch_config, async_memory_leak, api_idempotency_key, service_mesh_policy, pagination_safety, background_job_idempotency, feature_flag_lifecycle, request_deduplication, connection_leak, payload_compression, cors_preflight_cache, timestamp_monotonicity, search_query_safety, api_response_cache, thread_pool_starvation, db_slow_query, url_validation, memory_alignment_audit, cache_stampede_guard, log_injection_prevention, temp_file_security, jwt_token_validation, file_permission_audit, dns_rebinding_protection, integer_overflow_detection, command_injection_prevention, csrf_token_validation, path_traversal_prevention, insecure_deserialization, mass_assignment, weak_cryptography, ssti_injection, file_upload_validation, hardcoded_secrets, unsafe_reflection, xxe_injection_prevention, prototype_pollution, async_race_condition, clickjacking_protection, insecure_cors_config, unrestricted_file_deletion, content_type_header, weak_password_policy, crlf_injection_prevention, session_timeout_policy, zip_slip_prevention, ssrf_detection, process_env_leak, redos_complexity, null_byte_injection, mime_type_spoofing, subdomain_takeover, jwt_algorithm_confusion, oauth_flow_security, grpc_metadata_leak, websocket_security, dependency_confusion, timing_attack, unsafe_yaml_load, api_latency, cross_service_health, consumer_offset, config_value, db_connection_pool, background_job, canary_release, certificate_validation, memory_safety, input_sanitization, crypto_random, session_fixation, open_redirect, xml_bomb, ldap_injection`)
+ctx.tools.register(defineTool({
+  name: 'graphql_injection',
+  description: 'Analyze GraphQL injection: query construction, mutation input, resolver authorization.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeGraphQLInjection(args.code)
+    return formatGraphQLInjectionReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'nosql_injection',
+  description: 'Analyze NoSQL injection: query operators, filter validation, type checking.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeNoSqlInjection(args.code)
+    return formatNoSqlInjectionReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'graphql_depth_limit',
+  description: 'Analyze GraphQL depth limit: query depth, complexity analysis, cost limiting.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeGraphQLDepthLimit(args.code)
+    return formatGraphQLDepthLimitReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'path_normalization',
+  description: 'Analyze path normalization: base directory restriction, realpath sandbox, canonicalization.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzePathNormalization(args.code)
+    return formatPathNormalizationReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'buffer_overread',
+  description: 'Analyze buffer overread: file read limits, bounds checking, string operation safety.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeBufferOverread(args.code)
+    return formatBufferOverreadReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'http_parameter_pollution',
+  description: 'Analyze HTTP parameter pollution: duplicate detection, parser configuration, type validation.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeHTTPParameterPollution(args.code)
+    return formatHTTPParameterPollutionReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'dom_clobbering',
+  description: 'Analyze DOM clobbering: element name/ID control, DOM access patterns, form injection.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeDOMClobbering(args.code)
+    return formatDOMClobberingReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'postmessage_security',
+  description: 'Analyze postMessage security: targetOrigin, origin verification, data validation.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzePostMessageSecurity(args.code)
+    return formatPostMessageSecurityReport(result)
+  }
+}))
+
+console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design, container_security, ml_pipeline, api_deprecation, design_system, pwa_compliance, type_system, green_computing, realtime_collab, a11y_deep, i18n_deep, css_architecture, state_machine, web_components, resilience, module_federation, review_automation, observability, migration_safety, edge_computing, api_versioning, wasm_advanced, feature_toggles, email_deliverability, seo_analysis, monorepo_boundaries, ddd_patterns, mf_runtime, realtime_protocols, data_pipeline, gateway_deep, test_rigor, quality_gate, graphql_schema, event_sourcing_integrity, rate_limiting, migration_safety, auth_hardening, distributed_tracing, infrastructure_as_code, review_automation, contract_testing, sec_headers_deep, privacy_compliance, concurrency_patterns, cloud_native, error_recovery, system_design, dependency_injection, api_versioning, serialization_perf, memory_allocation, build_pipeline, error_messages, logging_discipline, config_as_code, component_interface, token_hygiene, query_antipatterns, websocket_lifecycle, graphql_perf, deprecation_tracking, code_splitting_audit, css_arch_deep, sec_dep_audit, webhook_signature, oauth_security, email_infra, health_check_depth, cors_security, feature_rollout, secret_lifecycle, rate_limit_strategy, container_security_scan, grpc_security, data_residency, deployment_progressive, obs_exemplar, data_pipeline_quality, service_mesh, plugin_architecture, mobile_app_security, data_masking, core_web_vitals, infra_cost, api_gateway_config, css_in_js_perf, crdt_state_sync, resource_quota, browser_compat_audit, floating_point, snapshot_testing, event_schema, form_validation, retry_idempotency, a11y_semantics, race_condition, cache_invalidation, data_loader_opt, event_versioning, connection_lifecycle, csp_nonce, struct_error_ctx, stream_backpressure, identifier_collision, graphql_query_depth, auth_token_rotation, mq_dead_letter, file_upload_sec, query_plan, encryption_at_rest, ws_connection_state, rate_limit_policy, payment_idempotency, cron_reliability, immutable_data, data_residency_compliance, response_envelope, compression_negotiation, dns_health, graceful_degradation, api_deprecation_strategy, db_safety, log_sampling, slo_tracking, api_key_mgmt, data_lineage, infra_drift, schema_evolution, wasm_interop, data_partition, plugin_lifecycle, time_sync, feature_store, vector_db, api_composition, audit_trail, graphql_cost, session_mgmt, csv_injection, tls_config, distributed_lock, event_dedup, allocator_pattern, webhook_retry, money_handling, pagination, resource_leak, c4_architecture, semaphore, dns_optimization, content_negotiation, retry_budget, cache_stampede, gateway_routing, search_sanitization, rate_limit_headers, data_consistency, mobile_hardening, build_config, grpc_interceptors, memory_alignment, saga_orchestration, ws_backpressure, bff_pattern, immutable_infra, csp_reporting, token_bucket, circuit_breaker, change_data_capture, api_federation, cache_warming, conn_multiplex, least_privilege, tracing_sampling, json_patch, event_snapshot, adaptive_rate, graceful_retry, encryption_transit, image_scanning, deadlock_detect, deprecation_comm, metrics_cardinality, api_key_rotation, data_retention, flag_cleanup, log_redaction, sli_slo, graceful_degrade, pagination_consistency, dep_drift, cqrs_pattern, outbox_idempotency, api_version_negotiation, connection_backpressure, graceful_startup, secret_detection, error_code_registry, cache_key_design, db_migration_safety, retry_strategy, health_check_completeness, log_structuring, event_schema_evolution, graceful_shutdown_timing, config_hot_reload, mutual_tls, dead_letter_queue, rate_limit_header, websocket_pool, container_image_opt, dns_prefetch_config, async_memory_leak, api_idempotency_key, service_mesh_policy, pagination_safety, background_job_idempotency, feature_flag_lifecycle, request_deduplication, connection_leak, payload_compression, cors_preflight_cache, timestamp_monotonicity, search_query_safety, api_response_cache, thread_pool_starvation, db_slow_query, url_validation, memory_alignment_audit, cache_stampede_guard, log_injection_prevention, temp_file_security, jwt_token_validation, file_permission_audit, dns_rebinding_protection, integer_overflow_detection, command_injection_prevention, csrf_token_validation, path_traversal_prevention, insecure_deserialization, mass_assignment, weak_cryptography, ssti_injection, file_upload_validation, hardcoded_secrets, unsafe_reflection, xxe_injection_prevention, prototype_pollution, async_race_condition, clickjacking_protection, insecure_cors_config, unrestricted_file_deletion, content_type_header, weak_password_policy, crlf_injection_prevention, session_timeout_policy, zip_slip_prevention, ssrf_detection, process_env_leak, redos_complexity, null_byte_injection, mime_type_spoofing, subdomain_takeover, jwt_algorithm_confusion, oauth_flow_security, grpc_metadata_leak, websocket_security, dependency_confusion, timing_attack, unsafe_yaml_load, api_latency, cross_service_health, consumer_offset, config_value, db_connection_pool, background_job, canary_release, certificate_validation, memory_safety, input_sanitization, crypto_random, session_fixation, open_redirect, xml_bomb, ldap_injection, graphql_injection, nosql_injection, graphql_depth_limit, path_normalization, buffer_overread, http_parameter_pollution, dom_clobbering, postmessage_security`)
 }
