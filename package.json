@@ -1,7 +1,7 @@
 {
   "name": "dsh-tool-codereview",
-  "version": "0.86.0",
-  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 662 tools, Agent Output Suppression, Tool Permission Boundary Breach, Agent Instruction Loop Adv, Tool Schema Manipulation Adv, Agent Privilege Creep, Tool Output Manipulation Adv, Agent Session Fixation Adv, Tool Execution Hijack, Tool Schema Injection Adv, Agent Goal Subversion, Tool Output Sidechannel Adv, Agent Memory Overwrite, Tool Permission Escalation Adv, Agent Instruction Splice, Tool Response Substitution, Agent Context Leakage, Agent Narrative Manipulation, Tool Capability Shadowing, Agent Execution Quarantine Bypass, Tool Input Canonicalization Failure, Agent Policy Circumvention, Tool Session Persistence Attack, Agent Reasoning Chain Poisoning, Tool Multiplexing Exploit",
+  "version": "0.87.0",
+  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 670 tools, Agent Output Suppression, Tool Permission Boundary Breach, Agent Instruction Loop Adv, Tool Schema Manipulation Adv, Agent Privilege Creep, Tool Output Manipulation Adv, Agent Session Fixation Adv, Tool Execution Hijack, Tool Schema Injection Adv, Agent Goal Subversion, Tool Output Sidechannel Adv, Agent Memory Overwrite, Tool Permission Escalation Adv, Agent Instruction Splice, Tool Response Substitution, Agent Context Leakage, Agent Narrative Manipulation, Tool Capability Shadowing, Agent Execution Quarantine Bypass, Tool Input Canonicalization Failure, Agent Policy Circumvention, Tool Session Persistence Attack, Agent Reasoning Chain Poisoning, Tool Multiplexing Exploit, Agent Context Eviction Adv, Tool Schema Forgery, Agent Goal Fragmentation Adv, Tool Output Encoding Attack, Agent Memory Corruption Deep, Tool Permission Inheritance Bypass, Agent Instruction Hijack Adv, Tool Response Interpolation Deep",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
