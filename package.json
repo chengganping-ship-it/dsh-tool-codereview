@@ -1,7 +1,7 @@
 {
   "name": "dsh-tool-codereview",
-  "version": "0.43.0",
-  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 313 tools, CQRS Pattern, Outbox Idempotency, API Version Negotiation, Connection Backpressure, Graceful Startup, Secret Detection, Error Code Registry, Cache Key Design",
+  "version": "0.44.0",
+  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 321 tools, DB Migration Safety, Retry Strategy, Health Check Completeness, Log Structuring, Event Schema Evolution, Graceful Shutdown Timing, Config Hot-Reload, Mutual TLS",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
