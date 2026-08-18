@@ -1,7 +1,7 @@
 {
   "name": "dsh-tool-codereview",
-  "version": "0.75.0",
-  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 574 tools, Agent Intent Manipulation, Tool Output Forgery Adv, LLM Reasoning Bypass, Prompt Context Stealing, Model Weight Tampering, Agent Session Hijack, Tool Capability Escalation, Knowledge Retrieval Bias",
+  "version": "0.76.0",
+  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 582 tools, Cross Tool Contamination, Agent Objective Override, Tool Argument Injection, LLM Hallucination Amplification, Token Limit Exhaustion, Agent Privilege Abuse, Multi Agent Collusion, Tool Response Manipulation",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
