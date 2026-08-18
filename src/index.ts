@@ -72,7 +72,7 @@
  * - API gateway (BFF pattern, service routing)
  * 
  * @module dsh-tool-codereview
- * @version 0.41.0
+ * @version 0.42.0
  * @license MIT
  */
 
@@ -82,7 +82,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 export const name = 'dsh-tool-codereview'
 export const inject = ['tools']
 
-const VERSION = '0.41.0'
+const VERSION = '0.42.0'
 
 // ==================== TYPES ====================
 
@@ -24637,6 +24637,526 @@ function formatMetricsCardinalityReport(r: MetricsCardinalityResult): string {
   return lines.join('\n')
 }
 
+// ==================== V0.42.0: API KEY ROTATION ====================
+
+interface APIKeyRotationResult {
+  totalIssues: number
+  severity: Severity
+  rotation: { line: number; issue: string; suggestion: string }[]
+  grace: { line: number; issue: string; suggestion: string }[]
+  rotationScore: number
+  summary: string
+}
+
+function analyzeAPIKeyRotation(code: string): APIKeyRotationResult {
+  const lines = code.split('\n')
+  const rotation: APIKeyRotationResult['rotation'] = []
+  const grace: APIKeyRotationResult['grace'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/api.*key.*rotat|rotat.*api.*key|key.*rotat|rotat.*key/i) && !line.match(/dual.*key|overlap.*period|grace.*period|old.*key.*valid/i)) {
+      rotation.push({ line: i + 1, issue: 'API key rotation without dual-key overlap', suggestion: 'Keep old key valid during grace period; dual-key overlap prevents downtime during client migration' })
+    }
+
+    if (line.match(/key.*expir|expir.*key|key.*ttl|key/i) && !line.match(/expir.*notif|expir.*warn|expir.*alert|expir.*remind/i)) {
+      grace.push({ line: i + 1, issue: 'Key expiration without notification', suggestion: 'Notify clients before key expiration; silent expiration causes unexpected authentication failures' })
+    }
+
+    if (line.match(/auto.*rotat|rotat.*auto|scheduled.*rotat|rotat.*schedule/i) && !line.match(/rotat.*log|rotat.*audit|rotat.*track|rotat.*history/i)) {
+      rotation.push({ line: i + 1, issue: 'Automated rotation without audit trail', suggestion: 'Log each key rotation event; audit trail tracks when and why keys were rotated' })
+    }
+
+    if (line.match(/key.*revok|revok.*key|key.*invalidat|invalidat.*key/i) && !line.match(/revok.*immediate|revok.*effect|revok.*propagat|revok.*broadcast/i)) {
+      grace.push({ line: i + 1, issue: 'Key revocation without propagation', suggestion: 'Propagate revocation to all services immediately; cached auth decisions may continue accepting revoked keys' })
+    }
+  })
+
+  const totalIssues = rotation.length + grace.length
+  const rotationScore = Math.max(0, 100 - rotation.length * 8 - grace.length * 8)
+  const severity: Severity = rotation.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, rotation, grace, rotationScore,
+    summary: rotation.length + ' rotation gap(s), ' + grace.length + ' grace gap(s)' }
+}
+
+function formatAPIKeyRotationReport(r: APIKeyRotationResult): string {
+  const lines: string[] = []
+  lines.push('# API Key Rotation Analysis')
+  lines.push('')
+  lines.push('**Rotation Score:** ' + r.rotationScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.rotation.length > 0) {
+    lines.push('## Rotation (' + r.rotation.length + ')')
+    r.rotation.forEach(r => lines.push('- Line ' + r.line + ': ' + r.suggestion))
+    lines.push('')
+  }
+  if (r.grace.length > 0) {
+    lines.push('## Grace (' + r.grace.length + ')')
+    r.grace.forEach(g => lines.push('- Line ' + g.line + ': ' + g.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.42.0: DATA RETENTION POLICY ====================
+
+interface DataRetentionResult {
+  totalIssues: number
+  severity: Severity
+  retention: { line: number; issue: string; suggestion: string }[]
+  archive: { line: number; issue: string; suggestion: string }[]
+  retentionScore: number
+  summary: string
+}
+
+function analyzeDataRetention(code: string): DataRetentionResult {
+  const lines = code.split('\n')
+  const retention: DataRetentionResult['retention'] = []
+  const archive: DataRetentionResult['archive'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/data.*retention|retention.*data|retention.*period|retention.*polic/i) && !line.match(/retention.*verif|retention.*audit|retention.*complian|retention.*log/i)) {
+      retention.push({ line: i + 1, issue: 'Data retention policy without verification', suggestion: 'Verify retention enforcement with audit logs; unverified policies may not be actively enforced' })
+    }
+
+    if (line.match(/data.*archiv|archiv.*data|cold.*storage|warm.*storage/i) && !line.match(/archiv.*retriev|archiv.*access|archiv.*restor|archiv.*format/i)) {
+      archive.push({ line: i + 1, issue: 'Data archive without retrieval process', suggestion: 'Define archive retrieval SLA and process; unreachable archives are equivalent to deletion' })
+    }
+
+    if (line.match(/data.*delet|delet.*data|data.*purge|purge.*data/i) && !line.match(/delet.*verif|delet.*confirm|delet.*audit|delet.*proof/i)) {
+      retention.push({ line: i + 1, issue: 'Data deletion without verification/proof', suggestion: 'Provide deletion verification (tombstone, audit log); compliance requires proof of deletion' })
+    }
+
+    if (line.match(/gdpr.*retention|complian.*retention|legal.*hold|regulat.*retention/i) && !line.match(/hold.*override|hold.*exempt|hold.*scope|hold.*releas/i)) {
+      archive.push({ line: i + 1, issue: 'Legal hold without override mechanism', suggestion: 'Implement legal hold override for retention policies; holds must survive automatic deletion' })
+    }
+  })
+
+  const totalIssues = retention.length + archive.length
+  const retentionScore = Math.max(0, 100 - retention.length * 8 - archive.length * 8)
+  const severity: Severity = retention.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, retention, archive, retentionScore,
+    summary: retention.length + ' retention gap(s), ' + archive.length + ' archive gap(s)' }
+}
+
+function formatDataRetentionReport(r: DataRetentionResult): string {
+  const lines: string[] = []
+  lines.push('# Data Retention Policy Analysis')
+  lines.push('')
+  lines.push('**Retention Score:** ' + r.retentionScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.retention.length > 0) {
+    lines.push('## Retention (' + r.retention.length + ')')
+    r.retention.forEach(r => lines.push('- Line ' + r.line + ': ' + r.suggestion))
+    lines.push('')
+  }
+  if (r.archive.length > 0) {
+    lines.push('## Archive (' + r.archive.length + ')')
+    r.archive.forEach(a => lines.push('- Line ' + a.line + ': ' + a.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.42.0: FEATURE FLAG CLEANUP ====================
+
+interface FeatureFlagCleanupResult {
+  totalIssues: number
+  severity: Severity
+  flag: { line: number; issue: string; suggestion: string }[]
+  lifecycle: { line: number; issue: string; suggestion: string }[]
+  flagScore: number
+  summary: string
+}
+
+function analyzeFeatureFlagCleanup(code: string): FeatureFlagCleanupResult {
+  const lines = code.split('\n')
+  const flag: FeatureFlagCleanupResult['flag'] = []
+  const lifecycle: FeatureFlagCleanupResult['lifecycle'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/feature.*flag|feature.*toggle|flag.*lifecycl|toggle.*lifecycl/i) && !line.match(/flag.*expir|flag.*ttl|flag.*deadline|flag.*remov/i)) {
+      flag.push({ line: i + 1, issue: 'Feature flag without expiration/removal deadline', suggestion: 'Set flag expiration date; permanent flags accumulate and increase code complexity' })
+    }
+
+    if (line.match(/stale.*flag|flag.*stale|dead.*flag|flag.*deprecat/i) && !line.match(/stale.*detect|stale.*alert|stale.*remov|stale.*auto/i)) {
+      lifecycle.push({ line: i + 1, issue: 'Stale flag without detection/removal', suggestion: 'Detect stale flags (no traffic split for N days); auto-remove or alert on stale flags' })
+    }
+
+    if (line.match(/flag.*debt|toggle.*debt|flag.*bloat|flag.*sprawl/i) && !line.match(/debt.*track|debt.*metric|debt.*budget|debt.*cap/i)) {
+      flag.push({ line: i + 1, issue: 'Feature flag debt without tracking/budget', suggestion: 'Track number of active flags; set flag budget/cap to prevent unbounded flag growth' })
+    }
+
+    if (line.match(/flag.*remov|remov.*flag|cleanup.*flag|flag.*cleanup/i) && !line.match(/remov.*verif|remov.*test|remov.*safe|remov.*dead.*code/i)) {
+      lifecycle.push({ line: i + 1, issue: 'Flag removal without dead-code cleanup', suggestion: 'Remove dead code paths when cleaning up flags; flag removal without code cleanup leaves dead branches' })
+    }
+  })
+
+  const totalIssues = flag.length + lifecycle.length
+  const flagScore = Math.max(0, 100 - flag.length * 8 - lifecycle.length * 8)
+  const severity: Severity = flag.length > 0 ? 'info' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, flag, lifecycle, flagScore,
+    summary: flag.length + ' flag gap(s), ' + lifecycle.length + ' lifecycle gap(s)' }
+}
+
+function formatFeatureFlagCleanupReport(r: FeatureFlagCleanupResult): string {
+  const lines: string[] = []
+  lines.push('# Feature Flag Cleanup Analysis')
+  lines.push('')
+  lines.push('**Flag Score:** ' + r.flagScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.flag.length > 0) {
+    lines.push('## Flag (' + r.flag.length + ')')
+    r.flag.forEach(f => lines.push('- Line ' + f.line + ': ' + f.suggestion))
+    lines.push('')
+  }
+  if (r.lifecycle.length > 0) {
+    lines.push('## Lifecycle (' + r.lifecycle.length + ')')
+    r.lifecycle.forEach(l => lines.push('- Line ' + l.line + ': ' + l.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.42.0: LOG REDACTION ====================
+
+interface LogRedactionResult {
+  totalIssues: number
+  severity: Severity
+  pii: { line: number; issue: string; suggestion: string }[]
+  mask: { line: number; issue: string; suggestion: string }[]
+  redactionScore: number
+  summary: string
+}
+
+function analyzeLogRedaction(code: string): LogRedactionResult {
+  const lines = code.split('\n')
+  const pii: LogRedactionResult['pii'] = []
+  const mask: LogRedactionResult['mask'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/log.*pii|pii.*log|personally.*identif|person.*identif.*info/i) && !line.match(/pii.*mask|pii.*redact|pii.*strip|pii.*hash/i)) {
+      pii.push({ line: i + 1, issue: 'Logging PII without masking/redaction', suggestion: 'Mask or redact PII before logging; unmasked PII in logs violates GDPR and creates breach risk' })
+    }
+
+    if (line.match(/log.*password|log.*token|log.*secret|log.*credential/i) && !line.match(/password.*mask|token.*mask|secret.*mask|credential.*mask/i)) {
+      mask.push({ line: i + 1, issue: 'Logging credentials/secrets without masking', suggestion: 'Never log credentials in plaintext; always mask or replace with placeholder (***)' })
+    }
+
+    if (line.match(/log.*email|log.*phone|log.*address|log.*ssn/i) && !line.match(/email.*mask|phone.*mask|address.*mask|ssn.*mask/i)) {
+      pii.push({ line: i + 1, issue: 'Logging contact/sensitive data without masking', suggestion: 'Mask email, phone, SSN in logs; partial masking (***@domain.com) preserves utility' })
+    }
+
+    if (line.match(/log.*redact|redact.*log|log.*mask|mask.*log/i) && !line.match(/redact.*config|redact.*rul|redact.*pattern|redact.*whitelist/i)) {
+      mask.push({ line: i + 1, issue: 'Log redaction without configurable rules', suggestion: 'Make redaction rules configurable; hard-coded patterns miss new PII fields added over time' })
+    }
+  })
+
+  const totalIssues = pii.length + mask.length
+  const redactionScore = Math.max(0, 100 - pii.length * 10 - mask.length * 10)
+  const severity: Severity = pii.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, pii, mask, redactionScore,
+    summary: pii.length + ' pii gap(s), ' + mask.length + ' mask gap(s)' }
+}
+
+function formatLogRedactionReport(r: LogRedactionResult): string {
+  const lines: string[] = []
+  lines.push('# Log Redaction Analysis')
+  lines.push('')
+  lines.push('**Redaction Score:** ' + r.redactionScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.pii.length > 0) {
+    lines.push('## PII (' + r.pii.length + ')')
+    r.pii.forEach(p => lines.push('- Line ' + p.line + ': ' + p.suggestion))
+    lines.push('')
+  }
+  if (r.mask.length > 0) {
+    lines.push('## Mask (' + r.mask.length + ')')
+    r.mask.forEach(m => lines.push('- Line ' + m.line + ': ' + m.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.42.0: SLI/SLO ====================
+
+interface SLISLOResult {
+  totalIssues: number
+  severity: Severity
+  sli: { line: number; issue: string; suggestion: string }[]
+  slo: { line: number; issue: string; suggestion: string }[]
+  sliScore: number
+  summary: string
+}
+
+function analyzeSLISLO(code: string): SLISLOResult {
+  const lines = code.split('\n')
+  const sli: SLISLOResult['sli'] = []
+  const slo: SLISLOResult['slo'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/sli|service.*level.*indicator|indicator.*sli/i) && !line.match(/sli.*measur|sli.*metric|sli.*formula|sli.*calculat/i)) {
+      sli.push({ line: i + 1, issue: 'SLI definition without measurement formula', suggestion: 'Define SLI as quantified formula (e.g., good events / total events); vague SLIs are unmeasurable' })
+    }
+
+    if (line.match(/slo|service.*level.*object|object.*slo/i) && !line.match(/slo.*target|slo.*threshold|slo.*complian|slo.*burn/i)) {
+      slo.push({ line: i + 1, issue: 'SLO without target threshold', suggestion: 'Set explicit SLO target (e.g., 99.9% availability); unquantified SLOs are meaningless' })
+    }
+
+    if (line.match(/error.*budget|budget.*error|error.*allowance/i) && !line.match(/budget.*consum|budget.*remain|budget.*burn.*rate|budget.*alert/i)) {
+      slo.push({ line: i + 1, issue: 'Error budget without burn rate monitoring', suggestion: 'Monitor error budget burn rate; fast burn alerts before SLO violation, slow burn indicates over-provisioning' })
+    }
+
+    if (line.match(/slo.*violat|violat.*slo|slo.*breach|breach.*slo/i) && !line.match(/violat.*action|violat.*respon|violat.*alert|violat.*escalat/i)) {
+      sli.push({ line: i + 1, issue: 'SLO violation without response plan', suggestion: 'Define SLO violation response (freeze deploys, escalate, postmortem); violations without action waste error budget' })
+    }
+  })
+
+  const totalIssues = sli.length + slo.length
+  const sliScore = Math.max(0, 100 - sli.length * 8 - slo.length * 8)
+  const severity: Severity = sli.length > 0 ? 'info' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, sli, slo, sliScore,
+    summary: sli.length + ' sli gap(s), ' + slo.length + ' slo gap(s)' }
+}
+
+function formatSLISLOReport(r: SLISLOResult): string {
+  const lines: string[] = []
+  lines.push('# SLI/SLO Analysis')
+  lines.push('')
+  lines.push('**SLI Score:** ' + r.sliScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.sli.length > 0) {
+    lines.push('## SLI (' + r.sli.length + ')')
+    r.sli.forEach(s => lines.push('- Line ' + s.line + ': ' + s.suggestion))
+    lines.push('')
+  }
+  if (r.slo.length > 0) {
+    lines.push('## SLO (' + r.slo.length + ')')
+    r.slo.forEach(s => lines.push('- Line ' + s.line + ': ' + s.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.42.0: GRACEFUL DEGRADATION ====================
+
+interface GracefulDegradeResult {
+  totalIssues: number
+  severity: Severity
+  fallback: { line: number; issue: string; suggestion: string }[]
+  degrade: { line: number; issue: string; suggestion: string }[]
+  degradeScore: number
+  summary: string
+}
+
+function analyzeGracefulDegrade(code: string): GracefulDegradeResult {
+  const lines = code.split('\n')
+  const fallback: GracefulDegradeResult['fallback'] = []
+  const degrade: GracefulDegradeResult['degrade'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/graceful.*degrad|degrad.*graceful|degrad.*mode|partial.*degrad/i) && !line.match(/degrad.*fallback|degrad.*default|degrad.*static|degrad.*servi/i)) {
+      fallback.push({ line: i + 1, issue: 'Graceful degradation without fallback value', suggestion: 'Provide static fallback/cache value when service degrades; users see degraded data, not errors' })
+    }
+
+    if (line.match(/fallback.*chain|fallback.*cascade|chain.*fallback/i) && !line.match(/chain.*depth|chain.*limit|chain.*timeout|chain.*budget/i)) {
+      degrade.push({ line: i + 1, issue: 'Fallback chain without depth limit', suggestion: 'Limit fallback chain depth (max 2-3 levels); deep chains cause cascading latency and complexity' })
+    }
+
+    if (line.match(/feature.*disable|disable.*feature|feature.*off|dark.*launch.*off/i) && !line.match(/disable.*notif|disable.*user|disable.*messaging|disable.*ux/i)) {
+      fallback.push({ line: i + 1, issue: 'Feature disable without user notification', suggestion: 'Notify users when features are disabled; silent feature removal confuses users' })
+    }
+
+    if (line.match(/degrad.*trigger|trigger.*degrad|degrad.*condit|condit.*degrad/i) && !line.match(/degrad.*recover|degrad.*restore|degrad.*auto.*recover|degrad.*self.*heal/i)) {
+      degrade.push({ line: i + 1, issue: 'Degradation trigger without auto-recovery', suggestion: 'Define auto-recovery condition; manual recovery requires on-call intervention and delays restoration' })
+    }
+  })
+
+  const totalIssues = fallback.length + degrade.length
+  const degradeScore = Math.max(0, 100 - fallback.length * 8 - degrade.length * 8)
+  const severity: Severity = fallback.length > 0 ? 'info' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, fallback, degrade, degradeScore,
+    summary: fallback.length + ' fallback gap(s), ' + degrade.length + ' degrade gap(s)' }
+}
+
+function formatGracefulDegradeReport(r: GracefulDegradeResult): string {
+  const lines: string[] = []
+  lines.push('# Graceful Degradation Analysis')
+  lines.push('')
+  lines.push('**Degrade Score:** ' + r.degradeScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.fallback.length > 0) {
+    lines.push('## Fallback (' + r.fallback.length + ')')
+    r.fallback.forEach(f => lines.push('- Line ' + f.line + ': ' + f.suggestion))
+    lines.push('')
+  }
+  if (r.degrade.length > 0) {
+    lines.push('## Degrade (' + r.degrade.length + ')')
+    r.degrade.forEach(d => lines.push('- Line ' + d.line + ': ' + d.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.42.0: PAGINATION CONSISTENCY ====================
+
+interface PaginationConsistencyResult {
+  totalIssues: number
+  severity: Severity
+  cursor: { line: number; issue: string; suggestion: string }[]
+  contract: { line: number; issue: string; suggestion: string }[]
+  paginationScore: number
+  summary: string
+}
+
+function analyzePaginationConsistency(code: string): PaginationConsistencyResult {
+  const lines = code.split('\n')
+  const cursor: PaginationConsistencyResult['cursor'] = []
+  const contract: PaginationConsistencyResult['contract'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/cursor.*pagina|pagina.*cursor|keyset.*pagina/i) && !line.match(/cursor.*stable|cursor.*immut|cursor.*encod|cursor.*decod/i)) {
+      cursor.push({ line: i + 1, issue: 'Cursor pagination without stability guarantee', suggestion: 'Ensure cursor is immutable/encoded; cursor changes between page fetches cause missing or duplicate items' })
+    }
+
+    if (line.match(/offset.*pagina|pagina.*offset|page.*number|page.*offset/i) && !line.match(/offset.*limit|offset.*max|offset.*cap|offset.*guard/i)) {
+      contract.push({ line: i + 1, issue: 'Offset pagination without max limit', suggestion: 'Cap offset/limit to prevent deep pagination; deep offset queries are expensive and enable enumeration' })
+    }
+
+    if (line.match(/total.*count|count.*total|total.*result|result.*total/i) && !line.match(/count.*approx|count.*estim|count.*approximat|count.*separate/i)) {
+      contract.push({ line: i + 1, issue: 'Total count without performance consideration', suggestion: 'Separate total count from data query on large datasets; exact count is expensive and often unnecessary' })
+    }
+
+    if (line.match(/pagina.*contract|contract.*pagina|pagina.*schema|schema.*pagina/i) && !line.match(/contract.*version|contract.*stable|contract.*compat|contract.*document/i)) {
+      cursor.push({ line: i + 1, issue: 'Pagination contract without versioning/stability', suggestion: 'Version pagination contract; changing cursor format breaks existing client cursors' })
+    }
+  })
+
+  const totalIssues = cursor.length + contract.length
+  const paginationScore = Math.max(0, 100 - cursor.length * 8 - contract.length * 8)
+  const severity: Severity = cursor.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, cursor, contract, paginationScore,
+    summary: cursor.length + ' cursor gap(s), ' + contract.length + ' contract gap(s)' }
+}
+
+function formatPaginationConsistencyReport(r: PaginationConsistencyResult): string {
+  const lines: string[] = []
+  lines.push('# Pagination Consistency Analysis')
+  lines.push('')
+  lines.push('**Pagination Score:** ' + r.paginationScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.cursor.length > 0) {
+    lines.push('## Cursor (' + r.cursor.length + ')')
+    r.cursor.forEach(c => lines.push('- Line ' + c.line + ': ' + c.suggestion))
+    lines.push('')
+  }
+  if (r.contract.length > 0) {
+    lines.push('## Contract (' + r.contract.length + ')')
+    r.contract.forEach(c => lines.push('- Line ' + c.line + ': ' + c.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.42.0: DEPENDENCY DRIFT ====================
+
+interface DependencyDriftResult {
+  totalIssues: number
+  severity: Severity
+  version: { line: number; issue: string; suggestion: string }[]
+  compat: { line: number; issue: string; suggestion: string }[]
+  driftScore: number
+  summary: string
+}
+
+function analyzeDependencyDrift(code: string): DependencyDriftResult {
+  const lines = code.split('\n')
+  const version: DependencyDriftResult['version'] = []
+  const compat: DependencyDriftResult['compat'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/version.*pin|pin.*version|version.*lock|lock.*version/i) && !line.match(/version.*verif|version.*check|version.*audit|version.*scan/i)) {
+      version.push({ line: i + 1, issue: 'Pinned version without audit/scan', suggestion: 'Audit pinned versions regularly; pinned but unaudited versions may have known vulnerabilities' })
+    }
+
+    if (line.match(/out.*of.*date|outdated.*dep|dep.*outdated|stale.*dep/i) && !line.match(/outdated.*track|outdated.*monitor|outdated.*alert|outdated.*auto/i)) {
+      compat.push({ line: i + 1, issue: 'Outdated dependency without monitoring', suggestion: 'Monitor dependency age; set alert threshold (e.g., >6 months outdated) for proactive updates' })
+    }
+
+    if (line.match(/compat.*check|check.*compat|compat.*test|test.*compat/i) && !line.match(/compat.*matrix|compat.*version|compat.*range|compat.*bound/i)) {
+      compat.push({ line: i + 1, issue: 'Compatibility check without version matrix', suggestion: 'Define compatibility matrix (tested version ranges); untested version combinations risk runtime failures' })
+    }
+
+    if (line.match(/dep.*drift|drift.*dep|version.*drift|drift.*version/i) && !line.match(/drift.*detect|drift.*alert|drift.*prevent|drift.*reconcil/i)) {
+      version.push({ line: i + 1, issue: 'Dependency drift without detection/reconciliation', suggestion: 'Detect drift between environments; dev/staging/prod should use identical dependency versions' })
+    }
+  })
+
+  const totalIssues = version.length + compat.length
+  const driftScore = Math.max(0, 100 - version.length * 8 - compat.length * 8)
+  const severity: Severity = version.length > 0 ? 'info' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, version, compat, driftScore,
+    summary: version.length + ' version gap(s), ' + compat.length + ' compat gap(s)' }
+}
+
+function formatDependencyDriftReport(r: DependencyDriftResult): string {
+  const lines: string[] = []
+  lines.push('# Dependency Drift Analysis')
+  lines.push('')
+  lines.push('**Drift Score:** ' + r.driftScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.version.length > 0) {
+    lines.push('## Version (' + r.version.length + ')')
+    r.version.forEach(v => lines.push('- Line ' + v.line + ': ' + v.suggestion))
+    lines.push('')
+  }
+  if (r.compat.length > 0) {
+    lines.push('## Compat (' + r.compat.length + ')')
+    r.compat.forEach(c => lines.push('- Line ' + c.line + ': ' + c.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
 // ==================== PLUGIN REGISTRATION ====================
 
 export function apply(ctx: Context) {
@@ -28692,5 +29212,93 @@ ctx.tools.register(defineTool({
   }
 }))
 
-console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design, container_security, ml_pipeline, api_deprecation, design_system, pwa_compliance, type_system, green_computing, realtime_collab, a11y_deep, i18n_deep, css_architecture, state_machine, web_components, resilience, module_federation, review_automation, observability, migration_safety, edge_computing, api_versioning, wasm_advanced, feature_toggles, email_deliverability, seo_analysis, monorepo_boundaries, ddd_patterns, mf_runtime, realtime_protocols, data_pipeline, gateway_deep, test_rigor, quality_gate, graphql_schema, event_sourcing_integrity, rate_limiting, migration_safety, auth_hardening, distributed_tracing, infrastructure_as_code, review_automation, contract_testing, sec_headers_deep, privacy_compliance, concurrency_patterns, cloud_native, error_recovery, system_design, dependency_injection, api_versioning, serialization_perf, memory_allocation, build_pipeline, error_messages, logging_discipline, config_as_code, component_interface, token_hygiene, query_antipatterns, websocket_lifecycle, graphql_perf, deprecation_tracking, code_splitting_audit, css_arch_deep, sec_dep_audit, webhook_signature, oauth_security, email_infra, health_check_depth, cors_security, feature_rollout, secret_lifecycle, rate_limit_strategy, container_security_scan, grpc_security, data_residency, deployment_progressive, obs_exemplar, data_pipeline_quality, service_mesh, plugin_architecture, mobile_app_security, data_masking, core_web_vitals, infra_cost, api_gateway_config, css_in_js_perf, crdt_state_sync, resource_quota, browser_compat_audit, floating_point, snapshot_testing, event_schema, form_validation, retry_idempotency, a11y_semantics, race_condition, cache_invalidation, data_loader_opt, event_versioning, connection_lifecycle, csp_nonce, struct_error_ctx, stream_backpressure, identifier_collision, graphql_query_depth, auth_token_rotation, mq_dead_letter, file_upload_sec, query_plan, encryption_at_rest, ws_connection_state, rate_limit_policy, payment_idempotency, cron_reliability, immutable_data, data_residency_compliance, response_envelope, compression_negotiation, dns_health, graceful_degradation, api_deprecation_strategy, db_safety, log_sampling, slo_tracking, api_key_mgmt, data_lineage, infra_drift, schema_evolution, wasm_interop, data_partition, plugin_lifecycle, time_sync, feature_store, vector_db, api_composition, audit_trail, graphql_cost, session_mgmt, csv_injection, tls_config, distributed_lock, event_dedup, allocator_pattern, webhook_retry, money_handling, pagination, resource_leak, c4_architecture, semaphore, dns_optimization, content_negotiation, retry_budget, cache_stampede, gateway_routing, search_sanitization, rate_limit_headers, data_consistency, mobile_hardening, build_config, grpc_interceptors, memory_alignment, saga_orchestration, ws_backpressure, bff_pattern, immutable_infra, csp_reporting, token_bucket, circuit_breaker, change_data_capture, api_federation, cache_warming, conn_multiplex, least_privilege, tracing_sampling, json_patch, event_snapshot, adaptive_rate, graceful_retry, encryption_transit, image_scanning, deadlock_detect, deprecation_comm, metrics_cardinality`)
+ctx.tools.register(defineTool({
+  name: 'api_key_rotation',
+  description: 'Analyze API key rotation: dual-key overlap, expiration notification, audit trail, revocation propagation.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeAPIKeyRotation(args.code)
+    return formatAPIKeyRotationReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'data_retention',
+  description: 'Analyze data retention policy: verification, archive retrieval, deletion proof, legal hold override.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeDataRetention(args.code)
+    return formatDataRetentionReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'flag_cleanup',
+  description: 'Analyze feature flag cleanup: expiration deadline, stale detection, flag debt tracking, dead-code removal.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeFeatureFlagCleanup(args.code)
+    return formatFeatureFlagCleanupReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'log_redaction',
+  description: 'Analyze log redaction: PII masking, credential masking, contact data masking, configurable rules.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeLogRedaction(args.code)
+    return formatLogRedactionReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'sli_slo',
+  description: 'Analyze SLI/SLO: measurement formula, target threshold, error budget burn rate, violation response.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeSLISLO(args.code)
+    return formatSLISLOReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'graceful_degrade',
+  description: 'Analyze graceful degradation: fallback value, chain depth limit, user notification, auto-recovery.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeGracefulDegrade(args.code)
+    return formatGracefulDegradeReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'pagination_consistency',
+  description: 'Analyze pagination consistency: cursor stability, offset max limit, total count separation, contract versioning.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzePaginationConsistency(args.code)
+    return formatPaginationConsistencyReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'dep_drift',
+  description: 'Analyze dependency drift: version audit, outdated monitoring, compatibility matrix, drift detection.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeDependencyDrift(args.code)
+    return formatDependencyDriftReport(result)
+  }
+}))
+
+console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design, container_security, ml_pipeline, api_deprecation, design_system, pwa_compliance, type_system, green_computing, realtime_collab, a11y_deep, i18n_deep, css_architecture, state_machine, web_components, resilience, module_federation, review_automation, observability, migration_safety, edge_computing, api_versioning, wasm_advanced, feature_toggles, email_deliverability, seo_analysis, monorepo_boundaries, ddd_patterns, mf_runtime, realtime_protocols, data_pipeline, gateway_deep, test_rigor, quality_gate, graphql_schema, event_sourcing_integrity, rate_limiting, migration_safety, auth_hardening, distributed_tracing, infrastructure_as_code, review_automation, contract_testing, sec_headers_deep, privacy_compliance, concurrency_patterns, cloud_native, error_recovery, system_design, dependency_injection, api_versioning, serialization_perf, memory_allocation, build_pipeline, error_messages, logging_discipline, config_as_code, component_interface, token_hygiene, query_antipatterns, websocket_lifecycle, graphql_perf, deprecation_tracking, code_splitting_audit, css_arch_deep, sec_dep_audit, webhook_signature, oauth_security, email_infra, health_check_depth, cors_security, feature_rollout, secret_lifecycle, rate_limit_strategy, container_security_scan, grpc_security, data_residency, deployment_progressive, obs_exemplar, data_pipeline_quality, service_mesh, plugin_architecture, mobile_app_security, data_masking, core_web_vitals, infra_cost, api_gateway_config, css_in_js_perf, crdt_state_sync, resource_quota, browser_compat_audit, floating_point, snapshot_testing, event_schema, form_validation, retry_idempotency, a11y_semantics, race_condition, cache_invalidation, data_loader_opt, event_versioning, connection_lifecycle, csp_nonce, struct_error_ctx, stream_backpressure, identifier_collision, graphql_query_depth, auth_token_rotation, mq_dead_letter, file_upload_sec, query_plan, encryption_at_rest, ws_connection_state, rate_limit_policy, payment_idempotency, cron_reliability, immutable_data, data_residency_compliance, response_envelope, compression_negotiation, dns_health, graceful_degradation, api_deprecation_strategy, db_safety, log_sampling, slo_tracking, api_key_mgmt, data_lineage, infra_drift, schema_evolution, wasm_interop, data_partition, plugin_lifecycle, time_sync, feature_store, vector_db, api_composition, audit_trail, graphql_cost, session_mgmt, csv_injection, tls_config, distributed_lock, event_dedup, allocator_pattern, webhook_retry, money_handling, pagination, resource_leak, c4_architecture, semaphore, dns_optimization, content_negotiation, retry_budget, cache_stampede, gateway_routing, search_sanitization, rate_limit_headers, data_consistency, mobile_hardening, build_config, grpc_interceptors, memory_alignment, saga_orchestration, ws_backpressure, bff_pattern, immutable_infra, csp_reporting, token_bucket, circuit_breaker, change_data_capture, api_federation, cache_warming, conn_multiplex, least_privilege, tracing_sampling, json_patch, event_snapshot, adaptive_rate, graceful_retry, encryption_transit, image_scanning, deadlock_detect, deprecation_comm, metrics_cardinality, api_key_rotation, data_retention, flag_cleanup, log_redaction, sli_slo, graceful_degrade, pagination_consistency, dep_drift`)
 }
