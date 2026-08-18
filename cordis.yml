@@ -1,10 +1,10 @@
-# DeepSeek Harness Plugin: Code Review Assistant v0.39.0
-# Enterprise-grade code analysis toolkit with 281 comprehensive tools
+# DeepSeek Harness Plugin: Code Review Assistant v0.40.0
+# Enterprise-grade code analysis toolkit with 289 comprehensive tools
 
 - id: dsh-tool-codereview
   name: dsh-tool-codereview
-  version: 0.39.0
-  description: Enterprise Code Review & Security Scan - 281 tools including code_review, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, api_versioning, serialization_perf, memory_allocation, build_pipeline, error_messages, logging_discipline, config_as_code, component_interface, token_hygiene, query_antipatterns, websocket_lifecycle, graphql_perf, deprecation_tracking, code_splitting_audit, css_arch_deep, sec_dep_audit, webhook_signature, oauth_security, email_infra, health_check_depth, cors_security, feature_rollout, secret_lifecycle, rate_limit_strategy, container_security_scan, grpc_security, data_residency, deployment_progressive, obs_exemplar, data_pipeline_quality, service_mesh, memory_alignment, saga_orchestration, ws_backpressure, bff_pattern, immutable_infra, csp_reporting, token_bucket
+  version: 0.40.0
+  description: Enterprise Code Review & Security Scan - 289 tools including code_review, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, api_versioning, serialization_perf, memory_allocation, build_pipeline, error_messages, logging_discipline, config_as_code, component_interface, token_hygiene, query_antipatterns, websocket_lifecycle, graphql_perf, deprecation_tracking, code_splitting_audit, css_arch_deep, sec_dep_audit, webhook_signature, oauth_security, email_infra, health_check_depth, cors_security, feature_rollout, secret_lifecycle, rate_limit_strategy, container_security_scan, grpc_security, data_residency, deployment_progressive, obs_exemplar, data_pipeline_quality, service_mesh, circuit_breaker, change_data_capture, api_federation, cache_warming, conn_multiplex, least_privilege, tracing_sampling, json_patch
   author: chengganping-ship-it
   tools:
     - code_review
@@ -284,3 +284,11 @@
     - immutable_infra
     - csp_reporting
     - token_bucket
+    - circuit_breaker
+    - change_data_capture
+    - api_federation
+    - cache_warming
+    - conn_multiplex
+    - least_privilege
+    - tracing_sampling
+    - json_patch

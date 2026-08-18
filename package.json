@@ -1,7 +1,7 @@
 {
   "name": "dsh-tool-codereview",
-  "version": "0.39.0",
-  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 281 tools, Memory Alignment, Saga Orchestration, WebSocket Backpressure, BFF Pattern, Immutable Infrastructure, CSP Reporting, Token Bucket",
+  "version": "0.40.0",
+  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 289 tools, Circuit Breaker, Change Data Capture, API Federation, Cache Warming, Conn Multiplex, Least Privilege, Tracing Sampling, JSON Patch",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
