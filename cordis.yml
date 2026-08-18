@@ -1,10 +1,10 @@
-# DeepSeek Harness Plugin: Code Review Assistant v0.42.0
-# Enterprise-grade code analysis toolkit with 305 comprehensive tools
+# DeepSeek Harness Plugin: Code Review Assistant v0.43.0
+# Enterprise-grade code analysis toolkit with 313 comprehensive tools
 
 - id: dsh-tool-codereview
   name: dsh-tool-codereview
-  version: 0.42.0
-  description: Enterprise Code Review & Security Scan - 305 tools including code_review, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, api_versioning, serialization_perf, memory_allocation, build_pipeline, error_messages, logging_discipline, config_as_code, component_interface, token_hygiene, query_antipatterns, websocket_lifecycle, graphql_perf, deprecation_tracking, code_splitting_audit, css_arch_deep, sec_dep_audit, webhook_signature, oauth_security, email_infra, health_check_depth, cors_security, feature_rollout, secret_lifecycle, rate_limit_strategy, container_security_scan, grpc_security, data_residency, deployment_progressive, obs_exemplar, data_pipeline_quality, service_mesh, circuit_breaker, change_data_capture, api_federation, cache_warming, conn_multiplex, least_privilege, tracing_sampling, json_patch, event_snapshot, adaptive_rate, graceful_retry, encryption_transit, image_scanning, deadlock_detect, deprecation_comm, metrics_cardinality, api_key_rotation, data_retention, flag_cleanup, log_redaction, sli_slo, graceful_degrade, pagination_consistency, dep_drift
+  version: 0.43.0
+  description: Enterprise Code Review & Security Scan - 313 tools including CQRS Pattern, Outbox Idempotency, API Version Negotiation, Connection Backpressure, Graceful Startup, Secret Detection, Error Code Registry, Cache Key Design
   author: chengganping-ship-it
   tools:
     - code_review
@@ -308,3 +308,11 @@
     - graceful_degrade
     - pagination_consistency
     - dep_drift
+    - cqrs_pattern
+    - outbox_idempotency
+    - api_version_negotiation
+    - connection_backpressure
+    - graceful_startup
+    - secret_detection
+    - error_code_registry
+    - cache_key_design
