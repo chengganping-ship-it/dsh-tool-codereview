@@ -82,7 +82,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 export const name = 'dsh-tool-codereview'
 export const inject = ['tools']
 
-const VERSION = '0.52.0'
+const VERSION = '0.53.0'
 
 // ==================== TYPES ====================
 
@@ -28391,6 +28391,286 @@ function formatUnsafeYamlLoadReport(r: UnsafeYamlLoadResult): string {
   return l.join('\n')
 }
 
+// ==================== V0.53.0: CERTIFICATE VALIDATION ====================
+
+interface CertificateValidationResult { totalIssues: number; severity: Severity; tls: { line: number; issue: string; suggestion: string }[]; cert: { line: number; issue: string; suggestion: string }[]; verify: { line: number; issue: string; suggestion: string }[]; certificateValidationScore: number; summary: string }
+
+function analyzeCertificateValidation(code: string): CertificateValidationResult {
+  const lines = code.split('\n')
+  const tls: CertificateValidationResult['tls'] = []
+  const cert: CertificateValidationResult['cert'] = []
+  const verify: CertificateValidationResult['verify'] = []
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+    if (line.match(/NODE_TLS_REJECT_UNAUTHORIZED|rejectUnauthorized.*false|strictSSL.*false|verify.*false/i) && !line.match(/prod|secure|warn|deprecated/i)) {
+      tls.push({ line: i + 1, issue: 'TLS certificate validation disabled', suggestion: 'Never disable TLS verification in production; disabled validation enables MITM attacks' })
+    }
+    if (line.match(/tls\.createServer|https\.createServer|ssl.*context/i) && !line.match(/cert.*valid|cert.*check|cert.*verify|tls.*version/i)) {
+      cert.push({ line: i + 1, issue: 'TLS server without certificate validation configuration', suggestion: 'Configure certificate chain validation and minimum TLS version; misconfigured TLS enables downgrade attacks' })
+    }
+    if (line.match(/checkServerIdentity|checkIdentity|verifyIdentity/i) && !line.match(/valid|standard|default/i)) {
+      verify.push({ line: i + 1, issue: 'Custom certificate identity verification may be incomplete', suggestion: 'Use standard hostname verification; custom verification often misses SAN/CN checks' })
+    }
+  })
+  const totalIssues = tls.length + cert.length + verify.length
+  const certificateValidationScore = Math.max(0, 100 - totalIssues * 15)
+  const severity: Severity = totalIssues > 3 ? 'critical' : totalIssues > 1 ? 'error' : totalIssues > 0 ? 'warning' : 'info'
+  return { totalIssues, severity, tls, cert, verify, certificateValidationScore, summary: `Certificate Validation: ${totalIssues} issue(s) found. Score: ${certificateValidationScore}/100.` }
+}
+
+function formatCertificateValidationReport(r: CertificateValidationResult): string {
+  const l: string[] = ['# Certificate Validation Analysis', `**Severity:** ${r.severity} | **Score:** ${r.certificateValidationScore}/100`, '']
+  if (r.tls.length > 0) { l.push('## TLS Config (' + r.tls.length + ')'); r.tls.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.cert.length > 0) { l.push('## Certificate (' + r.cert.length + ')'); r.cert.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.verify.length > 0) { l.push('## Verification (' + r.verify.length + ')'); r.verify.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.53.0: MEMORY SAFETY ====================
+
+interface MemorySafetyResult { totalIssues: number; severity: Severity; buffer: { line: number; issue: string; suggestion: string }[]; overflow: { line: number; issue: string; suggestion: string }[]; free: { line: number; issue: string; suggestion: string }[]; memorySafetyScore: number; summary: string }
+
+function analyzeMemorySafety(code: string): MemorySafetyResult {
+  const lines = code.split('\n')
+  const buffer: MemorySafetyResult['buffer'] = []
+  const overflow: MemorySafetyResult['overflow'] = []
+  const free: MemorySafetyResult['free'] = []
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+    if (line.match(/Buffer\.allocUnsafe|allocUnsafeSlow|malloc.*pointer/i) && !line.match(/safe|check|bound|limit/i)) {
+      buffer.push({ line: i + 1, issue: 'Unsafe memory allocation without bounds checking', suggestion: 'Use Buffer.alloc (zero-filled) with bounds checks; uninitialized memory may contain sensitive data' })
+    }
+    if (line.match(/memcpy|memmove|strcpy|strcat|getsb/i) && !line.match(/safe|bound|limit|size/i)) {
+      overflow.push({ line: i + 1, issue: 'Memory copy operation without size limit', suggestion: 'Use bounded memory operations (strncpy, memcpy_s); unbounded copies enable buffer overflow' })
+    }
+    if (line.match(/free\(|delete\b|dealloc/i) && line.match(/use|access|read|write/i) && !line.match(/null|nullptr|safe/i)) {
+      free.push({ line: i + 1, issue: 'Potential use-after-free detected', suggestion: 'Set pointer to null after free; use-after-free enables arbitrary code execution' })
+    }
+  })
+  const totalIssues = buffer.length + overflow.length + free.length
+  const memorySafetyScore = Math.max(0, 100 - totalIssues * 15)
+  const severity: Severity = totalIssues > 3 ? 'critical' : totalIssues > 1 ? 'error' : totalIssues > 0 ? 'warning' : 'info'
+  return { totalIssues, severity, buffer, overflow, free, memorySafetyScore, summary: `Memory Safety: ${totalIssues} issue(s) found. Score: ${memorySafetyScore}/100.` }
+}
+
+function formatMemorySafetyReport(r: MemorySafetyResult): string {
+  const l: string[] = ['# Memory Safety Analysis', `**Severity:** ${r.severity} | **Score:** ${r.memorySafetyScore}/100`, '']
+  if (r.buffer.length > 0) { l.push('## Buffer (' + r.buffer.length + ')'); r.buffer.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.overflow.length > 0) { l.push('## Overflow (' + r.overflow.length + ')'); r.overflow.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.free.length > 0) { l.push('## Use-After-Free (' + r.free.length + ')'); r.free.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.53.0: INPUT SANITIZATION ====================
+
+interface InputSanitizationResult { totalIssues: number; severity: Severity; xss: { line: number; issue: string; suggestion: string }[]; encode: { line: number; issue: string; suggestion: string }[]; escape: { line: number; issue: string; suggestion: string }[]; inputSanitizationScore: number; summary: string }
+
+function analyzeInputSanitization(code: string): InputSanitizationResult {
+  const lines = code.split('\n')
+  const xss: InputSanitizationResult['xss'] = []
+  const encode: InputSanitizationResult['encode'] = []
+  const escape: InputSanitizationResult['escape'] = []
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+    if (line.match(/innerHTML|outerHTML|document\.write|insertAdjacentHTML/i) && !line.match(/sanitize|escape|strip|DOMPurify/i)) {
+      xss.push({ line: i + 1, issue: 'Raw HTML insertion without sanitization', suggestion: 'Use DOMPurify or textContent; unsanitized HTML insertion enables DOM-based XSS' })
+    }
+    if (line.match(/href.*user|src.*user|action.*user/i) && !line.match(/encodeURI|encodeURIComponent|validate|allowlist/i)) {
+      encode.push({ line: i + 1, issue: 'User-controlled URL without encoding/validation', suggestion: 'Encode and validate URLs; user-controlled javascript: URLs enable XSS' })
+    }
+    if (line.match(/eval\(|new\s+Function|setTimeout.*string|setInterval.*string/i) && !line.match(/safe|literal|constant/i)) {
+      escape.push({ line: i + 1, issue: 'Dynamic code execution from potential user input', suggestion: 'Avoid eval/Function with user input; dynamic code execution is the most dangerous XSS vector' })
+    }
+  })
+  const totalIssues = xss.length + encode.length + escape.length
+  const inputSanitizationScore = Math.max(0, 100 - totalIssues * 15)
+  const severity: Severity = totalIssues > 3 ? 'critical' : totalIssues > 1 ? 'error' : totalIssues > 0 ? 'warning' : 'info'
+  return { totalIssues, severity, xss, encode, escape, inputSanitizationScore, summary: `Input Sanitization: ${totalIssues} issue(s) found. Score: ${inputSanitizationScore}/100.` }
+}
+
+function formatInputSanitizationReport(r: InputSanitizationResult): string {
+  const l: string[] = ['# Input Sanitization Analysis', `**Severity:** ${r.severity} | **Score:** ${r.inputSanitizationScore}/100`, '']
+  if (r.xss.length > 0) { l.push('## XSS (' + r.xss.length + ')'); r.xss.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.encode.length > 0) { l.push('## Encoding (' + r.encode.length + ')'); r.encode.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.escape.length > 0) { l.push('## Escape (' + r.escape.length + ')'); r.escape.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.53.0: CRYPTO RANDOM ====================
+
+interface CryptoRandomResult { totalIssues: number; severity: Severity; random: { line: number; issue: string; suggestion: string }[]; seed: { line: number; issue: string; suggestion: string }[]; entropy: { line: number; issue: string; suggestion: string }[]; cryptoRandomScore: number; summary: string }
+
+function analyzeCryptoRandom(code: string): CryptoRandomResult {
+  const lines = code.split('\n')
+  const random: CryptoRandomResult['random'] = []
+  const seed: CryptoRandomResult['seed'] = []
+  const entropy: CryptoRandomResult['entropy'] = []
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+    if (line.match(/Math\.random|rand\(|random_int|randomBytes.*sync/i) && line.match(/token|key|secret|password|auth/i) && !line.match(/crypto|secure|CSPRNG/i)) {
+      random.push({ line: i + 1, issue: 'Non-cryptographic random used for security-sensitive value', suggestion: 'Use crypto.randomBytes for tokens/keys; Math.random is predictable and enables token guessing' })
+    }
+    if (line.match(/srand|seed.*random|random.*seed/i) && !line.match(/test|mock|simulation/i)) {
+      seed.push({ line: i + 1, issue: 'Seeded pseudo-random number generator used', suggestion: 'Use CSPRNG (crypto.randomBytes) for production; seeded PRNGs produce predictable sequences' })
+    }
+    if (line.match(/token|key|nonce/i) && line.match(/generate|create|make/i) && !line.match(/crypto|randomBytes|uuid|nanoid/i)) {
+      entropy.push({ line: i + 1, issue: 'Token/key generation without cryptographic randomness', suggestion: 'Use crypto.randomBytes or uuid for token generation; weak entropy enables brute force' })
+    }
+  })
+  const totalIssues = random.length + seed.length + entropy.length
+  const cryptoRandomScore = Math.max(0, 100 - totalIssues * 15)
+  const severity: Severity = totalIssues > 3 ? 'critical' : totalIssues > 1 ? 'error' : totalIssues > 0 ? 'warning' : 'info'
+  return { totalIssues, severity, random, seed, entropy, cryptoRandomScore, summary: `Crypto Random: ${totalIssues} issue(s) found. Score: ${cryptoRandomScore}/100.` }
+}
+
+function formatCryptoRandomReport(r: CryptoRandomResult): string {
+  const l: string[] = ['# Crypto Random Analysis', `**Severity:** ${r.severity} | **Score:** ${r.cryptoRandomScore}/100`, '']
+  if (r.random.length > 0) { l.push('## Random (' + r.random.length + ')'); r.random.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.seed.length > 0) { l.push('## Seed (' + r.seed.length + ')'); r.seed.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.entropy.length > 0) { l.push('## Entropy (' + r.entropy.length + ')'); r.entropy.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.53.0: SESSION FIXATION ====================
+
+interface SessionFixationResult { totalIssues: number; severity: Severity; session: { line: number; issue: string; suggestion: string }[]; auth: { line: number; issue: string; suggestion: string }[]; fixation: { line: number; issue: string; suggestion: string }[]; sessionFixationScore: number; summary: string }
+
+function analyzeSessionFixation(code: string): SessionFixationResult {
+  const lines = code.split('\n')
+  const session: SessionFixationResult['session'] = []
+  const auth: SessionFixationResult['auth'] = []
+  const fixation: SessionFixationResult['fixation'] = []
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+    if (line.match(/session.*regenerate|regenerate.*session|session\.regenerate/i) && !line.match(/login|auth|privilege|role/i)) {
+      session.push({ line: i + 1, issue: 'Session regeneration without privilege change context', suggestion: 'Regenerate session on login/privilege change; regeneration at predictable times does not prevent fixation' })
+    }
+    if (line.match(/login|authenticate|signin/i) && !line.match(/session.*new|session.*regenerate|session.*destroy|token.*new/i)) {
+      auth.push({ line: i + 1, issue: 'Login without session regeneration', suggestion: 'Regenerate session ID after successful login; unchanged session enables fixation attacks' })
+    }
+    if (line.match(/session.*id|cookie.*session|set-cookie/i) && line.match(/user|input|param|query/i) && !line.match(/server.*generate|random|uuid|crypto/i)) {
+      fixation.push({ line: i + 1, issue: 'Session ID derived from user input', suggestion: 'Generate session IDs server-side only; user-controlled session IDs enable fixation' })
+    }
+  })
+  const totalIssues = session.length + auth.length + fixation.length
+  const sessionFixationScore = Math.max(0, 100 - totalIssues * 15)
+  const severity: Severity = totalIssues > 3 ? 'critical' : totalIssues > 1 ? 'error' : totalIssues > 0 ? 'warning' : 'info'
+  return { totalIssues, severity, session, auth, fixation, sessionFixationScore, summary: `Session Fixation: ${totalIssues} issue(s) found. Score: ${sessionFixationScore}/100.` }
+}
+
+function formatSessionFixationReport(r: SessionFixationResult): string {
+  const l: string[] = ['# Session Fixation Analysis', `**Severity:** ${r.severity} | **Score:** ${r.sessionFixationScore}/100`, '']
+  if (r.session.length > 0) { l.push('## Session (' + r.session.length + ')'); r.session.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.auth.length > 0) { l.push('## Auth (' + r.auth.length + ')'); r.auth.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.fixation.length > 0) { l.push('## Fixation (' + r.fixation.length + ')'); r.fixation.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.53.0: OPEN REDIRECT ====================
+
+interface OpenRedirectResult { totalIssues: number; severity: Severity; redirect: { line: number; issue: string; suggestion: string }[]; url: { line: number; issue: string; suggestion: string }[]; param: { line: number; issue: string; suggestion: string }[]; openRedirectScore: number; summary: string }
+
+function analyzeOpenRedirect(code: string): OpenRedirectResult {
+  const lines = code.split('\n')
+  const redirect: OpenRedirectResult['redirect'] = []
+  const url: OpenRedirectResult['url'] = []
+  const param: OpenRedirectResult['param'] = []
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+    if (line.match(/res\.redirect|location\.href|window\.location|navigate.*url/i) && line.match(/user|input|param|query|req\./i) && !line.match(/allowlist|whitelist|validate|check|same.*origin/i)) {
+      redirect.push({ line: i + 1, issue: 'Redirect to user-controlled URL without validation', suggestion: 'Validate redirect URLs against allowlist; open redirects enable phishing attacks' })
+    }
+    if (line.match(/returnUrl|redirectUrl|nextUrl|goto/i) && !line.match(/valid|check|allowlist|whitelist|encode/i)) {
+      url.push({ line: i + 1, issue: 'Redirect URL parameter without validation', suggestion: 'Encode and validate redirect parameters; unvalidated returnUrl enables phishing' })
+    }
+    if (line.match(/header.*Location|setHeader.*Location/i) && line.match(/user|input|param|query/i) && !line.match(/valid|check|allowlist/i)) {
+      param.push({ line: i + 1, issue: 'Location header set from user input without validation', suggestion: 'Validate Location header values; user-controlled Location enables phishing and header injection' })
+    }
+  })
+  const totalIssues = redirect.length + url.length + param.length
+  const openRedirectScore = Math.max(0, 100 - totalIssues * 15)
+  const severity: Severity = totalIssues > 3 ? 'critical' : totalIssues > 1 ? 'error' : totalIssues > 0 ? 'warning' : 'info'
+  return { totalIssues, severity, redirect, url, param, openRedirectScore, summary: `Open Redirect: ${totalIssues} issue(s) found. Score: ${openRedirectScore}/100.` }
+}
+
+function formatOpenRedirectReport(r: OpenRedirectResult): string {
+  const l: string[] = ['# Open Redirect Analysis', `**Severity:** ${r.severity} | **Score:** ${r.openRedirectScore}/100`, '']
+  if (r.redirect.length > 0) { l.push('## Redirect (' + r.redirect.length + ')'); r.redirect.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.url.length > 0) { l.push('## URL (' + r.url.length + ')'); r.url.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.param.length > 0) { l.push('## Parameter (' + r.param.length + ')'); r.param.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.53.0: XML BOMB ====================
+
+interface XmlBombResult { totalIssues: number; severity: Severity; entity: { line: number; issue: string; suggestion: string }[]; expand: { line: number; issue: string; suggestion: string }[]; dos: { line: number; issue: string; suggestion: string }[]; xmlBombScore: number; summary: string }
+
+function analyzeXmlBomb(code: string): XmlBombResult {
+  const lines = code.split('\n')
+  const entity: XmlBombResult['entity'] = []
+  const expand: XmlBombResult['expand'] = []
+  const dos: XmlBombResult['dos'] = []
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+    if (line.match(/xml.*parser|parseXML|xml2js|fast-xml|DOMParser/i) && !line.match(/entity.*disable|DOCTYPE.*disallow|external.*disable|resolve.*null/i)) {
+      entity.push({ line: i + 1, issue: 'XML parser without entity expansion disabled', suggestion: 'Disable external entities and DTD; XML parsers resolve entities by default enabling billion laughs attack' })
+    }
+    if (line.match(/<!ENTITY|SYSTEM.*xml|PUBLIC.*xml|entity.*expand/i) && !line.match(/safe|block|deny/i)) {
+      expand.push({ line: i + 1, issue: 'XML entity definition or expansion detected', suggestion: 'Block entity expansion; exponential entity expansion (billion laughs) causes memory exhaustion' })
+    }
+    if (line.match(/xml.*parse|parse.*xml/i) && !line.match(/size.*limit|length.*max|timeout|MAX_(?:TEXT|NODE|DEPTH)/i)) {
+      dos.push({ line: i + 1, issue: 'XML parsing without size/depth limits', suggestion: 'Set max text node size and parse depth; unlimited XML parsing enables DoS via deeply nested documents' })
+    }
+  })
+  const totalIssues = entity.length + expand.length + dos.length
+  const xmlBombScore = Math.max(0, 100 - totalIssues * 15)
+  const severity: Severity = totalIssues > 3 ? 'critical' : totalIssues > 1 ? 'error' : totalIssues > 0 ? 'warning' : 'info'
+  return { totalIssues, severity, entity, expand, dos, xmlBombScore, summary: `XML Bomb: ${totalIssues} issue(s) found. Score: ${xmlBombScore}/100.` }
+}
+
+function formatXmlBombReport(r: XmlBombResult): string {
+  const l: string[] = ['# XML Bomb Analysis', `**Severity:** ${r.severity} | **Score:** ${r.xmlBombScore}/100`, '']
+  if (r.entity.length > 0) { l.push('## Entity (' + r.entity.length + ')'); r.entity.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.expand.length > 0) { l.push('## Expansion (' + r.expand.length + ')'); r.expand.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.dos.length > 0) { l.push('## DoS (' + r.dos.length + ')'); r.dos.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.53.0: LDAP INJECTION ====================
+
+interface LdapInjectionResult { totalIssues: number; severity: Severity; filter: { line: number; issue: string; suggestion: string }[]; dn: { line: number; issue: string; suggestion: string }[]; search: { line: number; issue: string; suggestion: string }[]; ldapInjectionScore: number; summary: string }
+
+function analyzeLdapInjection(code: string): LdapInjectionResult {
+  const lines = code.split('\n')
+  const filter: LdapInjectionResult['filter'] = []
+  const dn: LdapInjectionResult['dn'] = []
+  const search: LdapInjectionResult['search'] = []
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+    if (line.match(/ldap.*filter|filter.*ldap|\(.*=.*\)/i) && line.match(/user|input|param|query|req\./i) && !line.match(/escape|encode|sanitize|prepare/i)) {
+      filter.push({ line: i + 1, issue: 'LDAP filter constructed from user input without escaping', suggestion: 'Escape LDAP filter characters (RFC 4515); unsanitized filters enable LDAP injection and data disclosure' })
+    }
+    if (line.match(/ldap.*dn|dn.*ldap|distinguishedName/i) && line.match(/user|input|param/i) && !line.match(/escape|encode|validate/i)) {
+      dn.push({ line: i + 1, issue: 'LDAP DN constructed from user input without validation', suggestion: 'Validate and escape DN components; user-controlled DN enables directory traversal' })
+    }
+    if (line.match(/ldap.*search|search.*ldap|ldap_search/i) && !line.match(/scope.*limit|size.*limit|time.*limit/i)) {
+      search.push({ line: i + 1, issue: 'LDAP search without size/time limits', suggestion: 'Set size and time limits on LDAP searches; unbounded searches enable DoS via expensive queries' })
+    }
+  })
+  const totalIssues = filter.length + dn.length + search.length
+  const ldapInjectionScore = Math.max(0, 100 - totalIssues * 15)
+  const severity: Severity = totalIssues > 3 ? 'critical' : totalIssues > 1 ? 'error' : totalIssues > 0 ? 'warning' : 'info'
+  return { totalIssues, severity, filter, dn, search, ldapInjectionScore, summary: `LDAP Injection: ${totalIssues} issue(s) found. Score: ${ldapInjectionScore}/100.` }
+}
+
+function formatLdapInjectionReport(r: LdapInjectionResult): string {
+  const l: string[] = ['# LDAP Injection Analysis', `**Severity:** ${r.severity} | **Score:** ${r.ldapInjectionScore}/100`, '']
+  if (r.filter.length > 0) { l.push('## Filter (' + r.filter.length + ')'); r.filter.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.dn.length > 0) { l.push('## DN (' + r.dn.length + ')'); r.dn.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.search.length > 0) { l.push('## Search (' + r.search.length + ')'); r.search.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
 // ==================== V0.49.0: PATH TRAVERSAL PREVENTION ====================
 
 interface PathTraversalPreventionResult { totalIssues: number; severity: Severity; traversal: { line: number; issue: string; suggestion: string }[]; symlink: { line: number; issue: string; suggestion: string }[]; canonical: { line: number; issue: string; suggestion: string }[]; pathTraversalScore: number; summary: string }
@@ -34955,5 +35235,93 @@ ctx.tools.register(defineTool({
   }
 }))
 
-console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design, container_security, ml_pipeline, api_deprecation, design_system, pwa_compliance, type_system, green_computing, realtime_collab, a11y_deep, i18n_deep, css_architecture, state_machine, web_components, resilience, module_federation, review_automation, observability, migration_safety, edge_computing, api_versioning, wasm_advanced, feature_toggles, email_deliverability, seo_analysis, monorepo_boundaries, ddd_patterns, mf_runtime, realtime_protocols, data_pipeline, gateway_deep, test_rigor, quality_gate, graphql_schema, event_sourcing_integrity, rate_limiting, migration_safety, auth_hardening, distributed_tracing, infrastructure_as_code, review_automation, contract_testing, sec_headers_deep, privacy_compliance, concurrency_patterns, cloud_native, error_recovery, system_design, dependency_injection, api_versioning, serialization_perf, memory_allocation, build_pipeline, error_messages, logging_discipline, config_as_code, component_interface, token_hygiene, query_antipatterns, websocket_lifecycle, graphql_perf, deprecation_tracking, code_splitting_audit, css_arch_deep, sec_dep_audit, webhook_signature, oauth_security, email_infra, health_check_depth, cors_security, feature_rollout, secret_lifecycle, rate_limit_strategy, container_security_scan, grpc_security, data_residency, deployment_progressive, obs_exemplar, data_pipeline_quality, service_mesh, plugin_architecture, mobile_app_security, data_masking, core_web_vitals, infra_cost, api_gateway_config, css_in_js_perf, crdt_state_sync, resource_quota, browser_compat_audit, floating_point, snapshot_testing, event_schema, form_validation, retry_idempotency, a11y_semantics, race_condition, cache_invalidation, data_loader_opt, event_versioning, connection_lifecycle, csp_nonce, struct_error_ctx, stream_backpressure, identifier_collision, graphql_query_depth, auth_token_rotation, mq_dead_letter, file_upload_sec, query_plan, encryption_at_rest, ws_connection_state, rate_limit_policy, payment_idempotency, cron_reliability, immutable_data, data_residency_compliance, response_envelope, compression_negotiation, dns_health, graceful_degradation, api_deprecation_strategy, db_safety, log_sampling, slo_tracking, api_key_mgmt, data_lineage, infra_drift, schema_evolution, wasm_interop, data_partition, plugin_lifecycle, time_sync, feature_store, vector_db, api_composition, audit_trail, graphql_cost, session_mgmt, csv_injection, tls_config, distributed_lock, event_dedup, allocator_pattern, webhook_retry, money_handling, pagination, resource_leak, c4_architecture, semaphore, dns_optimization, content_negotiation, retry_budget, cache_stampede, gateway_routing, search_sanitization, rate_limit_headers, data_consistency, mobile_hardening, build_config, grpc_interceptors, memory_alignment, saga_orchestration, ws_backpressure, bff_pattern, immutable_infra, csp_reporting, token_bucket, circuit_breaker, change_data_capture, api_federation, cache_warming, conn_multiplex, least_privilege, tracing_sampling, json_patch, event_snapshot, adaptive_rate, graceful_retry, encryption_transit, image_scanning, deadlock_detect, deprecation_comm, metrics_cardinality, api_key_rotation, data_retention, flag_cleanup, log_redaction, sli_slo, graceful_degrade, pagination_consistency, dep_drift, cqrs_pattern, outbox_idempotency, api_version_negotiation, connection_backpressure, graceful_startup, secret_detection, error_code_registry, cache_key_design, db_migration_safety, retry_strategy, health_check_completeness, log_structuring, event_schema_evolution, graceful_shutdown_timing, config_hot_reload, mutual_tls, dead_letter_queue, rate_limit_header, websocket_pool, container_image_opt, dns_prefetch_config, async_memory_leak, api_idempotency_key, service_mesh_policy, pagination_safety, background_job_idempotency, feature_flag_lifecycle, request_deduplication, connection_leak, payload_compression, cors_preflight_cache, timestamp_monotonicity, search_query_safety, api_response_cache, thread_pool_starvation, db_slow_query, url_validation, memory_alignment_audit, cache_stampede_guard, log_injection_prevention, temp_file_security, jwt_token_validation, file_permission_audit, dns_rebinding_protection, integer_overflow_detection, command_injection_prevention, csrf_token_validation, path_traversal_prevention, insecure_deserialization, mass_assignment, weak_cryptography, ssti_injection, file_upload_validation, hardcoded_secrets, unsafe_reflection, xxe_injection_prevention, prototype_pollution, async_race_condition, clickjacking_protection, insecure_cors_config, unrestricted_file_deletion, content_type_header, weak_password_policy, crlf_injection_prevention, session_timeout_policy, zip_slip_prevention, ssrf_detection, process_env_leak, redos_complexity, null_byte_injection, mime_type_spoofing, subdomain_takeover, jwt_algorithm_confusion, oauth_flow_security, grpc_metadata_leak, websocket_security, dependency_confusion, timing_attack, unsafe_yaml_load, api_latency, cross_service_health, consumer_offset, config_value, db_connection_pool, background_job, canary_release`)
+ctx.tools.register(defineTool({
+  name: 'certificate_validation',
+  description: 'Analyze certificate validation: TLS verification, certificate chain, hostname verification.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeCertificateValidation(args.code)
+    return formatCertificateValidationReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'memory_safety',
+  description: 'Analyze memory safety: buffer overflow, use-after-free, unsafe allocation.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeMemorySafety(args.code)
+    return formatMemorySafetyReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'input_sanitization',
+  description: 'Analyze input sanitization: XSS prevention, URL encoding, dynamic code execution.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeInputSanitization(args.code)
+    return formatInputSanitizationReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'crypto_random',
+  description: 'Analyze cryptographic random: CSPRNG usage, seeded PRNG, token entropy.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeCryptoRandom(args.code)
+    return formatCryptoRandomReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'session_fixation',
+  description: 'Analyze session fixation: session regeneration, login session handling, session ID generation.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeSessionFixation(args.code)
+    return formatSessionFixationReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'open_redirect',
+  description: 'Analyze open redirect: redirect URL validation, Location header, returnUrl parameters.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeOpenRedirect(args.code)
+    return formatOpenRedirectReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'xml_bomb',
+  description: 'Analyze XML bomb: entity expansion, DTD processing, parser limits.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeXmlBomb(args.code)
+    return formatXmlBombReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'ldap_injection',
+  description: 'Analyze LDAP injection: filter escaping, DN validation, search limits.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeLdapInjection(args.code)
+    return formatLdapInjectionReport(result)
+  }
+}))
+
+console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design, container_security, ml_pipeline, api_deprecation, design_system, pwa_compliance, type_system, green_computing, realtime_collab, a11y_deep, i18n_deep, css_architecture, state_machine, web_components, resilience, module_federation, review_automation, observability, migration_safety, edge_computing, api_versioning, wasm_advanced, feature_toggles, email_deliverability, seo_analysis, monorepo_boundaries, ddd_patterns, mf_runtime, realtime_protocols, data_pipeline, gateway_deep, test_rigor, quality_gate, graphql_schema, event_sourcing_integrity, rate_limiting, migration_safety, auth_hardening, distributed_tracing, infrastructure_as_code, review_automation, contract_testing, sec_headers_deep, privacy_compliance, concurrency_patterns, cloud_native, error_recovery, system_design, dependency_injection, api_versioning, serialization_perf, memory_allocation, build_pipeline, error_messages, logging_discipline, config_as_code, component_interface, token_hygiene, query_antipatterns, websocket_lifecycle, graphql_perf, deprecation_tracking, code_splitting_audit, css_arch_deep, sec_dep_audit, webhook_signature, oauth_security, email_infra, health_check_depth, cors_security, feature_rollout, secret_lifecycle, rate_limit_strategy, container_security_scan, grpc_security, data_residency, deployment_progressive, obs_exemplar, data_pipeline_quality, service_mesh, plugin_architecture, mobile_app_security, data_masking, core_web_vitals, infra_cost, api_gateway_config, css_in_js_perf, crdt_state_sync, resource_quota, browser_compat_audit, floating_point, snapshot_testing, event_schema, form_validation, retry_idempotency, a11y_semantics, race_condition, cache_invalidation, data_loader_opt, event_versioning, connection_lifecycle, csp_nonce, struct_error_ctx, stream_backpressure, identifier_collision, graphql_query_depth, auth_token_rotation, mq_dead_letter, file_upload_sec, query_plan, encryption_at_rest, ws_connection_state, rate_limit_policy, payment_idempotency, cron_reliability, immutable_data, data_residency_compliance, response_envelope, compression_negotiation, dns_health, graceful_degradation, api_deprecation_strategy, db_safety, log_sampling, slo_tracking, api_key_mgmt, data_lineage, infra_drift, schema_evolution, wasm_interop, data_partition, plugin_lifecycle, time_sync, feature_store, vector_db, api_composition, audit_trail, graphql_cost, session_mgmt, csv_injection, tls_config, distributed_lock, event_dedup, allocator_pattern, webhook_retry, money_handling, pagination, resource_leak, c4_architecture, semaphore, dns_optimization, content_negotiation, retry_budget, cache_stampede, gateway_routing, search_sanitization, rate_limit_headers, data_consistency, mobile_hardening, build_config, grpc_interceptors, memory_alignment, saga_orchestration, ws_backpressure, bff_pattern, immutable_infra, csp_reporting, token_bucket, circuit_breaker, change_data_capture, api_federation, cache_warming, conn_multiplex, least_privilege, tracing_sampling, json_patch, event_snapshot, adaptive_rate, graceful_retry, encryption_transit, image_scanning, deadlock_detect, deprecation_comm, metrics_cardinality, api_key_rotation, data_retention, flag_cleanup, log_redaction, sli_slo, graceful_degrade, pagination_consistency, dep_drift, cqrs_pattern, outbox_idempotency, api_version_negotiation, connection_backpressure, graceful_startup, secret_detection, error_code_registry, cache_key_design, db_migration_safety, retry_strategy, health_check_completeness, log_structuring, event_schema_evolution, graceful_shutdown_timing, config_hot_reload, mutual_tls, dead_letter_queue, rate_limit_header, websocket_pool, container_image_opt, dns_prefetch_config, async_memory_leak, api_idempotency_key, service_mesh_policy, pagination_safety, background_job_idempotency, feature_flag_lifecycle, request_deduplication, connection_leak, payload_compression, cors_preflight_cache, timestamp_monotonicity, search_query_safety, api_response_cache, thread_pool_starvation, db_slow_query, url_validation, memory_alignment_audit, cache_stampede_guard, log_injection_prevention, temp_file_security, jwt_token_validation, file_permission_audit, dns_rebinding_protection, integer_overflow_detection, command_injection_prevention, csrf_token_validation, path_traversal_prevention, insecure_deserialization, mass_assignment, weak_cryptography, ssti_injection, file_upload_validation, hardcoded_secrets, unsafe_reflection, xxe_injection_prevention, prototype_pollution, async_race_condition, clickjacking_protection, insecure_cors_config, unrestricted_file_deletion, content_type_header, weak_password_policy, crlf_injection_prevention, session_timeout_policy, zip_slip_prevention, ssrf_detection, process_env_leak, redos_complexity, null_byte_injection, mime_type_spoofing, subdomain_takeover, jwt_algorithm_confusion, oauth_flow_security, grpc_metadata_leak, websocket_security, dependency_confusion, timing_attack, unsafe_yaml_load, api_latency, cross_service_health, consumer_offset, config_value, db_connection_pool, background_job, canary_release, certificate_validation, memory_safety, input_sanitization, crypto_random, session_fixation, open_redirect, xml_bomb, ldap_injection`)
 }
