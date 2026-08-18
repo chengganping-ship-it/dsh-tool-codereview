@@ -1,7 +1,7 @@
 {
   "name": "dsh-tool-codereview",
-  "version": "0.97.0",
-  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 750 tools, Agent Decoy Task Injection Deep, Tool Confidence Calibration Attack Expert, Agent Selective Attention Manipulation Deep, Tool Boundary Bypass Expert, Agent Reward Hacking Deep, Tool Metadata Manipulation Expert, Agent Chain Of Thought Poisoning Deep, Tool Execution Redirection Expert"",
+  "version": "0.98.0",
+  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 758 tools, Agent Contextual Integrity Breach Deep, Tool Semantic Drift Attack Expert, Agent Instruction Overload Deep, Tool Capability Inference Expert, Agent Goal Oscillation Deep, Tool Output Replay Expert, Agent Memory Eviction Deep, Tool Schema Entropy Expert"",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
