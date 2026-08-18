@@ -1,10 +1,10 @@
-# DeepSeek Harness Plugin: Code Review Assistant v0.63.0
-# Enterprise-grade code analysis toolkit with 478 comprehensive tools
+# DeepSeek Harness Plugin: Code Review Assistant v0.64.0
+# Enterprise-grade code analysis toolkit with 486 comprehensive tools
 
 - id: dsh-tool-codereview
   name: dsh-tool-codereview
-  version: 0.63.0
-  description: Enterprise Code Review & Security Scan - 478 tools including MCP Server Security, MCP Tool Injection, MCP Credential Leak, Supply Chain Integrity, Dependency Hash Verify, RAG Data Poisoning, Sec-Fetch Metadata, Origin-Agent-Cluster
+  version: 0.64.0
+  description: Enterprise Code Review & Security Scan - 486 tools including Model Inversion Detection, Tool Definition Exposure, Prompt Template Injection, WASM Memory Safety, Container Privilege Escalation, Secrets Staleness, API Schema Violation, Embedding Drift
   author: chengganping-ship-it
   tools:
     - code_review
@@ -482,3 +482,11 @@
     - rag_data_poisoning
     - sec_fetch_metadata
     - origin_agent_cluster
+    - model_inversion_detection
+    - tool_definition_exposure
+    - prompt_template_injection
+    - wasm_memory_safety
+    - container_privilege_escalation
+    - secrets_staleness
+    - api_schema_violation
+    - embedding_drift

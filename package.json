@@ -1,7 +1,7 @@
 {
   "name": "dsh-tool-codereview",
-  "version": "0.63.0",
-  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 478 tools, MCP Server Security, MCP Tool Injection, MCP Credential Leak, Supply Chain Integrity, Dependency Hash Verify, RAG Data Poisoning, Sec-Fetch Metadata, Origin-Agent-Cluster",
+  "version": "0.64.0",
+  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 486 tools, Model Inversion Detection, Tool Definition Exposure, Prompt Template Injection, WASM Memory Safety, Container Privilege Escalation, Secrets Staleness, API Schema Violation, Embedding Drift",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
