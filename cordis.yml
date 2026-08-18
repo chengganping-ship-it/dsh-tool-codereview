@@ -1,10 +1,10 @@
-# DeepSeek Harness Plugin: Code Review Assistant v0.46.0
-# Enterprise-grade code analysis toolkit with 337 comprehensive tools
+# DeepSeek Harness Plugin: Code Review Assistant v0.47.0
+# Enterprise-grade code analysis toolkit with 345 comprehensive tools
 
 - id: dsh-tool-codereview
   name: dsh-tool-codereview
-  version: 0.46.0
-  description: Enterprise Code Review & Security Scan - 337 tools including Pagination Safety, Background Job Idempotency, Feature Flag Lifecycle, Request Deduplication, Connection Leak, Payload Compression, CORS Preflight Cache, Timestamp Monotonicity
+  version: 0.47.0
+  description: Enterprise Code Review & Security Scan - 345 tools including Search Query Safety, API Response Cache, Thread Pool Starvation, DB Slow Query, URL Validation, Memory Alignment Audit, Cache Stampede Guard
   author: chengganping-ship-it
   tools:
     - code_review
@@ -340,3 +340,10 @@
     - payload_compression
     - cors_preflight_cache
     - timestamp_monotonicity
+    - search_query_safety
+    - api_response_cache
+    - thread_pool_starvation
+    - db_slow_query
+    - url_validation
+    - memory_alignment_audit
+    - cache_stampede_guard

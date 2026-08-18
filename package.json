@@ -1,7 +1,7 @@
 {
   "name": "dsh-tool-codereview",
-  "version": "0.46.0",
-  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 337 tools, Pagination Safety, Background Job Idempotency, Feature Flag Lifecycle, Request Deduplication, Connection Leak, Payload Compression, CORS Preflight Cache, Timestamp Monotonicity",
+  "version": "0.47.0",
+  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 345 tools, Search Query Safety, API Response Cache, Thread Pool Starvation, DB Slow Query, URL Validation, Memory Alignment Audit, Cache Stampede Guard",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
