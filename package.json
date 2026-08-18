@@ -1,7 +1,7 @@
 {
   "name": "dsh-tool-codereview",
-  "version": "0.55.0",
-  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 414 tools, XML Signature Wrapping, Insecure Randomness, Missing Content-Length, Cookie Prefix Bypass, Unicode Normalization, WebSocket Origin Bypass, Missing X-Frame-Options, SQL Concatenation",
+  "version": "0.56.0",
+  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 422 tools, Missing HSTS, IDOR, Authentication Bypass, Privilege Escalation, Missing CSRF, Insecure JWT Storage, Missing Rate Limiting, Debug Mode Enabled",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",

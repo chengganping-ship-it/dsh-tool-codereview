@@ -82,7 +82,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 export const name = 'dsh-tool-codereview'
 export const inject = ['tools']
 
-const VERSION = '0.55.0'
+const VERSION = '0.56.0'
 
 // ==================== TYPES ====================
 
@@ -29237,6 +29237,304 @@ function formatSQLConcatenationReport(r: SQLConcatenationResult): string {
   return l.join('\n')
 }
 
+// ==================== V0.56.0: MISSING STRICT-TRANSPORT-SECURITY ====================
+
+interface MissingStrictTransportSecurityResult { totalIssues: number; severity: Severity; hsts: { line: number; issue: string; suggestion: string }[]; preload: { line: number; issue: string; suggestion: string }[]; subdomain: { line: number; issue: string; suggestion: string }[]; missingStrictTransportSecurityScore: number; summary: string }
+
+function analyzeMissingStrictTransportSecurity(code: string): MissingStrictTransportSecurityResult {
+  const lines = code.split('\n')
+  const hsts: MissingStrictTransportSecurityResult['hsts'] = []
+  const preload: MissingStrictTransportSecurityResult['preload'] = []
+  const subdomain: MissingStrictTransportSecurityResult['subdomain'] = []
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+    if (line.match(/Strict-Transport-Security|HSTS/i) && !line.match(/max-age|includeSubDomains|preload/i)) {
+      hsts.push({ line: i + 1, issue: 'HSTS header without max-age directive', suggestion: 'Set max-age (e.g., 31536000); HSTS without max-age is ignored by browsers' })
+    }
+    if (line.match(/Strict-Transport-Security|HSTS/i) && line.match(/max-age/i) && !line.match(/includeSubDomains|includeSub/i)) {
+      subdomain.push({ line: i + 1, issue: 'HSTS header without includeSubDomains', suggestion: 'Add includeSubDomains; without it subdomains are not protected by HSTS' })
+    }
+    if (line.match(/Strict-Transport-Security|HSTS/i) && !line.match(/preload/i)) {
+      preload.push({ line: i + 1, issue: 'HSTS header without preload directive', suggestion: 'Consider preload directive for HSTS preload list; protects first visit' })
+    }
+    if (line.match(/https.*redirect|redirect.*https|301.*https/i) && !line.match(/HSTS|Strict-Transport-Security/i)) {
+      hsts.push({ line: i + 1, issue: 'HTTPS redirect without HSTS header', suggestion: 'Add HSTS header; redirect alone does not prevent SSL stripping' })
+    }
+  })
+  const totalIssues = hsts.length + preload.length + subdomain.length
+  const missingStrictTransportSecurityScore = Math.max(0, 100 - hsts.length * 10 - preload.length * 5 - subdomain.length * 8)
+  const severity: Severity = hsts.length > 0 ? 'error' : totalIssues > 1 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+  return { totalIssues, severity, hsts, preload, subdomain, missingStrictTransportSecurityScore, summary: `Missing HSTS: ${totalIssues} issue(s) found. Score: ${missingStrictTransportSecurityScore}/100.` }
+}
+
+function formatMissingStrictTransportSecurityReport(r: MissingStrictTransportSecurityResult): string {
+  const l: string[] = ['# Missing Strict-Transport-Security Analysis', `**Severity:** ${r.severity} | **Score:** ${r.missingStrictTransportSecurityScore}/100`, '']
+  if (r.hsts.length > 0) { l.push('## HSTS (' + r.hsts.length + ')'); r.hsts.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.preload.length > 0) { l.push('## Preload (' + r.preload.length + ')'); r.preload.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.subdomain.length > 0) { l.push('## Subdomain (' + r.subdomain.length + ')'); r.subdomain.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.56.0: INSECURE DIRECT OBJECT REFERENCE ====================
+
+interface InsecureDirectObjectReferenceResult { totalIssues: number; severity: Severity; idor: { line: number; issue: string; suggestion: string }[]; authorization: { line: number; issue: string; suggestion: string }[]; enumeration: { line: number; issue: string; suggestion: string }[]; insecureDirectObjectReferenceScore: number; summary: string }
+
+function analyzeInsecureDirectObjectReference(code: string): InsecureDirectObjectReferenceResult {
+  const lines = code.split('\n')
+  const idor: InsecureDirectObjectReferenceResult['idor'] = []
+  const authorization: InsecureDirectObjectReferenceResult['authorization'] = []
+  const enumeration: InsecureDirectObjectReferenceResult['enumeration'] = []
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+    if (line.match(/\/api\/\w+\/:id|\/user\/\d+|\/order\/\d+|\/document\/\d+/i) && !line.match(/auth|permission|ownership|owner.*check|user.*match/i)) {
+      idor.push({ line: i + 1, issue: 'API endpoint with direct object reference without authorization check', suggestion: 'Verify user ownership of resource; direct references enable IDOR attacks' })
+    }
+    if (line.match(/req\.params\.id|req\.query\.id|req\.body\.id|params\[.id.\]/i) && !line.match(/auth|permission|owner|access.*check/i)) {
+      idor.push({ line: i + 1, issue: 'User-controlled ID parameter without access control', suggestion: 'Check user authorization for referenced object; unvalidated IDs enable IDOR' })
+    }
+    if (line.match(/SELECT.*FROM.*WHERE.*id|findById|findOne.*id|getById/i) && !line.match(/owner|user_id|created_by|authorize|permission/i)) {
+      authorization.push({ line: i + 1, issue: 'Database query by ID without ownership verification', suggestion: 'Include user_id/owner in query; queries without ownership enable data leaks' })
+    }
+    if (line.match(/uuid|UUID|guid|GUID|nanoid|randomUUID/i) && line.match(/id|identifier|key/i)) {
+      enumeration.push({ line: i + 1, issue: 'Non-sequential identifier used (good practice)', suggestion: 'Continue using non-sequential IDs; sequential IDs enable enumeration' })
+    }
+  })
+  const totalIssues = idor.length + authorization.length + enumeration.length
+  const insecureDirectObjectReferenceScore = Math.max(0, 100 - idor.length * 10 - authorization.length * 10 - enumeration.length * 5)
+  const severity: Severity = idor.length > 0 ? 'error' : authorization.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+  return { totalIssues, severity, idor, authorization, enumeration, insecureDirectObjectReferenceScore, summary: `IDOR: ${totalIssues} issue(s) found. Score: ${insecureDirectObjectReferenceScore}/100.` }
+}
+
+function formatInsecureDirectObjectReferenceReport(r: InsecureDirectObjectReferenceResult): string {
+  const l: string[] = ['# Insecure Direct Object Reference Analysis', `**Severity:** ${r.severity} | **Score:** ${r.insecureDirectObjectReferenceScore}/100`, '']
+  if (r.idor.length > 0) { l.push('## IDOR (' + r.idor.length + ')'); r.idor.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.authorization.length > 0) { l.push('## Authorization (' + r.authorization.length + ')'); r.authorization.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.enumeration.length > 0) { l.push('## Enumeration (' + r.enumeration.length + ')'); r.enumeration.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.56.0: AUTHENTICATION BYPASS ====================
+
+interface AuthenticationBypassResult { totalIssues: number; severity: Severity; bypass: { line: number; issue: string; suggestion: string }[]; session: { line: number; issue: string; suggestion: string }[]; factor: { line: number; issue: string; suggestion: string }[]; authenticationBypassScore: number; summary: string }
+
+function analyzeAuthenticationBypass(code: string): AuthenticationBypassResult {
+  const lines = code.split('\n')
+  const bypass: AuthenticationBypassResult['bypass'] = []
+  const session: AuthenticationBypassResult['session'] = []
+  const factor: AuthenticationBypassResult['factor'] = []
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+    if (line.match(/auth.*bypass|bypass.*auth|skip.*auth|auth.*skip|disable.*auth/i)) {
+      bypass.push({ line: i + 1, issue: 'Authentication bypass logic detected', suggestion: 'Remove bypass paths; authentication bypasses enable unauthorized access' })
+    }
+    if (line.match(/login.*admin|admin.*login|default.*password|hardcoded.*credential|backdoor/i)) {
+      bypass.push({ line: i + 1, issue: 'Hardcoded credentials or backdoor detected', suggestion: 'Remove hardcoded credentials; backdoors enable unauthorized access' })
+    }
+    if (line.match(/session.*create|create.*session|login.*session/i) && !line.match(/verify|validate|authenticate|check.*credential/i)) {
+      session.push({ line: i + 1, issue: 'Session created without credential verification', suggestion: 'Verify credentials before session creation; unverified sessions enable bypass' })
+    }
+    if (line.match(/2fa|mfa|two.factor|multi.factor|totp|authenticator/i) && line.match(/skip|bypass|disable|optional.*bypass/i)) {
+      factor.push({ line: i + 1, issue: 'Multi-factor authentication can be bypassed', suggestion: 'Enforce MFA without bypass; bypassable MFA provides false security' })
+    }
+  })
+  const totalIssues = bypass.length + session.length + factor.length
+  const authenticationBypassScore = Math.max(0, 100 - bypass.length * 15 - session.length * 10 - factor.length * 10)
+  const severity: Severity = bypass.length > 0 ? 'critical' : session.length > 0 ? 'error' : totalIssues > 0 ? 'warning' : 'info'
+  return { totalIssues, severity, bypass, session, factor, authenticationBypassScore, summary: `Authentication Bypass: ${totalIssues} issue(s) found. Score: ${authenticationBypassScore}/100.` }
+}
+
+function formatAuthenticationBypassReport(r: AuthenticationBypassResult): string {
+  const l: string[] = ['# Authentication Bypass Analysis', `**Severity:** ${r.severity} | **Score:** ${r.authenticationBypassScore}/100`, '']
+  if (r.bypass.length > 0) { l.push('## Bypass (' + r.bypass.length + ')'); r.bypass.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.session.length > 0) { l.push('## Session (' + r.session.length + ')'); r.session.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.factor.length > 0) { l.push('## Factor (' + r.factor.length + ')'); r.factor.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.56.0: PRIVILEGE ESCALATION ====================
+
+interface PrivilegeEscalationResult { totalIssues: number; severity: Severity; role: { line: number; issue: string; suggestion: string }[]; permission: { line: number; issue: string; suggestion: string }[]; admin: { line: number; issue: string; suggestion: string }[]; privilegeEscalationScore: number; summary: string }
+
+function analyzePrivilegeEscalation(code: string): PrivilegeEscalationResult {
+  const lines = code.split('\n')
+  const role: PrivilegeEscalationResult['role'] = []
+  const permission: PrivilegeEscalationResult['permission'] = []
+  const admin: PrivilegeEscalationResult['admin'] = []
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+    if (line.match(/role.*admin|admin.*role|isAdmin|is_admin|role.*elevated/i) && !line.match(/server.*verify|server.*check|backend.*valid|token.*verify/i)) {
+      role.push({ line: i + 1, issue: 'Admin/elevated role checked client-side only', suggestion: 'Verify role server-side; client-side role checks enable privilege escalation' })
+    }
+    if (line.match(/req\.body\.role|req\.query\.role|req\.params\.role|body\.role|user.*role.*input/i)) {
+      permission.push({ line: i + 1, issue: 'Role assigned from user input', suggestion: 'Never assign roles from user input; user-controlled roles enable escalation' })
+    }
+    if (line.match(/role.*=.*admin|role.*=.*super|setRole.*admin|upgrade.*role/i) && !line.match(/auth|permission|super.*admin.*check|authorize/i)) {
+      permission.push({ line: i + 1, issue: 'Role upgrade without authorization', suggestion: 'Require authorization for role changes; unauthorized upgrades enable escalation' })
+    }
+    if (line.match(/admin.*panel|admin.*route|admin.*page/i) && !line.match(/auth|permission|role.*check|admin.*middleware/i)) {
+      admin.push({ line: i + 1, issue: 'Admin panel/route without access control', suggestion: 'Add admin authorization middleware; unprotected admin routes enable escalation' })
+    }
+  })
+  const totalIssues = role.length + permission.length + admin.length
+  const privilegeEscalationScore = Math.max(0, 100 - role.length * 10 - permission.length * 10 - admin.length * 10)
+  const severity: Severity = permission.length > 0 ? 'critical' : role.length > 0 ? 'error' : totalIssues > 0 ? 'warning' : 'info'
+  return { totalIssues, severity, role, permission, admin, privilegeEscalationScore, summary: `Privilege Escalation: ${totalIssues} issue(s) found. Score: ${privilegeEscalationScore}/100.` }
+}
+
+function formatPrivilegeEscalationReport(r: PrivilegeEscalationResult): string {
+  const l: string[] = ['# Privilege Escalation Analysis', `**Severity:** ${r.severity} | **Score:** ${r.privilegeEscalationScore}/100`, '']
+  if (r.role.length > 0) { l.push('## Role (' + r.role.length + ')'); r.role.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.permission.length > 0) { l.push('## Permission (' + r.permission.length + ')'); r.permission.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.admin.length > 0) { l.push('## Admin (' + r.admin.length + ')'); r.admin.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.56.0: MISSING CSRF PROTECTION ====================
+
+interface MissingCSRFProtectionResult { totalIssues: number; severity: Severity; token: { line: number; issue: string; suggestion: string }[]; header: { line: number; issue: string; suggestion: string }[]; method: { line: number; issue: string; suggestion: string }[]; missingCSRFProtectionScore: number; summary: string }
+
+function analyzeMissingCSRFProtection(code: string): MissingCSRFProtectionResult {
+  const lines = code.split('\n')
+  const token: MissingCSRFProtectionResult['token'] = []
+  const header: MissingCSRFProtectionResult['header'] = []
+  const method: MissingCSRFProtectionResult['method'] = []
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+    if (line.match(/POST|PUT|DELETE|PATCH/i) && line.match(/route|endpoint|app\.(post|put|delete|patch)/i) && !line.match(/csrf|CSRF|token|sameSite|SameSite/i)) {
+      token.push({ line: i + 1, issue: 'State-changing endpoint without CSRF protection', suggestion: 'Add CSRF token; state-changing endpoints without tokens enable CSRF attacks' })
+    }
+    if (line.match(/POST|PUT|DELETE|PATCH/i) && !line.match(/Origin|Referer|X-Requested-With/i) && !line.match(/csrf|token/i)) {
+      header.push({ line: i + 1, issue: 'State-changing request without origin verification', suggestion: 'Verify Origin/Referer header; missing origin check enables CSRF' })
+    }
+    if (line.match(/SameSite.*None|sameSite.*none|SAMEORIGIN.*missing/i)) {
+      method.push({ line: i + 1, issue: 'Cookie SameSite=None without CSRF token', suggestion: 'Use SameSite=Strict/Lax or add CSRF token; SameSite=None enables cross-site requests' })
+    }
+  })
+  const totalIssues = token.length + header.length + method.length
+  const missingCSRFProtectionScore = Math.max(0, 100 - token.length * 10 - header.length * 8 - method.length * 8)
+  const severity: Severity = token.length > 0 ? 'error' : totalIssues > 2 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+  return { totalIssues, severity, token, header, method, missingCSRFProtectionScore, summary: `Missing CSRF Protection: ${totalIssues} issue(s) found. Score: ${missingCSRFProtectionScore}/100.` }
+}
+
+function formatMissingCSRFProtectionReport(r: MissingCSRFProtectionResult): string {
+  const l: string[] = ['# Missing CSRF Protection Analysis', `**Severity:** ${r.severity} | **Score:** ${r.missingCSRFProtectionScore}/100`, '']
+  if (r.token.length > 0) { l.push('## Token (' + r.token.length + ')'); r.token.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.header.length > 0) { l.push('## Header (' + r.header.length + ')'); r.header.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.method.length > 0) { l.push('## Method (' + r.method.length + ')'); r.method.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.56.0: INSECURE JWT STORAGE ====================
+
+interface InsecureJWTStorageResult { totalIssues: number; severity: Severity; storage: { line: number; issue: string; suggestion: string }[]; token: { line: number; issue: string; suggestion: string }[]; expiry: { line: number; issue: string; suggestion: string }[]; insecureJWTStorageScore: number; summary: string }
+
+function analyzeInsecureJWTStorage(code: string): InsecureJWTStorageResult {
+  const lines = code.split('\n')
+  const storage: InsecureJWTStorageResult['storage'] = []
+  const token: InsecureJWTStorageResult['token'] = []
+  const expiry: InsecureJWTStorageResult['expiry'] = []
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+    if (line.match(/localStorage.*token|sessionStorage.*token|localStorage.*jwt|sessionStorage.*jwt/i)) {
+      storage.push({ line: i + 1, issue: 'JWT/token stored in localStorage/sessionStorage', suggestion: 'Use httpOnly cookies for JWT storage; localStorage accessible via XSS' })
+    }
+    if (line.match(/jwt.*local|token.*local|jwt.*session|token.*session/i) && !line.match(/httpOnly|secure.*cookie|cookie.*secure/i)) {
+      storage.push({ line: i + 1, issue: 'JWT stored in client-side storage without httpOnly cookie', suggestion: 'Store JWT in httpOnly Secure cookie; client storage enables XSS token theft' })
+    }
+    if (line.match(/jwt.*sign|sign.*jwt|createToken|generateToken/i) && !line.match(/exp|expire|maxAge|expiresIn/i)) {
+      expiry.push({ line: i + 1, issue: 'JWT created without expiration', suggestion: 'Set exp claim; non-expiring tokens enable indefinite access if stolen' })
+    }
+    if (line.match(/jwt.*verify|verify.*jwt|decode.*jwt/i) && !line.match(/exp.*check|expire.*verify|notBefore|iat.*check/i)) {
+      token.push({ line: i + 1, issue: 'JWT verification without expiration check', suggestion: 'Verify exp claim; accepting expired tokens enables replay attacks' })
+    }
+  })
+  const totalIssues = storage.length + token.length + expiry.length
+  const insecureJWTStorageScore = Math.max(0, 100 - storage.length * 10 - token.length * 8 - expiry.length * 8)
+  const severity: Severity = storage.length > 0 ? 'error' : token.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+  return { totalIssues, severity, storage, token, expiry, insecureJWTStorageScore, summary: `Insecure JWT Storage: ${totalIssues} issue(s) found. Score: ${insecureJWTStorageScore}/100.` }
+}
+
+function formatInsecureJWTStorageReport(r: InsecureJWTStorageResult): string {
+  const l: string[] = ['# Insecure JWT Storage Analysis', `**Severity:** ${r.severity} | **Score:** ${r.insecureJWTStorageScore}/100`, '']
+  if (r.storage.length > 0) { l.push('## Storage (' + r.storage.length + ')'); r.storage.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.token.length > 0) { l.push('## Token (' + r.token.length + ')'); r.token.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.expiry.length > 0) { l.push('## Expiry (' + r.expiry.length + ')'); r.expiry.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.56.0: MISSING RATE LIMITING ====================
+
+interface MissingRateLimitingResult { totalIssues: number; severity: Severity; endpoint: { line: number; issue: string; suggestion: string }[]; auth: { line: number; issue: string; suggestion: string }[]; api: { line: number; issue: string; suggestion: string }[]; missingRateLimitingScore: number; summary: string }
+
+function analyzeMissingRateLimiting(code: string): MissingRateLimitingResult {
+  const lines = code.split('\n')
+  const endpoint: MissingRateLimitingResult['endpoint'] = []
+  const auth: MissingRateLimitingResult['auth'] = []
+  const api: MissingRateLimitingResult['api'] = []
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+    if (line.match(/app\.(get|post|put|delete|patch)|route\(|router\.(get|post|put|delete)/i) && !line.match(/rate.*limit|throttle|RateLimit|express-rate-limit/i)) {
+      endpoint.push({ line: i + 1, issue: 'Endpoint without rate limiting', suggestion: 'Add rate limiting; unlimited endpoints enable brute-force and DoS' })
+    }
+    if (line.match(/login|authenticate|signin|sign-in|password.*reset/i) && !line.match(/rate.*limit|throttle|attempt.*limit|lockout/i)) {
+      auth.push({ line: i + 1, issue: 'Authentication endpoint without rate limiting', suggestion: 'Rate limit auth endpoints; unlimited auth enables credential stuffing' })
+    }
+    if (line.match(/api.*endpoint|api.*route|public.*api/i) && !line.match(/rate.*limit|throttle|quota|usage.*limit/i)) {
+      api.push({ line: i + 1, issue: 'Public API without rate limiting or quota', suggestion: 'Add rate limiting and quotas; unlimited APIs enable abuse' })
+    }
+  })
+  const totalIssues = endpoint.length + auth.length + api.length
+  const missingRateLimitingScore = Math.max(0, 100 - endpoint.length * 8 - auth.length * 10 - api.length * 8)
+  const severity: Severity = auth.length > 0 ? 'error' : endpoint.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+  return { totalIssues, severity, endpoint, auth, api, missingRateLimitingScore, summary: `Missing Rate Limiting: ${totalIssues} issue(s) found. Score: ${missingRateLimitingScore}/100.` }
+}
+
+function formatMissingRateLimitingReport(r: MissingRateLimitingResult): string {
+  const l: string[] = ['# Missing Rate Limiting Analysis', `**Severity:** ${r.severity} | **Score:** ${r.missingRateLimitingScore}/100`, '']
+  if (r.endpoint.length > 0) { l.push('## Endpoint (' + r.endpoint.length + ')'); r.endpoint.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.auth.length > 0) { l.push('## Auth (' + r.auth.length + ')'); r.auth.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.api.length > 0) { l.push('## API (' + r.api.length + ')'); r.api.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V0.56.0: DEBUG MODE ENABLED ====================
+
+interface DebugModeEnabledResult { totalIssues: number; severity: Severity; debug: { line: number; issue: string; suggestion: string }[]; verbose: { line: number; issue: string; suggestion: string }[]; stacktrace: { line: number; issue: string; suggestion: string }[]; debugModeEnabledScore: number; summary: string }
+
+function analyzeDebugModeEnabled(code: string): DebugModeEnabledResult {
+  const lines = code.split('\n')
+  const debug: DebugModeEnabledResult['debug'] = []
+  const verbose: DebugModeEnabledResult['verbose'] = []
+  const stacktrace: DebugModeEnabledResult['stacktrace'] = []
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+    if (line.match(/DEBUG.*=.*true|debug.*=.*true|NODE_ENV.*development|ENV.*development/i)) {
+      debug.push({ line: i + 1, issue: 'Debug mode enabled in configuration', suggestion: 'Disable debug in production; debug mode exposes internals and stack traces' })
+    }
+    if (line.match(/console\.(log|debug|trace|dir|table)/i) && !line.match(/logger|structured.*log|log.*level/i)) {
+      verbose.push({ line: i + 1, issue: 'Verbose console output in production code', suggestion: 'Use structured logger with levels; console output leaks sensitive data' })
+    }
+    if (line.match(/stack.*trace|trace.*stack|error\.stack|printStackTrace|stackTrace/i) && line.match(/send|response|return|res\./i)) {
+      stacktrace.push({ line: i + 1, issue: 'Stack trace sent to client in error response', suggestion: 'Log stack trace server-side only; client-facing traces leak implementation details' })
+    }
+    if (line.match(/app\.use\(errorHandler\)|errorHandler|global.*error.*handler/i) && !line.match(/sanitize|filter.*stack|production.*mode/i)) {
+      debug.push({ line: i + 1, issue: 'Global error handler without production sanitization', suggestion: 'Sanitize errors in production; unsanitized handlers leak stack traces' })
+    }
+  })
+  const totalIssues = debug.length + verbose.length + stacktrace.length
+  const debugModeEnabledScore = Math.max(0, 100 - debug.length * 10 - verbose.length * 5 - stacktrace.length * 10)
+  const severity: Severity = stacktrace.length > 0 ? 'error' : debug.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+  return { totalIssues, severity, debug, verbose, stacktrace, debugModeEnabledScore, summary: `Debug Mode Enabled: ${totalIssues} issue(s) found. Score: ${debugModeEnabledScore}/100.` }
+}
+
+function formatDebugModeEnabledReport(r: DebugModeEnabledResult): string {
+  const l: string[] = ['# Debug Mode Enabled Analysis', `**Severity:** ${r.severity} | **Score:** ${r.debugModeEnabledScore}/100`, '']
+  if (r.debug.length > 0) { l.push('## Debug (' + r.debug.length + ')'); r.debug.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.verbose.length > 0) { l.push('## Verbose (' + r.verbose.length + ')'); r.verbose.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  if (r.stacktrace.length > 0) { l.push('## StackTrace (' + r.stacktrace.length + ')'); r.stacktrace.forEach(x => l.push('- Line ' + x.line + ': ' + x.suggestion)); l.push('') }
+  return l.join('\n')
+}
+
 // ==================== V0.49.0: PATH TRAVERSAL PREVENTION ====================
 
 interface PathTraversalPreventionResult { totalIssues: number; severity: Severity; traversal: { line: number; issue: string; suggestion: string }[]; symlink: { line: number; issue: string; suggestion: string }[]; canonical: { line: number; issue: string; suggestion: string }[]; pathTraversalScore: number; summary: string }
@@ -36065,5 +36363,93 @@ ctx.tools.register(defineTool({
   }
 }))
 
-console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design, container_security, ml_pipeline, api_deprecation, design_system, pwa_compliance, type_system, green_computing, realtime_collab, a11y_deep, i18n_deep, css_architecture, state_machine, web_components, resilience, module_federation, review_automation, observability, migration_safety, edge_computing, api_versioning, wasm_advanced, feature_toggles, email_deliverability, seo_analysis, monorepo_boundaries, ddd_patterns, mf_runtime, realtime_protocols, data_pipeline, gateway_deep, test_rigor, quality_gate, graphql_schema, event_sourcing_integrity, rate_limiting, migration_safety, auth_hardening, distributed_tracing, infrastructure_as_code, review_automation, contract_testing, sec_headers_deep, privacy_compliance, concurrency_patterns, cloud_native, error_recovery, system_design, dependency_injection, api_versioning, serialization_perf, memory_allocation, build_pipeline, error_messages, logging_discipline, config_as_code, component_interface, token_hygiene, query_antipatterns, websocket_lifecycle, graphql_perf, deprecation_tracking, code_splitting_audit, css_arch_deep, sec_dep_audit, webhook_signature, oauth_security, email_infra, health_check_depth, cors_security, feature_rollout, secret_lifecycle, rate_limit_strategy, container_security_scan, grpc_security, data_residency, deployment_progressive, obs_exemplar, data_pipeline_quality, service_mesh, plugin_architecture, mobile_app_security, data_masking, core_web_vitals, infra_cost, api_gateway_config, css_in_js_perf, crdt_state_sync, resource_quota, browser_compat_audit, floating_point, snapshot_testing, event_schema, form_validation, retry_idempotency, a11y_semantics, race_condition, cache_invalidation, data_loader_opt, event_versioning, connection_lifecycle, csp_nonce, struct_error_ctx, stream_backpressure, identifier_collision, graphql_query_depth, auth_token_rotation, mq_dead_letter, file_upload_sec, query_plan, encryption_at_rest, ws_connection_state, rate_limit_policy, payment_idempotency, cron_reliability, immutable_data, data_residency_compliance, response_envelope, compression_negotiation, dns_health, graceful_degradation, api_deprecation_strategy, db_safety, log_sampling, slo_tracking, api_key_mgmt, data_lineage, infra_drift, schema_evolution, wasm_interop, data_partition, plugin_lifecycle, time_sync, feature_store, vector_db, api_composition, audit_trail, graphql_cost, session_mgmt, csv_injection, tls_config, distributed_lock, event_dedup, allocator_pattern, webhook_retry, money_handling, pagination, resource_leak, c4_architecture, semaphore, dns_optimization, content_negotiation, retry_budget, cache_stampede, gateway_routing, search_sanitization, rate_limit_headers, data_consistency, mobile_hardening, build_config, grpc_interceptors, memory_alignment, saga_orchestration, ws_backpressure, bff_pattern, immutable_infra, csp_reporting, token_bucket, circuit_breaker, change_data_capture, api_federation, cache_warming, conn_multiplex, least_privilege, tracing_sampling, json_patch, event_snapshot, adaptive_rate, graceful_retry, encryption_transit, image_scanning, deadlock_detect, deprecation_comm, metrics_cardinality, api_key_rotation, data_retention, flag_cleanup, log_redaction, sli_slo, graceful_degrade, pagination_consistency, dep_drift, cqrs_pattern, outbox_idempotency, api_version_negotiation, connection_backpressure, graceful_startup, secret_detection, error_code_registry, cache_key_design, db_migration_safety, retry_strategy, health_check_completeness, log_structuring, event_schema_evolution, graceful_shutdown_timing, config_hot_reload, mutual_tls, dead_letter_queue, rate_limit_header, websocket_pool, container_image_opt, dns_prefetch_config, async_memory_leak, api_idempotency_key, service_mesh_policy, pagination_safety, background_job_idempotency, feature_flag_lifecycle, request_deduplication, connection_leak, payload_compression, cors_preflight_cache, timestamp_monotonicity, search_query_safety, api_response_cache, thread_pool_starvation, db_slow_query, url_validation, memory_alignment_audit, cache_stampede_guard, log_injection_prevention, temp_file_security, jwt_token_validation, file_permission_audit, dns_rebinding_protection, integer_overflow_detection, command_injection_prevention, csrf_token_validation, path_traversal_prevention, insecure_deserialization, mass_assignment, weak_cryptography, ssti_injection, file_upload_validation, hardcoded_secrets, unsafe_reflection, xxe_injection_prevention, prototype_pollution, async_race_condition, clickjacking_protection, insecure_cors_config, unrestricted_file_deletion, content_type_header, weak_password_policy, crlf_injection_prevention, session_timeout_policy, zip_slip_prevention, ssrf_detection, process_env_leak, redos_complexity, null_byte_injection, mime_type_spoofing, subdomain_takeover, jwt_algorithm_confusion, oauth_flow_security, grpc_metadata_leak, websocket_security, dependency_confusion, timing_attack, unsafe_yaml_load, api_latency, cross_service_health, consumer_offset, config_value, db_connection_pool, background_job, canary_release, certificate_validation, memory_safety, input_sanitization, crypto_random, session_fixation, open_redirect, xml_bomb, ldap_injection, graphql_injection, nosql_injection, graphql_depth_limit, path_normalization, buffer_overread, http_parameter_pollution, dom_clobbering, postmessage_security, xml_signature_wrapping, insecure_random, missing_content_length, cookie_prefix_bypass, unicode_normalization, websocket_origin_bypass, missing_x_frame_options, sql_concatenation`)
+ctx.tools.register(defineTool({
+  name: 'missing_strict_transport_security',
+  description: 'Analyze missing HSTS: max-age directive, includeSubDomains, preload, SSL stripping protection.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeMissingStrictTransportSecurity(args.code)
+    return formatMissingStrictTransportSecurityReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'insecure_direct_object_reference',
+  description: 'Analyze IDOR: direct object references, authorization checks, ownership verification.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeInsecureDirectObjectReference(args.code)
+    return formatInsecureDirectObjectReferenceReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'authentication_bypass',
+  description: 'Analyze authentication bypass: bypass paths, hardcoded credentials, session creation.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeAuthenticationBypass(args.code)
+    return formatAuthenticationBypassReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'privilege_escalation',
+  description: 'Analyze privilege escalation: role assignment, admin routes, permission checks.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzePrivilegeEscalation(args.code)
+    return formatPrivilegeEscalationReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'missing_csrf_protection',
+  description: 'Analyze missing CSRF protection: token validation, origin verification, SameSite cookies.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeMissingCSRFProtection(args.code)
+    return formatMissingCSRFProtectionReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'insecure_jwt_storage',
+  description: 'Analyze insecure JWT storage: localStorage, httpOnly cookies, expiration, verification.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeInsecureJWTStorage(args.code)
+    return formatInsecureJWTStorageReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'missing_rate_limiting',
+  description: 'Analyze missing rate limiting: endpoint limits, auth throttling, API quotas.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeMissingRateLimiting(args.code)
+    return formatMissingRateLimitingReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'debug_mode_enabled',
+  description: 'Analyze debug mode: DEBUG flags, verbose output, stack traces, error handlers.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeDebugModeEnabled(args.code)
+    return formatDebugModeEnabledReport(result)
+  }
+}))
+
+console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design, container_security, ml_pipeline, api_deprecation, design_system, pwa_compliance, type_system, green_computing, realtime_collab, a11y_deep, i18n_deep, css_architecture, state_machine, web_components, resilience, module_federation, review_automation, observability, migration_safety, edge_computing, api_versioning, wasm_advanced, feature_toggles, email_deliverability, seo_analysis, monorepo_boundaries, ddd_patterns, mf_runtime, realtime_protocols, data_pipeline, gateway_deep, test_rigor, quality_gate, graphql_schema, event_sourcing_integrity, rate_limiting, migration_safety, auth_hardening, distributed_tracing, infrastructure_as_code, review_automation, contract_testing, sec_headers_deep, privacy_compliance, concurrency_patterns, cloud_native, error_recovery, system_design, dependency_injection, api_versioning, serialization_perf, memory_allocation, build_pipeline, error_messages, logging_discipline, config_as_code, component_interface, token_hygiene, query_antipatterns, websocket_lifecycle, graphql_perf, deprecation_tracking, code_splitting_audit, css_arch_deep, sec_dep_audit, webhook_signature, oauth_security, email_infra, health_check_depth, cors_security, feature_rollout, secret_lifecycle, rate_limit_strategy, container_security_scan, grpc_security, data_residency, deployment_progressive, obs_exemplar, data_pipeline_quality, service_mesh, plugin_architecture, mobile_app_security, data_masking, core_web_vitals, infra_cost, api_gateway_config, css_in_js_perf, crdt_state_sync, resource_quota, browser_compat_audit, floating_point, snapshot_testing, event_schema, form_validation, retry_idempotency, a11y_semantics, race_condition, cache_invalidation, data_loader_opt, event_versioning, connection_lifecycle, csp_nonce, struct_error_ctx, stream_backpressure, identifier_collision, graphql_query_depth, auth_token_rotation, mq_dead_letter, file_upload_sec, query_plan, encryption_at_rest, ws_connection_state, rate_limit_policy, payment_idempotency, cron_reliability, immutable_data, data_residency_compliance, response_envelope, compression_negotiation, dns_health, graceful_degradation, api_deprecation_strategy, db_safety, log_sampling, slo_tracking, api_key_mgmt, data_lineage, infra_drift, schema_evolution, wasm_interop, data_partition, plugin_lifecycle, time_sync, feature_store, vector_db, api_composition, audit_trail, graphql_cost, session_mgmt, csv_injection, tls_config, distributed_lock, event_dedup, allocator_pattern, webhook_retry, money_handling, pagination, resource_leak, c4_architecture, semaphore, dns_optimization, content_negotiation, retry_budget, cache_stampede, gateway_routing, search_sanitization, rate_limit_headers, data_consistency, mobile_hardening, build_config, grpc_interceptors, memory_alignment, saga_orchestration, ws_backpressure, bff_pattern, immutable_infra, csp_reporting, token_bucket, circuit_breaker, change_data_capture, api_federation, cache_warming, conn_multiplex, least_privilege, tracing_sampling, json_patch, event_snapshot, adaptive_rate, graceful_retry, encryption_transit, image_scanning, deadlock_detect, deprecation_comm, metrics_cardinality, api_key_rotation, data_retention, flag_cleanup, log_redaction, sli_slo, graceful_degrade, pagination_consistency, dep_drift, cqrs_pattern, outbox_idempotency, api_version_negotiation, connection_backpressure, graceful_startup, secret_detection, error_code_registry, cache_key_design, db_migration_safety, retry_strategy, health_check_completeness, log_structuring, event_schema_evolution, graceful_shutdown_timing, config_hot_reload, mutual_tls, dead_letter_queue, rate_limit_header, websocket_pool, container_image_opt, dns_prefetch_config, async_memory_leak, api_idempotency_key, service_mesh_policy, pagination_safety, background_job_idempotency, feature_flag_lifecycle, request_deduplication, connection_leak, payload_compression, cors_preflight_cache, timestamp_monotonicity, search_query_safety, api_response_cache, thread_pool_starvation, db_slow_query, url_validation, memory_alignment_audit, cache_stampede_guard, log_injection_prevention, temp_file_security, jwt_token_validation, file_permission_audit, dns_rebinding_protection, integer_overflow_detection, command_injection_prevention, csrf_token_validation, path_traversal_prevention, insecure_deserialization, mass_assignment, weak_cryptography, ssti_injection, file_upload_validation, hardcoded_secrets, unsafe_reflection, xxe_injection_prevention, prototype_pollution, async_race_condition, clickjacking_protection, insecure_cors_config, unrestricted_file_deletion, content_type_header, weak_password_policy, crlf_injection_prevention, session_timeout_policy, zip_slip_prevention, ssrf_detection, process_env_leak, redos_complexity, null_byte_injection, mime_type_spoofing, subdomain_takeover, jwt_algorithm_confusion, oauth_flow_security, grpc_metadata_leak, websocket_security, dependency_confusion, timing_attack, unsafe_yaml_load, api_latency, cross_service_health, consumer_offset, config_value, db_connection_pool, background_job, canary_release, certificate_validation, memory_safety, input_sanitization, crypto_random, session_fixation, open_redirect, xml_bomb, ldap_injection, graphql_injection, nosql_injection, graphql_depth_limit, path_normalization, buffer_overread, http_parameter_pollution, dom_clobbering, postmessage_security, xml_signature_wrapping, insecure_random, missing_content_length, cookie_prefix_bypass, unicode_normalization, websocket_origin_bypass, missing_x_frame_options, sql_concatenation, missing_strict_transport_security, insecure_direct_object_reference, authentication_bypass, privilege_escalation, missing_csrf_protection, insecure_jwt_storage, missing_rate_limiting, debug_mode_enabled`)
 }

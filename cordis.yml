@@ -1,10 +1,10 @@
-# DeepSeek Harness Plugin: Code Review Assistant v0.55.0
-# Enterprise-grade code analysis toolkit with 414 comprehensive tools
+# DeepSeek Harness Plugin: Code Review Assistant v0.56.0
+# Enterprise-grade code analysis toolkit with 422 comprehensive tools
 
 - id: dsh-tool-codereview
   name: dsh-tool-codereview
-  version: 0.55.0
-  description: Enterprise Code Review & Security Scan - 414 tools including XML Signature Wrapping, Insecure Randomness, Missing Content-Length, Cookie Prefix Bypass, Unicode Normalization, WebSocket Origin Bypass, Missing X-Frame-Options, SQL Concatenation
+  version: 0.56.0
+  description: Enterprise Code Review & Security Scan - 422 tools including Missing HSTS, IDOR, Authentication Bypass, Privilege Escalation, Missing CSRF, Insecure JWT Storage, Missing Rate Limiting, Debug Mode Enabled
   author: chengganping-ship-it
   tools:
     - code_review
@@ -418,3 +418,11 @@
     - websocket_origin_bypass
     - missing_x_frame_options
     - sql_concatenation
+    - missing_strict_transport_security
+    - insecure_direct_object_reference
+    - authentication_bypass
+    - privilege_escalation
+    - missing_csrf_protection
+    - insecure_jwt_storage
+    - missing_rate_limiting
+    - debug_mode_enabled
