@@ -1,7 +1,7 @@
 {
   "name": "dsh-tool-codereview",
-  "version": "0.60.0",
-  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 454 tools, Expose Headers, Redirect Chain, URL Parser Confusion, WebSocket Upgrade, Cross-Origin Resource Policy, HSTS Include SubDomains, Mixed Content, CORS Max-Age",
+  "version": "0.61.0",
+  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 462 tools, CORS Strict Origin, Insecure Preload, X-Content-Type-Options, DNS Prefetch Leak, Insecure Form Action, Missing Integrity, Insecure Download, Cross-Origin-Opener-Policy",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",

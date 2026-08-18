@@ -1,10 +1,10 @@
-# DeepSeek Harness Plugin: Code Review Assistant v0.60.0
-# Enterprise-grade code analysis toolkit with 454 comprehensive tools
+# DeepSeek Harness Plugin: Code Review Assistant v0.61.0
+# Enterprise-grade code analysis toolkit with 462 comprehensive tools
 
 - id: dsh-tool-codereview
   name: dsh-tool-codereview
-  version: 0.60.0
-  description: Enterprise Code Review & Security Scan - 454 tools including Expose Headers, Redirect Chain, URL Parser Confusion, WebSocket Upgrade, Cross-Origin Resource Policy, HSTS Include SubDomains, Mixed Content, CORS Max-Age
+  version: 0.61.0
+  description: Enterprise Code Review & Security Scan - 462 tools including CORS Strict Origin, Insecure Preload, X-Content-Type-Options, DNS Prefetch Leak, Insecure Form Action, Missing Integrity, Insecure Download, Cross-Origin-Opener-Policy
   author: chengganping-ship-it
   tools:
     - code_review
@@ -458,3 +458,11 @@
     - hsts_include_subdomains
     - mixed_content
     - cors_max_age
+    - cors_strict_origin
+    - insecure_preload
+    - missing_x_content_type_options
+    - dns_prefetch_leak
+    - insecure_form_action
+    - missing_integrity
+    - insecure_download
+    - missing_cross_origin_opener_policy
