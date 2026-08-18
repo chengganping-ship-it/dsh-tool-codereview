@@ -1,7 +1,7 @@
 {
   "name": "dsh-tool-codereview",
-  "version": "0.36.0",
-  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 257 tools, GraphQL Cost, Session Mgmt, CSV Injection, TLS Config, Distributed Lock, Event Dedup, Allocator Pattern, Webhook Retry",
+  "version": "0.37.0",
+  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 265 tools, Money Handling, Pagination, Resource Leak, C4 Architecture, Semaphore, DNS Optimization, Content Negotiation, Retry Budget",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",

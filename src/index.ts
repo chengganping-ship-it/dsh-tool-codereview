@@ -72,7 +72,7 @@
  * - API gateway (BFF pattern, service routing)
  * 
  * @module dsh-tool-codereview
- * @version 0.36.0
+ * @version 0.37.0
  * @license MIT
  */
 
@@ -82,7 +82,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 export const name = 'dsh-tool-codereview'
 export const inject = ['tools']
 
-const VERSION = '0.36.0'
+const VERSION = '0.37.0'
 
 // ==================== TYPES ====================
 
@@ -22102,6 +22102,526 @@ function formatWebhookRetryReport(r: WebhookRetryResult): string {
   return lines.join('\n')
 }
 
+// ==================== V0.37.0: MONEY HANDLING ====================
+
+interface MoneyHandlingResult {
+  totalIssues: number
+  severity: Severity
+  precision: { line: number; issue: string; suggestion: string }[]
+  rounding: { line: number; issue: string; suggestion: string }[]
+  moneyScore: number
+  summary: string
+}
+
+function analyzeMoneyHandling(code: string): MoneyHandlingResult {
+  const lines = code.split('\n')
+  const precision: MoneyHandlingResult['precision'] = []
+  const rounding: MoneyHandlingResult['rounding'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/price|amount|money|currency|payment|total|balance/i) && line.match(/float|double|number/i) && !line.match(/decimal|bigint|cents|minor.*unit|fixed.*point|integer.*minor/i)) {
+      precision.push({ line: i + 1, issue: 'Monetary value stored as float/double (precision loss risk)', suggestion: 'Use decimal type or store as integer minor units (cents) to avoid floating-point rounding errors' })
+    }
+
+    if (line.match(/currency.*convert|exchange.*rate|fx.*rate|convert.*money/i) && !line.match(/mid.*market|bid.*ask|spread|rate.*timestamp|rate.*source/i)) {
+      rounding.push({ line: i + 1, issue: 'Currency conversion without rate source/timestamp', suggestion: 'Record rate source and timestamp; use mid-market rate with spread disclosure; round after conversion' })
+    }
+
+    if (line.match(/round|ceil|floor|toFixed|toPrecision/i) && line.match(/money|price|amount|payment|total/i) && !line.match(/banker.*round|half.*even|rounding.*mode|ROUND_HALF/i)) {
+      rounding.push({ line: i + 1, issue: 'Rounding monetary value without explicit mode', suggestion: "Use banker's rounding (ROUND_HALF_EVEN) for financial calculations; document rounding strategy" })
+    }
+
+    if (line.match(/money.*compare|price.*equal|amount.*equal|money.*===|price.*===/i) && !line.match(/tolerance|epsilon|compareTo|absolute.*diff/i)) {
+      precision.push({ line: i + 1, issue: 'Direct equality comparison of monetary values', suggestion: 'Use tolerance-based comparison (epsilon) or compare integer minor units to avoid precision issues' })
+    }
+  })
+
+  const totalIssues = precision.length + rounding.length
+  const moneyScore = Math.max(0, 100 - precision.length * 8 - rounding.length * 8)
+  const severity: Severity = precision.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, precision, rounding, moneyScore,
+    summary: precision.length + ' precision gap(s), ' + rounding.length + ' rounding gap(s)' }
+}
+
+function formatMoneyHandlingReport(r: MoneyHandlingResult): string {
+  const lines: string[] = []
+  lines.push('# Money Handling Analysis')
+  lines.push('')
+  lines.push('**Money Score:** ' + r.moneyScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.precision.length > 0) {
+    lines.push('## Precision (' + r.precision.length + ')')
+    r.precision.forEach(p => lines.push('- Line ' + p.line + ': ' + p.suggestion))
+    lines.push('')
+  }
+  if (r.rounding.length > 0) {
+    lines.push('## Rounding (' + r.rounding.length + ')')
+    r.rounding.forEach(r => lines.push('- Line ' + r.line + ': ' + r.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.37.0: PAGINATION PATTERN ====================
+
+interface PaginationResult {
+  totalIssues: number
+  severity: Severity
+  cursor: { line: number; issue: string; suggestion: string }[]
+  limit: { line: number; issue: string; suggestion: string }[]
+  paginationScore: number
+  summary: string
+}
+
+function analyzePagination(code: string): PaginationResult {
+  const lines = code.split('\n')
+  const cursor: PaginationResult['cursor'] = []
+  const limit: PaginationResult['limit'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/paginate|pagination|page.*query|query.*page/i) && !line.match(/cursor|after|before|seek|keyset/i)) {
+      cursor.push({ line: i + 1, issue: 'Pagination using offset/limit (inconsistent under mutation)', suggestion: 'Use cursor-based (keyset) pagination for stable results under insert/delete; offset skip for small datasets only' })
+    }
+
+    if (line.match(/page.*size|page.*limit|per.*page|items.*page/i) && !line.match(/max.*page.*size|max.*limit|cap.*page|upper.*bound/i)) {
+      limit.push({ line: i + 1, issue: 'Page size without upper bound', suggestion: 'Set maximum page size (e.g., 100) to prevent clients from requesting excessive data in single query' })
+    }
+
+    if (line.match(/total.*count|count.*total|has.*next|has.*previous|totalPages/i) && !line.match(/approximate|estimate|count.*cache|defer.*count|separate.*count/i)) {
+      cursor.push({ line: i + 1, issue: 'Total count in pagination (expensive for large datasets)', suggestion: 'Use estimated count or separate count query; total exact count is O(n) and slow on large tables' })
+    }
+
+    if (line.match(/cursor.*encode|encode.*cursor|base64.*cursor|serialize.*cursor/i) && !line.match(/sortable|timestamp.*cursor|id.*cursor|composite.*cursor/i)) {
+      limit.push({ line: i + 1, issue: 'Cursor encoding without sortable basis', suggestion: 'Base cursor on sort expression (created_at + id for uniqueness); encode cursor as opaque base64 token' })
+    }
+  })
+
+  const totalIssues = cursor.length + limit.length
+  const paginationScore = Math.max(0, 100 - cursor.length * 8 - limit.length * 8)
+  const severity: Severity = cursor.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, cursor, limit, paginationScore,
+    summary: cursor.length + ' cursor gap(s), ' + limit.length + ' limit gap(s)' }
+}
+
+function formatPaginationReport(r: PaginationResult): string {
+  const lines: string[] = []
+  lines.push('# Pagination Pattern Analysis')
+  lines.push('')
+  lines.push('**Pagination Score:** ' + r.paginationScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.cursor.length > 0) {
+    lines.push('## Cursor (' + r.cursor.length + ')')
+    r.cursor.forEach(c => lines.push('- Line ' + c.line + ': ' + c.suggestion))
+    lines.push('')
+  }
+  if (r.limit.length > 0) {
+    lines.push('## Limit (' + r.limit.length + ')')
+    r.limit.forEach(l => lines.push('- Line ' + l.line + ': ' + l.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.37.0: RESOURCE LEAK ====================
+
+interface ResourceLeakResult {
+  totalIssues: number
+  severity: Severity
+  fileHandle: { line: number; issue: string; suggestion: string }[]
+  connection: { line: number; issue: string; suggestion: string }[]
+  leakScore: number
+  summary: string
+}
+
+function analyzeResourceLeak(code: string): ResourceLeakResult {
+  const lines = code.split('\n')
+  const fileHandle: ResourceLeakResult['fileHandle'] = []
+  const connection: ResourceLeakResult['connection'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/open\(|fs\.open|createReadStream|createWriteStream|fopen/i) && !line.match(/close\(|try.*finally|with.*resource|using|auto.*close|defer.*close/i)) {
+      fileHandle.push({ line: i + 1, issue: 'File opened without guaranteed close', suggestion: 'Use try-finally or language-native resource management (using/with) to ensure file handle closure' })
+    }
+
+    if (line.match(/acquire.*connection|get.*connection|create.*connection|db\.connect/i) && !line.match(/release\(|close\(|pool\.release|try.*finally|with.*connection/i)) {
+      connection.push({ line: i + 1, issue: 'Connection acquired without guaranteed release', suggestion: 'Always release connection in try-finally; connection leak exhausts pool under error conditions' })
+    }
+
+    if (line.match(/setInterval|setTimeout|timer|scheduleAtFixedRate/i) && !line.match(/clearInterval|clearTimeout|cancel.*timer|dispose.*timer|remove.*listener/i)) {
+      fileHandle.push({ line: i + 1, issue: 'Timer scheduled without cleanup', suggestion: 'Clear timers in teardown phase; leaking timers prevents process exit and wastes memory' })
+    }
+
+    if (line.match(/addEventListener|addListener|on\(|subscribe/i) && !line.match(/removeEventListener|removeListener|off\(|unsubscribe|dispose|cleanup/i)) {
+      connection.push({ line: i + 1, issue: 'Event listener added without removal', suggestion: 'Remove listeners in cleanup phase; leaking listeners causes memory leaks and unexpected callbacks' })
+    }
+  })
+
+  const totalIssues = fileHandle.length + connection.length
+  const leakScore = Math.max(0, 100 - fileHandle.length * 8 - connection.length * 8)
+  const severity: Severity = fileHandle.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, fileHandle, connection, leakScore,
+    summary: fileHandle.length + ' file handle gap(s), ' + connection.length + ' connection gap(s)' }
+}
+
+function formatResourceLeakReport(r: ResourceLeakResult): string {
+  const lines: string[] = []
+  lines.push('# Resource Leak Analysis')
+  lines.push('')
+  lines.push('**Leak Score:** ' + r.leakScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.fileHandle.length > 0) {
+    lines.push('## File Handle (' + r.fileHandle.length + ')')
+    r.fileHandle.forEach(f => lines.push('- Line ' + f.line + ': ' + f.suggestion))
+    lines.push('')
+  }
+  if (r.connection.length > 0) {
+    lines.push('## Connection (' + r.connection.length + ')')
+    r.connection.forEach(c => lines.push('- Line ' + c.line + ': ' + c.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.37.0: C4 ARCHITECTURE ====================
+
+interface C4ArchResult {
+  totalIssues: number
+  severity: Severity
+  context: { line: number; issue: string; suggestion: string }[]
+  component: { line: number; issue: string; suggestion: string }[]
+  c4Score: number
+  summary: string
+}
+
+function analyzeC4Architecture(code: string): C4ArchResult {
+  const lines = code.split('\n')
+  const context: C4ArchResult['context'] = []
+  const component: C4ArchResult['component'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/system.*context|architecture.*diagram|deployment.*diagram|infra.*diagram/i) && !line.match(/C4|container|context.*diagram|system.*landscape|level.*1|level.*2/i)) {
+      context.push({ line: i + 1, issue: 'Architecture diagram without C4 model context level', suggestion: 'Use C4 Model Level 1 (System Context) to show system and external dependencies at highest level' })
+    }
+
+    if (line.match(/microservice|service.*boundary|service.*diagram/i) && !line.match(/container.*level|component.*level|C4.*Level.*2|C4.*Level.*3|service.*decompos/i)) {
+      component.push({ line: i + 1, issue: 'Service decomposition without C4 container/component level', suggestion: 'Use C4 Level 2 (Container) for service boundaries; Level 3 (Component) for internal structure' })
+    }
+
+    if (line.match(/data.*flow|integration.*point|system.*interface|api.*contract/i) && !line.match(/context.*level|container.*level|sequence.*diagram|interaction.*pattern/i)) {
+      context.push({ line: i + 1, issue: 'Data flow without architecture documentation context', suggestion: 'Document data flows at C4 Context level (external) and Container level (internal) for clarity' })
+    }
+
+    if (line.match(/component.*diagram|module.*structure|package.*diagram/i) && !line.match(/interface.*contract|public.*API|module.*boundary|encapsulation/i)) {
+      component.push({ line: i + 1, issue: 'Component without explicit interface contract', suggestion: 'Define component public API/interface; C4 Level 3 should show component responsibilities and interfaces' })
+    }
+  })
+
+  const totalIssues = context.length + component.length
+  const c4Score = Math.max(0, 100 - context.length * 8 - component.length * 8)
+  const severity: Severity = context.length > 0 ? 'info' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, context, component, c4Score,
+    summary: context.length + ' context gap(s), ' + component.length + ' component gap(s)' }
+}
+
+function formatC4ArchReport(r: C4ArchResult): string {
+  const lines: string[] = []
+  lines.push('# C4 Architecture Analysis')
+  lines.push('')
+  lines.push('**C4 Score:** ' + r.c4Score + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.context.length > 0) {
+    lines.push('## Context (' + r.context.length + ')')
+    r.context.forEach(c => lines.push('- Line ' + c.line + ': ' + c.suggestion))
+    lines.push('')
+  }
+  if (r.component.length > 0) {
+    lines.push('## Component (' + r.component.length + ')')
+    r.component.forEach(c => lines.push('- Line ' + c.line + ': ' + c.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.37.0: SEMAPHORE PATTERN ====================
+
+interface SemaphoreResult {
+  totalIssues: number
+  severity: Severity
+  permit: { line: number; issue: string; suggestion: string }[]
+  fairness: { line: number; issue: string; suggestion: string }[]
+  semaphoreScore: number
+  summary: string
+}
+
+function analyzeSemaphore(code: string): SemaphoreResult {
+  const lines = code.split('\n')
+  const permit: SemaphoreResult['permit'] = []
+  const fairness: SemaphoreResult['fairness'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/semaphore|permits|max.*concurrent|concurrency.*limit|throttle.*concurrent/i) && !line.match(/release\(\)|tryAcquire|acquire.*timeout|lease.*expir/i)) {
+      permit.push({ line: i + 1, issue: 'Semaphore acquire without guaranteed release', suggestion: 'Always release semaphore permit in try-finally; use tryAcquire with timeout to prevent deadlock' })
+    }
+
+    if (line.match(/concurrency.*limit|max.*parallel|parallel.*limit|worker.*limit/i) && !line.match(/queue.*backlog|reject.*when.*full|backpressure|offer.*timeout/i)) {
+      fairness.push({ line: i + 1, issue: 'Concurrency limiter without overflow policy', suggestion: 'Define reject policy when limit reached (backpressure, reject, or bounded queue with timeout)' })
+    }
+
+    if (line.match(/bulkhead|bulkhead.*pattern|compartment/i) && !line.match(/isolated.*pool|separate.*thread|separate.*resource|failure.*contain/i)) {
+      permit.push({ line: i + 1, issue: 'Bulkhead without resource isolation', suggestion: 'Isolate bulkheads with separate thread pools/resources; prevent one component failure from exhausting all resources' })
+    }
+
+    if (line.match(/fair.*semaphore|fairness|fifo.*acquire|ordered.*acquire/i) && !line.match(/fair.*lock|fair.*mode|starvation.*prevent|drain.*order/i)) {
+      fairness.push({ line: i + 1, issue: 'Fairness configuration without starvation prevention', suggestion: 'Enable fair ordering to prevent thread starvation; track acquire wait times for latency-sensitive paths' })
+    }
+  })
+
+  const totalIssues = permit.length + fairness.length
+  const semaphoreScore = Math.max(0, 100 - permit.length * 8 - fairness.length * 8)
+  const severity: Severity = permit.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, permit, fairness, semaphoreScore,
+    summary: permit.length + ' permit gap(s), ' + fairness.length + ' fairness gap(s)' }
+}
+
+function formatSemaphoreReport(r: SemaphoreResult): string {
+  const lines: string[] = []
+  lines.push('# Semaphore Pattern Analysis')
+  lines.push('')
+  lines.push('**Semaphore Score:** ' + r.semaphoreScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.permit.length > 0) {
+    lines.push('## Permit (' + r.permit.length + ')')
+    r.permit.forEach(p => lines.push('- Line ' + p.line + ': ' + p.suggestion))
+    lines.push('')
+  }
+  if (r.fairness.length > 0) {
+    lines.push('## Fairness (' + r.fairness.length + ')')
+    r.fairness.forEach(f => lines.push('- Line ' + f.line + ': ' + f.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.37.0: DNS OPTIMIZATION ====================
+
+interface DNSOptimizationResult {
+  totalIssues: number
+  severity: Severity
+  prefetch: { line: number; issue: string; suggestion: string }[]
+  connection: { line: number; issue: string; suggestion: string }[]
+  dnsScore: number
+  summary: string
+}
+
+function analyzeDNSOptimization(code: string): DNSOptimizationResult {
+  const lines = code.split('\n')
+  const prefetch: DNSOptimizationResult['prefetch'] = []
+  const connection: DNSOptimizationResult['connection'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/fetch\(|http.*request|axios|request.*url|api.*call/i) && !line.match(/dns.*prefetch|preconnect|prefetch|dns.*resolve|resolve.*dns/i)) {
+      prefetch.push({ line: i + 1, issue: 'External request without DNS prefetch', suggestion: 'Add dns-prefetch or preconnect hints for frequently-called external domains to reduce DNS latency' })
+    }
+
+    if (line.match(/new.*WebSocket|new.*Socket|create.*connection|open.*connection/i) && !line.match(/keep.*alive|connection.*pool|reuse.*connection|persistent.*connection/i)) {
+      connection.push({ line: i + 1, issue: 'New connection without keep-alive/reuse', suggestion: 'Enable keep-alive and connection pooling to amortize DNS + TLS handshake cost across requests' })
+    }
+
+    if (line.match(/HTTP\/2|h2|http2|server.*push|multiplex/i) && !line.match(/priority|stream.*priority|dependency.*weight|server.*push.*cache/i)) {
+      connection.push({ line: i + 1, issue: 'HTTP/2 without stream prioritization', suggestion: 'Set stream priority (weight/dependency) for HTTP/2; properly invalidate server push cache' })
+    }
+
+    if (line.match(/CDN|edge.*cache|edge.*compute|edge.*node/i) && !line.match(/cache.*key|cache.*TTL|purge.*cache|cache.*invalidation|stale.*while.*revalidate/i)) {
+      prefetch.push({ line: i + 1, issue: 'CDN edge caching without invalidation strategy', suggestion: 'Define cache key and TTL for edge caching; implement purge/invalidation mechanism for updates' })
+    }
+  })
+
+  const totalIssues = prefetch.length + connection.length
+  const dnsScore = Math.max(0, 100 - prefetch.length * 8 - connection.length * 8)
+  const severity: Severity = prefetch.length > 0 ? 'info' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, prefetch, connection, dnsScore,
+    summary: prefetch.length + ' prefetch gap(s), ' + connection.length + ' connection gap(s)' }
+}
+
+function formatDNSOptimizationReport(r: DNSOptimizationResult): string {
+  const lines: string[] = []
+  lines.push('# DNS Optimization Analysis')
+  lines.push('')
+  lines.push('**DNS Score:** ' + r.dnsScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.prefetch.length > 0) {
+    lines.push('## Prefetch (' + r.prefetch.length + ')')
+    r.prefetch.forEach(p => lines.push('- Line ' + p.line + ': ' + p.suggestion))
+    lines.push('')
+  }
+  if (r.connection.length > 0) {
+    lines.push('## Connection (' + r.connection.length + ')')
+    r.connection.forEach(c => lines.push('- Line ' + c.line + ': ' + c.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.37.0: CONTENT NEGOTIATION ====================
+
+interface ContentNegotiationResult {
+  totalIssues: number
+  severity: Severity
+  accept: { line: number; issue: string; suggestion: string }[]
+  version: { line: number; issue: string; suggestion: string }[]
+  negotiationScore: number
+  summary: string
+}
+
+function analyzeContentNegotiation(code: string): ContentNegotiationResult {
+  const lines = code.split('\n')
+  const accept: ContentNegotiationResult['accept'] = []
+  const version: ContentNegotiationResult['version'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/Accept.*header|accept.*content|content.*type.*negotiat|response.*format/i) && !line.match(/vary.*accept|Accept.*json|Accept.*xml|supported.*type|default.*format/i)) {
+      accept.push({ line: i + 1, issue: 'Content negotiation without Vary header', suggestion: 'Set Vary: Accept header when response varies by Content-Type; list supported formats with default' })
+    }
+
+    if (line.match(/api.*version|version.*header|accept.*version|content.*version/i) && !line.match(/deprecat.*policy|sunset.*version|version.*lifecycle|version.*support/i)) {
+      version.push({ line: i + 1, issue: 'API version in Accept header without lifecycle', suggestion: 'Define version deprecation policy; set Sunset header for old versions with migration guidance' })
+    }
+
+    if (line.match(/content.*type.*match|match.*accept|parse.*accept|select.*format/i) && !line.match(/q.*value|quality.*factor|preference.*order|weighted.*accept/i)) {
+      accept.push({ line: i + 1, issue: 'Content negotiation without quality value handling', suggestion: 'Parse Accept q-values for weighted preference; select best match based on quality ordering' })
+    }
+
+    if (line.match(/unsupported.*version|unsupported.*format|not.*acceptable|406/i) && !line.match(/supported.*list|available.*format|supported.*version|error.*detail/i)) {
+      version.push({ line: i + 1, issue: '406 Not Acceptable without supported alternatives', suggestion: 'Return 406 with list of supported versions/formats; guide client to valid options' })
+    }
+  })
+
+  const totalIssues = accept.length + version.length
+  const negotiationScore = Math.max(0, 100 - accept.length * 8 - version.length * 8)
+  const severity: Severity = accept.length > 0 ? 'info' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, accept, version, negotiationScore,
+    summary: accept.length + ' accept gap(s), ' + version.length + ' version gap(s)' }
+}
+
+function formatContentNegotiationReport(r: ContentNegotiationResult): string {
+  const lines: string[] = []
+  lines.push('# Content Negotiation Analysis')
+  lines.push('')
+  lines.push('**Negotiation Score:** ' + r.negotiationScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.accept.length > 0) {
+    lines.push('## Accept (' + r.accept.length + ')')
+    r.accept.forEach(a => lines.push('- Line ' + a.line + ': ' + a.suggestion))
+    lines.push('')
+  }
+  if (r.version.length > 0) {
+    lines.push('## Version (' + r.version.length + ')')
+    r.version.forEach(v => lines.push('- Line ' + v.line + ': ' + v.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.37.0: RETRY BUDGET ====================
+
+interface RetryBudgetResult {
+  totalIssues: number
+  severity: Severity
+  budget: { line: number; issue: string; suggestion: string }[]
+  cascading: { line: number; issue: string; suggestion: string }[]
+  budgetScore: number
+  summary: string
+}
+
+function analyzeRetryBudget(code: string): RetryBudgetResult {
+  const lines = code.split('\n')
+  const budget: RetryBudgetResult['budget'] = []
+  const cascading: RetryBudgetResult['cascading'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/retry.*budget|budget.*retry|retry.*rate|token.*bucket.*retry/i) && !line.match(/budget.*limit|max.*retry.*rate|budget.*exhaust|retry.*deplet/i)) {
+      budget.push({ line: i + 1, issue: 'Retry budget without exhaustion handling', suggestion: 'Define max retry rate (e.g., 10% of traffic); signal retry budget exhaustion to upstream' })
+    }
+
+    if (line.match(/cascade.*retry|retry.*amplif|retry.*storm|retry.*flood/i) && !line.match(/budget.*limit|max.*attempt|retry.*suppress|breaker.*on.*budget/i)) {
+      cascading.push({ line: i + 1, issue: 'Retry cascade risk without amplification control', suggestion: 'Implement retry budget across all callers; suppress retries when budget exhausted to prevent cascading failures' })
+    }
+
+    if (line.match(/upstream.*retry|downstream.*retry|retry.*propagat|pass.*through.*retry/i) && !line.match(/retry.*header|retry.*budget.*share|retry.*token|x.*retry.*budget/i)) {
+      cascading.push({ line: i + 1, issue: 'Cross-service retry propagation without coordination', suggestion: 'Share retry budget state via headers (x-retry-budget); coordinate retry budgets across service mesh' })
+    }
+
+    if (line.match(/retry.*deplet|budget.*exhaust|no.*retry.*budget|retry.*over/i) && !line.match(/fail.*fast|fail.*open|reject.*request|queue.*for.*later|defer.*request/i)) {
+      budget.push({ line: i + 1, issue: 'Retry exhaustion without fail-fast policy', suggestion: 'Fail-fast when retry budget exhausted; queue for later or reject with 429 + Retry-After header' })
+    }
+  })
+
+  const totalIssues = budget.length + cascading.length
+  const budgetScore = Math.max(0, 100 - budget.length * 8 - cascading.length * 8)
+  const severity: Severity = cascading.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, budget, cascading, budgetScore,
+    summary: budget.length + ' budget gap(s), ' + cascading.length + ' cascading gap(s)' }
+}
+
+function formatRetryBudgetReport(r: RetryBudgetResult): string {
+  const lines: string[] = []
+  lines.push('# Retry Budget Analysis')
+  lines.push('')
+  lines.push('**Budget Score:** ' + r.budgetScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.budget.length > 0) {
+    lines.push('## Budget (' + r.budget.length + ')')
+    r.budget.forEach(b => lines.push('- Line ' + b.line + ': ' + b.suggestion))
+    lines.push('')
+  }
+  if (r.cascading.length > 0) {
+    lines.push('## Cascading (' + r.cascading.length + ')')
+    r.cascading.forEach(c => lines.push('- Line ' + c.line + ': ' + c.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
 // ==================== PLUGIN REGISTRATION ====================
 
 export function apply(ctx: Context) {
@@ -25728,5 +26248,93 @@ ctx.tools.register(defineTool({
   }
 }))
 
-console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design, container_security, ml_pipeline, api_deprecation, design_system, pwa_compliance, type_system, green_computing, realtime_collab, a11y_deep, i18n_deep, css_architecture, state_machine, web_components, resilience, module_federation, review_automation, observability, migration_safety, edge_computing, api_versioning, wasm_advanced, feature_toggles, email_deliverability, seo_analysis, monorepo_boundaries, ddd_patterns, mf_runtime, realtime_protocols, data_pipeline, gateway_deep, test_rigor, quality_gate, graphql_schema, event_sourcing_integrity, rate_limiting, migration_safety, auth_hardening, distributed_tracing, infrastructure_as_code, review_automation, contract_testing, sec_headers_deep, privacy_compliance, concurrency_patterns, cloud_native, error_recovery, system_design, dependency_injection, api_versioning, serialization_perf, memory_allocation, build_pipeline, error_messages, logging_discipline, config_as_code, component_interface, token_hygiene, query_antipatterns, websocket_lifecycle, graphql_perf, deprecation_tracking, code_splitting_audit, css_arch_deep, sec_dep_audit, webhook_signature, oauth_security, email_infra, health_check_depth, cors_security, feature_rollout, secret_lifecycle, rate_limit_strategy, container_security_scan, grpc_security, data_residency, deployment_progressive, obs_exemplar, data_pipeline_quality, service_mesh, plugin_architecture, mobile_app_security, data_masking, core_web_vitals, infra_cost, api_gateway_config, css_in_js_perf, crdt_state_sync, resource_quota, browser_compat_audit, floating_point, snapshot_testing, event_schema, form_validation, retry_idempotency, a11y_semantics, race_condition, cache_invalidation, data_loader_opt, event_versioning, connection_lifecycle, csp_nonce, struct_error_ctx, stream_backpressure, identifier_collision, graphql_query_depth, auth_token_rotation, mq_dead_letter, file_upload_sec, query_plan, encryption_at_rest, ws_connection_state, rate_limit_policy, payment_idempotency, cron_reliability, immutable_data, data_residency_compliance, response_envelope, compression_negotiation, dns_health, graceful_degradation, api_deprecation_strategy, db_safety, log_sampling, slo_tracking, api_key_mgmt, data_lineage, infra_drift, schema_evolution, wasm_interop, data_partition, plugin_lifecycle, time_sync, feature_store, vector_db, api_composition, audit_trail, graphql_cost, session_mgmt, csv_injection, tls_config, distributed_lock, event_dedup, allocator_pattern, webhook_retry`)
+ctx.tools.register(defineTool({
+  name: 'money_handling',
+  description: 'Analyze money handling: decimal precision, currency conversion rates, rounding mode, equality comparison.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeMoneyHandling(args.code)
+    return formatMoneyHandlingReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'pagination',
+  description: 'Analyze pagination patterns: cursor-based, page size bounds, total count cost, cursor encoding.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzePagination(args.code)
+    return formatPaginationReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'resource_leak',
+  description: 'Analyze resource leak risks: file handle closure, connection release, timer cleanup, listener removal.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeResourceLeak(args.code)
+    return formatResourceLeakReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'c4_architecture',
+  description: 'Analyze C4 architecture documentation: system context, container level, component level, interface contracts.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeC4Architecture(args.code)
+    return formatC4ArchReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'semaphore',
+  description: 'Analyze semaphore patterns: permit release guarantee, overflow policy, bulkhead isolation, fairness configuration.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeSemaphore(args.code)
+    return formatSemaphoreReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'dns_optimization',
+  description: 'Analyze DNS/network optimization: prefetch hints, keep-alive reuse, HTTP/2 prioritization, CDN invalidation.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeDNSOptimization(args.code)
+    return formatDNSOptimizationReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'content_negotiation',
+  description: 'Analyze content negotiation: Vary header, version lifecycle, quality value handling, 406 alternatives.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeContentNegotiation(args.code)
+    return formatContentNegotiationReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'retry_budget',
+  description: 'Analyze retry budgets: exhaustion handling, cascade amplification, cross-service coordination, fail-fast policy.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeRetryBudget(args.code)
+    return formatRetryBudgetReport(result)
+  }
+}))
+
+console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design, container_security, ml_pipeline, api_deprecation, design_system, pwa_compliance, type_system, green_computing, realtime_collab, a11y_deep, i18n_deep, css_architecture, state_machine, web_components, resilience, module_federation, review_automation, observability, migration_safety, edge_computing, api_versioning, wasm_advanced, feature_toggles, email_deliverability, seo_analysis, monorepo_boundaries, ddd_patterns, mf_runtime, realtime_protocols, data_pipeline, gateway_deep, test_rigor, quality_gate, graphql_schema, event_sourcing_integrity, rate_limiting, migration_safety, auth_hardening, distributed_tracing, infrastructure_as_code, review_automation, contract_testing, sec_headers_deep, privacy_compliance, concurrency_patterns, cloud_native, error_recovery, system_design, dependency_injection, api_versioning, serialization_perf, memory_allocation, build_pipeline, error_messages, logging_discipline, config_as_code, component_interface, token_hygiene, query_antipatterns, websocket_lifecycle, graphql_perf, deprecation_tracking, code_splitting_audit, css_arch_deep, sec_dep_audit, webhook_signature, oauth_security, email_infra, health_check_depth, cors_security, feature_rollout, secret_lifecycle, rate_limit_strategy, container_security_scan, grpc_security, data_residency, deployment_progressive, obs_exemplar, data_pipeline_quality, service_mesh, plugin_architecture, mobile_app_security, data_masking, core_web_vitals, infra_cost, api_gateway_config, css_in_js_perf, crdt_state_sync, resource_quota, browser_compat_audit, floating_point, snapshot_testing, event_schema, form_validation, retry_idempotency, a11y_semantics, race_condition, cache_invalidation, data_loader_opt, event_versioning, connection_lifecycle, csp_nonce, struct_error_ctx, stream_backpressure, identifier_collision, graphql_query_depth, auth_token_rotation, mq_dead_letter, file_upload_sec, query_plan, encryption_at_rest, ws_connection_state, rate_limit_policy, payment_idempotency, cron_reliability, immutable_data, data_residency_compliance, response_envelope, compression_negotiation, dns_health, graceful_degradation, api_deprecation_strategy, db_safety, log_sampling, slo_tracking, api_key_mgmt, data_lineage, infra_drift, schema_evolution, wasm_interop, data_partition, plugin_lifecycle, time_sync, feature_store, vector_db, api_composition, audit_trail, graphql_cost, session_mgmt, csv_injection, tls_config, distributed_lock, event_dedup, allocator_pattern, webhook_retry, money_handling, pagination, resource_leak, c4_architecture, semaphore, dns_optimization, content_negotiation, retry_budget`)
 }
