@@ -82,7 +82,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 export const name = 'dsh-tool-codereview'
 export const inject = ['tools']
 
-const VERSION = '0.44.0'
+const VERSION = '0.45.0'
 
 // ==================== TYPES ====================
 
@@ -26309,6 +26309,582 @@ function formatMutualTlsReport(r: MutualTlsResult): string {
   return lines.join('\n')
 }
 
+// ==================== V0.45.0: DEAD LETTER QUEUE HANDLING ====================
+
+interface DeadLetterQueueHandlingResult {
+  totalIssues: number
+  severity: Severity
+  dlq: { line: number; issue: string; suggestion: string }[]
+  replay: { line: number; issue: string; suggestion: string }[]
+  monitoring: { line: number; issue: string; suggestion: string }[]
+  dlqScore: number
+  summary: string
+}
+
+function analyzeDeadLetterQueueHandling(code: string): DeadLetterQueueHandlingResult {
+  const lines = code.split('\n')
+  const dlq: DeadLetterQueueHandlingResult['dlq'] = []
+  const replay: DeadLetterQueueHandlingResult['replay'] = []
+  const monitoring: DeadLetterQueueHandlingResult['monitoring'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/dead.*letter|dlq|dead.*queue|poison.*message|poison.*queue/i) && !line.match(/dlq.*config|dlq.*setup|dlq.*handler|dlq.*process/i)) {
+      dlq.push({ line: i + 1, issue: 'Dead letter queue mention without configuration/handler', suggestion: 'Configure DLQ handler with clear processing strategy; unhandled DLQs accumulate undetected' })
+    }
+
+    if (line.match(/replay|reprocess|reconsume|re.*process/i) && line.match(/failed.*message|failed.*event|error.*queue/i) && !line.match(/replay.*limit|replay.*cap|replay.*max|replay.*guard/i)) {
+      replay.push({ line: i + 1, issue: 'Message replay without limit/guard', suggestion: 'Set replay max attempts and backoff; unbounded replay loops reprocess poison messages forever' })
+    }
+
+    if (line.match(/dlq.*alert|alert.*dlq|dlq.*monitor|monitor.*dlq/i) && !line.match(/alert.*threshold|alert.*count|alert.*age|alert.*sla/i)) {
+      monitoring.push({ line: i + 1, issue: 'DLQ monitoring without alert threshold', suggestion: 'Set DLQ alert thresholds (count, age); unmonitored DLQs hide processing failures' })
+    }
+
+    if (line.match(/discard.*message|drop.*message|skip.*message|ignore.*error/i) && !line.match(/discard.*log|discard.*metric|drop.*alert|skip.*monitor/i)) {
+      dlq.push({ line: i + 1, issue: 'Message discard without logging/metrics', suggestion: 'Log and metric discarded messages; silent data loss hides systemic issues' })
+    }
+  })
+
+  const totalIssues = dlq.length + replay.length + monitoring.length
+  const dlqScore = Math.max(0, 100 - dlq.length * 7 - replay.length * 7 - monitoring.length * 7)
+  const severity: Severity = dlq.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, dlq, replay, monitoring, dlqScore,
+    summary: dlq.length + ' DLQ gap(s), ' + replay.length + ' replay gap(s), ' + monitoring.length + ' monitoring gap(s)' }
+}
+
+function formatDeadLetterQueueHandlingReport(r: DeadLetterQueueHandlingResult): string {
+  const lines: string[] = []
+  lines.push('# Dead Letter Queue Handling Analysis')
+  lines.push('')
+  lines.push('**DLQ Score:** ' + r.dlqScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.dlq.length > 0) {
+    lines.push('## DLQ (' + r.dlq.length + ')')
+    r.dlq.forEach(x => lines.push('- Line ' + x.line + ': ' + x.suggestion))
+    lines.push('')
+  }
+  if (r.replay.length > 0) {
+    lines.push('## Replay (' + r.replay.length + ')')
+    r.replay.forEach(x => lines.push('- Line ' + x.line + ': ' + x.suggestion))
+    lines.push('')
+  }
+  if (r.monitoring.length > 0) {
+    lines.push('## Monitoring (' + r.monitoring.length + ')')
+    r.monitoring.forEach(x => lines.push('- Line ' + x.line + ': ' + x.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.45.0: RATE LIMIT HEADER COMPLIANCE ====================
+
+interface RateLimitHeaderComplianceResult {
+  totalIssues: number
+  severity: Severity
+  standard: { line: number; issue: string; suggestion: string }[]
+  consistency: { line: number; issue: string; suggestion: string }[]
+  client: { line: number; issue: string; suggestion: string }[]
+  rateLimitScore: number
+  summary: string
+}
+
+function analyzeRateLimitHeaderCompliance(code: string): RateLimitHeaderComplianceResult {
+  const lines = code.split('\n')
+  const standard: RateLimitHeaderComplianceResult['standard'] = []
+  const consistency: RateLimitHeaderComplianceResult['consistency'] = []
+  const client: RateLimitHeaderComplianceResult['client'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/rate.*limit|limit.*rate|X-RateLimit|x-ratelimit|RateLimit/i) && !line.match(/X-RateLimit-Limit|X-RateLimit-Remaining|X-RateLimit-Reset|RateLimit-Policy/i)) {
+      standard.push({ line: i + 1, issue: 'Rate limit header without standard format', suggestion: 'Use standard headers (X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset); non-standard headers confuse clients' })
+    }
+
+    if (line.match(/X-RateLimit|x-ratelimit|RateLimit/i) && !line.match(/Retry-After|retry.*after/i)) {
+      consistency.push({ line: i + 1, issue: 'Rate limit headers without Retry-After', suggestion: 'Include Retry-After header on 429 responses; clients need guidance on when to retry' })
+    }
+
+    if (line.match(/429|too.*many.*request|rate.*exceed/i) && !line.match(/Retry-After|retry.*after|RateLimit-Policy|policy/i)) {
+      client.push({ line: i + 1, issue: '429 response without client guidance headers', suggestion: 'Add Retry-After or RateLimit-Policy to 429 responses; clients without guidance implement poor retry logic' })
+    }
+
+    if (line.match(/RateLimit-Policy|rate.*limit.*policy/i) && !line.match(/policy.*window|policy.*max|policy.*unit/i)) {
+      standard.push({ line: i + 1, issue: 'RateLimit-Policy without window/unit specification', suggestion: 'Specify policy window and unit (e.g., 60/window); ambiguous policies cause client misinterpretation' })
+    }
+  })
+
+  const totalIssues = standard.length + consistency.length + client.length
+  const rateLimitScore = Math.max(0, 100 - standard.length * 7 - consistency.length * 7 - client.length * 7)
+  const severity: Severity = standard.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, standard, consistency, client, rateLimitScore,
+    summary: standard.length + ' standard gap(s), ' + consistency.length + ' consistency gap(s), ' + client.length + ' client gap(s)' }
+}
+
+function formatRateLimitHeaderComplianceReport(r: RateLimitHeaderComplianceResult): string {
+  const lines: string[] = []
+  lines.push('# Rate Limit Header Compliance Analysis')
+  lines.push('')
+  lines.push('**Rate Limit Score:** ' + r.rateLimitScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.standard.length > 0) {
+    lines.push('## Standard (' + r.standard.length + ')')
+    r.standard.forEach(x => lines.push('- Line ' + x.line + ': ' + x.suggestion))
+    lines.push('')
+  }
+  if (r.consistency.length > 0) {
+    lines.push('## Consistency (' + r.consistency.length + ')')
+    r.consistency.forEach(x => lines.push('- Line ' + x.line + ': ' + x.suggestion))
+    lines.push('')
+  }
+  if (r.client.length > 0) {
+    lines.push('## Client (' + r.client.length + ')')
+    r.client.forEach(x => lines.push('- Line ' + x.line + ': ' + x.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.45.0: WEBSOCKET CONNECTION POOL ====================
+
+interface WebSocketConnectionPoolResult {
+  totalIssues: number
+  severity: Severity
+  pool: { line: number; issue: string; suggestion: string }[]
+  heartbeat: { line: number; issue: string; suggestion: string }[]
+  reconnect: { line: number; issue: string; suggestion: string }[]
+  wsPoolScore: number
+  summary: string
+}
+
+function analyzeWebSocketConnectionPool(code: string): WebSocketConnectionPoolResult {
+  const lines = code.split('\n')
+  const pool: WebSocketConnectionPoolResult['pool'] = []
+  const heartbeat: WebSocketConnectionPoolResult['heartbeat'] = []
+  const reconnect: WebSocketConnectionPoolResult['reconnect'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/WebSocket|websocket|ws.*connection|connection.*ws/i) && !line.match(/pool|max.*connection|connection.*limit|connection.*cap/i)) {
+      pool.push({ line: i + 1, issue: 'WebSocket without connection pool/limit', suggestion: 'Set WebSocket connection pool limit; unbounded connections exhaust server resources' })
+    }
+
+    if (line.match(/WebSocket|websocket|ws.*server|ws.*client/i) && !line.match(/ping.*pong|heartbeat|keep.*alive|keepalive/i)) {
+      heartbeat.push({ line: i + 1, issue: 'WebSocket without heartbeat/ping-pong', suggestion: 'Implement heartbeat (ping/pong); without it, dead connections go undetected' })
+    }
+
+    if (line.match(/ws.*reconnect|reconnect.*ws|websocket.*reconnect/i) && !line.match(/reconnect.*backoff|reconnect.*limit|reconnect.*max|reconnect.*jitter/i)) {
+      reconnect.push({ line: i + 1, issue: 'WebSocket reconnect without backoff/limit', suggestion: 'Add reconnect backoff with max attempts; aggressive reconnect amplifies server load' })
+    }
+
+    if (line.match(/ws.*buffer|buffer.*ws|websocket.*buffer/i) && !line.match(/buffer.*max|buffer.*cap|buffer.*limit|buffer.*threshold/i)) {
+      pool.push({ line: i + 1, issue: 'WebSocket buffer without size limit', suggestion: 'Cap WebSocket buffer size; unbounded buffers allow slow clients to consume memory' })
+    }
+  })
+
+  const totalIssues = pool.length + heartbeat.length + reconnect.length
+  const wsPoolScore = Math.max(0, 100 - pool.length * 7 - heartbeat.length * 7 - reconnect.length * 7)
+  const severity: Severity = pool.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, pool, heartbeat, reconnect, wsPoolScore,
+    summary: pool.length + ' pool gap(s), ' + heartbeat.length + ' heartbeat gap(s), ' + reconnect.length + ' reconnect gap(s)' }
+}
+
+function formatWebSocketConnectionPoolReport(r: WebSocketConnectionPoolResult): string {
+  const lines: string[] = []
+  lines.push('# WebSocket Connection Pool Analysis')
+  lines.push('')
+  lines.push('**WS Pool Score:** ' + r.wsPoolScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.pool.length > 0) {
+    lines.push('## Pool (' + r.pool.length + ')')
+    r.pool.forEach(x => lines.push('- Line ' + x.line + ': ' + x.suggestion))
+    lines.push('')
+  }
+  if (r.heartbeat.length > 0) {
+    lines.push('## Heartbeat (' + r.heartbeat.length + ')')
+    r.heartbeat.forEach(x => lines.push('- Line ' + x.line + ': ' + x.suggestion))
+    lines.push('')
+  }
+  if (r.reconnect.length > 0) {
+    lines.push('## Reconnect (' + r.reconnect.length + ')')
+    r.reconnect.forEach(x => lines.push('- Line ' + x.line + ': ' + x.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.45.0: CONTAINER IMAGE OPTIMIZATION ====================
+
+interface ContainerImageOptimizationResult {
+  totalIssues: number
+  severity: Severity
+  layer: { line: number; issue: string; suggestion: string }[]
+  security: { line: number; issue: string; suggestion: string }[]
+  size: { line: number; issue: string; suggestion: string }[]
+  imageOptScore: number
+  summary: string
+}
+
+function analyzeContainerImageOptimization(code: string): ContainerImageOptimizationResult {
+  const lines = code.split('\n')
+  const layer: ContainerImageOptimizationResult['layer'] = []
+  const security: ContainerImageOptimizationResult['security'] = []
+  const size: ContainerImageOptimizationResult['size'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/FROM.*latest|FROM.*:latest/i)) {
+      size.push({ line: i + 1, issue: 'Container image using :latest tag', suggestion: 'Pin image to digest or semantic version; :latest is unreproducible and insecure' })
+    }
+
+    if (line.match(/RUN.*apt.*install|RUN.*yum.*install|RUN.*apk.*add/i) && !line.match(/no.*cache|rm.*var.*cache|clean|purge/i)) {
+      layer.push({ line: i + 1, issue: 'Package install without cache cleanup', suggestion: 'Clean package cache in same layer; cached packages bloat image size' })
+    }
+
+    if (line.match(/USER.*root|USER 0|RUN.*sudo/i) && !line.match(/USER.*nonroot|USER.*app|USER.*1000/i)) {
+      security.push({ line: i + 1, issue: 'Container running as root', suggestion: 'Use non-root user; root containers increase attack surface and violate security policies' })
+    }
+
+    if (line.match(/COPY.*\s+\.\s+/i) && !line.match(/Dockerfile|\.dockerignore/i)) {
+      layer.push({ line: i + 1, issue: 'COPY . without .dockerignore', suggestion: 'Add .dockerignore; copying entire context includes secrets and build artifacts' })
+    }
+  })
+
+  const totalIssues = layer.length + security.length + size.length
+  const imageOptScore = Math.max(0, 100 - layer.length * 7 - security.length * 10 - size.length * 7)
+  const severity: Severity = security.length > 0 ? 'error' : totalIssues > 0 ? 'warning' : 'info'
+
+  return { totalIssues, severity, layer, security, size, imageOptScore,
+    summary: layer.length + ' layer gap(s), ' + security.length + ' security gap(s), ' + size.length + ' size gap(s)' }
+}
+
+function formatContainerImageOptimizationReport(r: ContainerImageOptimizationResult): string {
+  const lines: string[] = []
+  lines.push('# Container Image Optimization Analysis')
+  lines.push('')
+  lines.push('**Image Opt Score:** ' + r.imageOptScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.layer.length > 0) {
+    lines.push('## Layer (' + r.layer.length + ')')
+    r.layer.forEach(x => lines.push('- Line ' + x.line + ': ' + x.suggestion))
+    lines.push('')
+  }
+  if (r.security.length > 0) {
+    lines.push('## Security (' + r.security.length + ')')
+    r.security.forEach(x => lines.push('- Line ' + x.line + ': ' + x.suggestion))
+    lines.push('')
+  }
+  if (r.size.length > 0) {
+    lines.push('## Size (' + r.size.length + ')')
+    r.size.forEach(x => lines.push('- Line ' + x.line + ': ' + x.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.45.0: DNS PREFETCH CONFIGURATION ====================
+
+interface DnsPrefetchConfigResult {
+  totalIssues: number
+  severity: Severity
+  prefetch: { line: number; issue: string; suggestion: string }[]
+  ttl: { line: number; issue: string; suggestion: string }[]
+  resolution: { line: number; issue: string; suggestion: string }[]
+  dnsConfigScore: number
+  summary: string
+}
+
+function analyzeDnsPrefetchConfig(code: string): DnsPrefetchConfigResult {
+  const lines = code.split('\n')
+  const prefetch: DnsPrefetchConfigResult['prefetch'] = []
+  const ttl: DnsPrefetchConfigResult['ttl'] = []
+  const resolution: DnsPrefetchConfigResult['resolution'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/dns.*prefetch|prefetch.*dns|dns-prefetch|preconnect/i) && !line.match(/dns.*prefetch.*control|x-dns/i)) {
+      prefetch.push({ line: i + 1, issue: 'DNS prefetch without user control', suggestion: 'Respect browser DNS prefetch settings; forced prefetch violates privacy expectations' })
+    }
+
+    if (line.match(/DNS.*TTL|TTL.*dns|dns.*ttl|ttl.*cache/i) && !line.match(/ttl.*min|ttl.*max|ttl.*bound|ttl.*cap/i)) {
+      ttl.push({ line: i + 1, issue: 'DNS TTL without min/max bounds', suggestion: 'Set TTL bounds; very long TTL prevents DNS failover, very short TTL increases lookup load' })
+    }
+
+    if (line.match(/resolve.*dns|dns.*resolve|lookup.*dns|dns.*lookup/i) && !line.match(/resolve.*cache|resolve.*timeout|resolve.*retry|resolve.*fallback/i)) {
+      resolution.push({ line: i + 1, issue: 'DNS resolution without cache/timeout/fallback', suggestion: 'Add DNS cache, timeout, and fallback; direct resolution blocks on slow DNS servers' })
+    }
+
+    if (line.match(/hardcode.*ip|hard.*code.*ip|static.*ip|ip.*address.*const/i) && !line.match(/config|env|override|fallback/i)) {
+      resolution.push({ line: i + 1, issue: 'Hardcoded IP address', suggestion: 'Use DNS names with fallback; hardcoded IPs break when infrastructure changes' })
+    }
+  })
+
+  const totalIssues = prefetch.length + ttl.length + resolution.length
+  const dnsConfigScore = Math.max(0, 100 - prefetch.length * 7 - ttl.length * 7 - resolution.length * 7)
+  const severity: Severity = resolution.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, prefetch, ttl, resolution, dnsConfigScore,
+    summary: prefetch.length + ' prefetch gap(s), ' + ttl.length + ' TTL gap(s), ' + resolution.length + ' resolution gap(s)' }
+}
+
+function formatDnsPrefetchConfigReport(r: DnsPrefetchConfigResult): string {
+  const lines: string[] = []
+  lines.push('# DNS Prefetch Configuration Analysis')
+  lines.push('')
+  lines.push('**DNS Config Score:** ' + r.dnsConfigScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.prefetch.length > 0) {
+    lines.push('## Prefetch (' + r.prefetch.length + ')')
+    r.prefetch.forEach(x => lines.push('- Line ' + x.line + ': ' + x.suggestion))
+    lines.push('')
+  }
+  if (r.ttl.length > 0) {
+    lines.push('## TTL (' + r.ttl.length + ')')
+    r.ttl.forEach(x => lines.push('- Line ' + x.line + ': ' + x.suggestion))
+    lines.push('')
+  }
+  if (r.resolution.length > 0) {
+    lines.push('## Resolution (' + r.resolution.length + ')')
+    r.resolution.forEach(x => lines.push('- Line ' + x.line + ': ' + x.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.45.0: ASYNC MEMORY LEAK DETECTION ====================
+
+interface AsyncMemoryLeakResult {
+  totalIssues: number
+  severity: Severity
+  listener: { line: number; issue: string; suggestion: string }[]
+  timer: { line: number; issue: string; suggestion: string }[]
+  closure: { line: number; issue: string; suggestion: string }[]
+  asyncLeakScore: number
+  summary: string
+}
+
+function analyzeAsyncMemoryLeak(code: string): AsyncMemoryLeakResult {
+  const lines = code.split('\n')
+  const listener: AsyncMemoryLeakResult['listener'] = []
+  const timer: AsyncMemoryLeakResult['timer'] = []
+  const closure: AsyncMemoryLeakResult['closure'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/addEventListener|addListener|on\(|emit\.on/i) && !line.match(/removeEventListener|removeListener|off\(|removeAll|once\(/i)) {
+      listener.push({ line: i + 1, issue: 'Event listener without removal', suggestion: 'Remove listeners when no longer needed; accumulated listeners leak memory and cause unexpected behavior' })
+    }
+
+    if (line.match(/setInterval|setTimeout/i) && line.match(/async|await|callback|function/i) && !line.match(/clearInterval|clearTimeout|abort|cancel/i)) {
+      timer.push({ line: i + 1, issue: 'Async timer without cleanup', suggestion: 'Clear timers on cleanup/unmount; orphaned timers hold references to closures and prevent GC' })
+    }
+
+    if (line.match(/async.*function|async\s+\(|Promise|then\(/i) && line.match(/closure|outer.*scope|parent.*scope|enclosing/i) && !line.match(/weak.*ref|WeakRef|FinalizationRegistry|weak/i)) {
+      closure.push({ line: i + 1, issue: 'Async closure capturing outer scope', suggestion: 'Use WeakRef for non-essential references; async closures prevent GC of captured objects' })
+    }
+
+    if (line.match(/stream.*pipe|pipe\(|pipeline\(/i) && !line.match(/destroy|close|end|unpipe|cleanup|abort/i)) {
+      listener.push({ line: i + 1, issue: 'Stream pipe without cleanup', suggestion: 'Handle stream cleanup (destroy/unpipe); leaked streams hold buffers and file descriptors' })
+    }
+  })
+
+  const totalIssues = listener.length + timer.length + closure.length
+  const asyncLeakScore = Math.max(0, 100 - listener.length * 7 - timer.length * 7 - closure.length * 7)
+  const severity: Severity = listener.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, listener, timer, closure, asyncLeakScore,
+    summary: listener.length + ' listener leak(s), ' + timer.length + ' timer leak(s), ' + closure.length + ' closure leak(s)' }
+}
+
+function formatAsyncMemoryLeakReport(r: AsyncMemoryLeakResult): string {
+  const lines: string[] = []
+  lines.push('# Async Memory Leak Detection Analysis')
+  lines.push('')
+  lines.push('**Async Leak Score:** ' + r.asyncLeakScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.listener.length > 0) {
+    lines.push('## Listeners (' + r.listener.length + ')')
+    r.listener.forEach(x => lines.push('- Line ' + x.line + ': ' + x.suggestion))
+    lines.push('')
+  }
+  if (r.timer.length > 0) {
+    lines.push('## Timers (' + r.timer.length + ')')
+    r.timer.forEach(x => lines.push('- Line ' + x.line + ': ' + x.suggestion))
+    lines.push('')
+  }
+  if (r.closure.length > 0) {
+    lines.push('## Closures (' + r.closure.length + ')')
+    r.closure.forEach(x => lines.push('- Line ' + x.line + ': ' + x.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.45.0: API IDEMPOTENCY KEY PATTERN ====================
+
+interface ApiIdempotencyKeyResult {
+  totalIssues: number
+  severity: Severity
+  key: { line: number; issue: string; suggestion: string }[]
+  storage: { line: number; issue: string; suggestion: string }[]
+  expiry: { line: number; issue: string; suggestion: string }[]
+  idempotencyKeyScore: number
+  summary: string
+}
+
+function analyzeApiKeyIdempotency(code: string): ApiIdempotencyKeyResult {
+  const lines = code.split('\n')
+  const key: ApiIdempotencyKeyResult['key'] = []
+  const storage: ApiIdempotencyKeyResult['storage'] = []
+  const expiry: ApiIdempotencyKeyResult['expiry'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/Idempotency-Key|idempotency.*key|idempotencykey/i) && !line.match(/key.*valid|key.*format|key.*uuid|key.*format/i)) {
+      key.push({ line: i + 1, issue: 'Idempotency key without format validation', suggestion: 'Validate idempotency key format (UUID, length); malformed keys break dedup storage' })
+    }
+
+    if (line.match(/idempoten.*store|store.*idempoten|idempoten.*cache|cache.*idempoten|idempoten.*save/i) && !line.match(/store.*ttl|store.*expir|store.*expiry|store.*duratio/i)) {
+      storage.push({ line: i + 1, issue: 'Idempotency storage without TTL/expiry', suggestion: 'Set TTL on idempotency records; permanent storage grows unbounded and wastes resources' })
+    }
+
+    if (line.match(/idempoten.*expir|expir.*idempoten|idempoten.*ttl|ttl.*idempoten/i) && !line.match(/expir.*24h|expir.*hour|expir.*day|ttl.*3600|ttl.*86400/i)) {
+      expiry.push({ line: i + 1, issue: 'Idempotency expiry without clear duration', suggestion: 'Define explicit idempotency window (e.g., 24h); unclear windows cause confusion on retry validity' })
+    }
+
+    if (line.match(/POST.*idempoten|PUT.*idempoten|PATCH.*idempoten/i) && !line.match(/Idempotency-Key|idempotency.*header|idempoten.*request/i)) {
+      key.push({ line: i + 1, issue: 'Mutating endpoint without idempotency key support', suggestion: 'Support Idempotency-Key header for POST/PUT/PATCH; without it, retries cause duplicate operations' })
+    }
+  })
+
+  const totalIssues = key.length + storage.length + expiry.length
+  const idempotencyKeyScore = Math.max(0, 100 - key.length * 7 - storage.length * 7 - expiry.length * 7)
+  const severity: Severity = key.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, key, storage, expiry, idempotencyKeyScore,
+    summary: key.length + ' key gap(s), ' + storage.length + ' storage gap(s), ' + expiry.length + ' expiry gap(s)' }
+}
+
+function formatApiKeyIdempotencyReport(r: ApiIdempotencyKeyResult): string {
+  const lines: string[] = []
+  lines.push('# API Idempotency Key Pattern Analysis')
+  lines.push('')
+  lines.push('**Idempotency Key Score:** ' + r.idempotencyKeyScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.key.length > 0) {
+    lines.push('## Key (' + r.key.length + ')')
+    r.key.forEach(x => lines.push('- Line ' + x.line + ': ' + x.suggestion))
+    lines.push('')
+  }
+  if (r.storage.length > 0) {
+    lines.push('## Storage (' + r.storage.length + ')')
+    r.storage.forEach(x => lines.push('- Line ' + x.line + ': ' + x.suggestion))
+    lines.push('')
+  }
+  if (r.expiry.length > 0) {
+    lines.push('## Expiry (' + r.expiry.length + ')')
+    r.expiry.forEach(x => lines.push('- Line ' + x.line + ': ' + x.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+// ==================== V0.45.0: SERVICE MESH TRAFFIC POLICY ====================
+
+interface ServiceMeshTrafficPolicyResult {
+  totalIssues: number
+  severity: Severity
+  routing: { line: number; issue: string; suggestion: string }[]
+  fault: { line: number; issue: string; suggestion: string }[]
+  timeout: { line: number; issue: string; suggestion: string }[]
+  meshPolicyScore: number
+  summary: string
+}
+
+function analyzeServiceMeshTrafficPolicy(code: string): ServiceMeshTrafficPolicyResult {
+  const lines = code.split('\n')
+  const routing: ServiceMeshTrafficPolicyResult['routing'] = []
+  const fault: ServiceMeshTrafficPolicyResult['fault'] = []
+  const timeout: ServiceMeshTrafficPolicyResult['timeout'] = []
+
+  lines.forEach((line, i) => {
+    if (line.match(/^\s*(?:\/|\/\*|\*)/)) return
+
+    if (line.match(/traffic.*split|split.*traffic|canary.*route|route.*canary|weighted.*route/i) && !line.match(/split.*percent|split.*weight|split.*criteria/i)) {
+      routing.push({ line: i + 1, issue: 'Traffic split without percentage/weight criteria', suggestion: 'Define explicit traffic split weights; ambiguous splits cause unpredictable routing' })
+    }
+
+    if (line.match(/fault.*inject|inject.*fault|chaos.*test|chaos.*inject/i) && !line.match(/fault.*percent|fault.*rate|fault.*scope|fault.*target/i)) {
+      fault.push({ line: i + 1, issue: 'Fault injection without scope/rate limit', suggestion: 'Set fault injection rate and scope; unbounded fault injection causes production outages' })
+    }
+
+    if (line.match(/mesh.*timeout|timeout.*mesh|service.*timeout|timeout.*service/i) && !line.match(/timeout.*value|timeout.*ms|timeout.*second|timeout.*duratio/i)) {
+      timeout.push({ line: i + 1, issue: 'Mesh timeout without concrete value', suggestion: 'Set explicit timeout values (ms/s); undefined timeouts default to infinite waits' })
+    }
+
+    if (line.match(/retry.*policy|policy.*retry|mesh.*retry|retry.*mesh/i) && !line.match(/retry.*timeout|retry.*budget|retry.*max|retry.*per/i)) {
+      fault.push({ line: i + 1, issue: 'Mesh retry policy without budget/timeout', suggestion: 'Define retry budget and timeout; mesh retries without bounds amplify failures' })
+    }
+  })
+
+  const totalIssues = routing.length + fault.length + timeout.length
+  const meshPolicyScore = Math.max(0, 100 - routing.length * 7 - fault.length * 7 - timeout.length * 7)
+  const severity: Severity = fault.length > 0 ? 'warning' : totalIssues > 0 ? 'info' : 'info'
+
+  return { totalIssues, severity, routing, fault, timeout, meshPolicyScore,
+    summary: routing.length + ' routing gap(s), ' + fault.length + ' fault gap(s), ' + timeout.length + ' timeout gap(s)' }
+}
+
+function formatServiceMeshTrafficPolicyReport(r: ServiceMeshTrafficPolicyResult): string {
+  const lines: string[] = []
+  lines.push('# Service Mesh Traffic Policy Analysis')
+  lines.push('')
+  lines.push('**Mesh Policy Score:** ' + r.meshPolicyScore + '/100 | **Issues:** ' + r.totalIssues + ' | **Severity:** ' + r.severity.toUpperCase())
+  lines.push('')
+  lines.push('> ' + r.summary)
+  lines.push('')
+  if (r.routing.length > 0) {
+    lines.push('## Routing (' + r.routing.length + ')')
+    r.routing.forEach(x => lines.push('- Line ' + x.line + ': ' + x.suggestion))
+    lines.push('')
+  }
+  if (r.fault.length > 0) {
+    lines.push('## Fault (' + r.fault.length + ')')
+    r.fault.forEach(x => lines.push('- Line ' + x.line + ': ' + x.suggestion))
+    lines.push('')
+  }
+  if (r.timeout.length > 0) {
+    lines.push('## Timeout (' + r.timeout.length + ')')
+    r.timeout.forEach(x => lines.push('- Line ' + x.line + ': ' + x.suggestion))
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
 // ==================== PLUGIN REGISTRATION ====================
 
 export function apply(ctx: Context) {
@@ -30628,5 +31204,93 @@ ctx.tools.register(defineTool({
   }
 }))
 
-console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design, container_security, ml_pipeline, api_deprecation, design_system, pwa_compliance, type_system, green_computing, realtime_collab, a11y_deep, i18n_deep, css_architecture, state_machine, web_components, resilience, module_federation, review_automation, observability, migration_safety, edge_computing, api_versioning, wasm_advanced, feature_toggles, email_deliverability, seo_analysis, monorepo_boundaries, ddd_patterns, mf_runtime, realtime_protocols, data_pipeline, gateway_deep, test_rigor, quality_gate, graphql_schema, event_sourcing_integrity, rate_limiting, migration_safety, auth_hardening, distributed_tracing, infrastructure_as_code, review_automation, contract_testing, sec_headers_deep, privacy_compliance, concurrency_patterns, cloud_native, error_recovery, system_design, dependency_injection, api_versioning, serialization_perf, memory_allocation, build_pipeline, error_messages, logging_discipline, config_as_code, component_interface, token_hygiene, query_antipatterns, websocket_lifecycle, graphql_perf, deprecation_tracking, code_splitting_audit, css_arch_deep, sec_dep_audit, webhook_signature, oauth_security, email_infra, health_check_depth, cors_security, feature_rollout, secret_lifecycle, rate_limit_strategy, container_security_scan, grpc_security, data_residency, deployment_progressive, obs_exemplar, data_pipeline_quality, service_mesh, plugin_architecture, mobile_app_security, data_masking, core_web_vitals, infra_cost, api_gateway_config, css_in_js_perf, crdt_state_sync, resource_quota, browser_compat_audit, floating_point, snapshot_testing, event_schema, form_validation, retry_idempotency, a11y_semantics, race_condition, cache_invalidation, data_loader_opt, event_versioning, connection_lifecycle, csp_nonce, struct_error_ctx, stream_backpressure, identifier_collision, graphql_query_depth, auth_token_rotation, mq_dead_letter, file_upload_sec, query_plan, encryption_at_rest, ws_connection_state, rate_limit_policy, payment_idempotency, cron_reliability, immutable_data, data_residency_compliance, response_envelope, compression_negotiation, dns_health, graceful_degradation, api_deprecation_strategy, db_safety, log_sampling, slo_tracking, api_key_mgmt, data_lineage, infra_drift, schema_evolution, wasm_interop, data_partition, plugin_lifecycle, time_sync, feature_store, vector_db, api_composition, audit_trail, graphql_cost, session_mgmt, csv_injection, tls_config, distributed_lock, event_dedup, allocator_pattern, webhook_retry, money_handling, pagination, resource_leak, c4_architecture, semaphore, dns_optimization, content_negotiation, retry_budget, cache_stampede, gateway_routing, search_sanitization, rate_limit_headers, data_consistency, mobile_hardening, build_config, grpc_interceptors, memory_alignment, saga_orchestration, ws_backpressure, bff_pattern, immutable_infra, csp_reporting, token_bucket, circuit_breaker, change_data_capture, api_federation, cache_warming, conn_multiplex, least_privilege, tracing_sampling, json_patch, event_snapshot, adaptive_rate, graceful_retry, encryption_transit, image_scanning, deadlock_detect, deprecation_comm, metrics_cardinality, api_key_rotation, data_retention, flag_cleanup, log_redaction, sli_slo, graceful_degrade, pagination_consistency, dep_drift, cqrs_pattern, outbox_idempotency, api_version_negotiation, connection_backpressure, graceful_startup, secret_detection, error_code_registry, cache_key_design, db_migration_safety, retry_strategy, health_check_completeness, log_structuring, event_schema_evolution, graceful_shutdown_timing, config_hot_reload, mutual_tls`)
+ctx.tools.register(defineTool({
+  name: 'dead_letter_queue',
+  description: 'Analyze dead letter queue handling: DLQ config, replay limits, monitoring thresholds, discard logging.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeDeadLetterQueueHandling(args.code)
+    return formatDeadLetterQueueHandlingReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'rate_limit_header',
+  description: 'Analyze rate limit header compliance: standard format, Retry-After, 429 guidance, policy window.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeRateLimitHeaderCompliance(args.code)
+    return formatRateLimitHeaderComplianceReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'websocket_pool',
+  description: 'Analyze WebSocket connection pool: connection limits, heartbeat/ping-pong, reconnect backoff, buffer caps.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeWebSocketConnectionPool(args.code)
+    return formatWebSocketConnectionPoolReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'container_image_opt',
+  description: 'Analyze container image optimization: pinned tags, cache cleanup, non-root user, .dockerignore.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeContainerImageOptimization(args.code)
+    return formatContainerImageOptimizationReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'dns_prefetch_config',
+  description: 'Analyze DNS prefetch configuration: user control, TTL bounds, resolution cache, hardcoded IPs.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeDnsPrefetchConfig(args.code)
+    return formatDnsPrefetchConfigReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'async_memory_leak',
+  description: 'Analyze async memory leaks: listener cleanup, timer cleanup, closure references, stream pipes.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeAsyncMemoryLeak(args.code)
+    return formatAsyncMemoryLeakReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'api_idempotency_key',
+  description: 'Analyze API idempotency key pattern: key format validation, storage TTL, expiry window, mutating endpoints.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeApiKeyIdempotency(args.code)
+    return formatApiKeyIdempotencyReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'service_mesh_policy',
+  description: 'Analyze service mesh traffic policy: split weights, fault injection scope, timeout values, retry budget.',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeServiceMeshTrafficPolicy(args.code)
+    return formatServiceMeshTrafficPolicyReport(result)
+  }
+}))
+
+console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design, container_security, ml_pipeline, api_deprecation, design_system, pwa_compliance, type_system, green_computing, realtime_collab, a11y_deep, i18n_deep, css_architecture, state_machine, web_components, resilience, module_federation, review_automation, observability, migration_safety, edge_computing, api_versioning, wasm_advanced, feature_toggles, email_deliverability, seo_analysis, monorepo_boundaries, ddd_patterns, mf_runtime, realtime_protocols, data_pipeline, gateway_deep, test_rigor, quality_gate, graphql_schema, event_sourcing_integrity, rate_limiting, migration_safety, auth_hardening, distributed_tracing, infrastructure_as_code, review_automation, contract_testing, sec_headers_deep, privacy_compliance, concurrency_patterns, cloud_native, error_recovery, system_design, dependency_injection, api_versioning, serialization_perf, memory_allocation, build_pipeline, error_messages, logging_discipline, config_as_code, component_interface, token_hygiene, query_antipatterns, websocket_lifecycle, graphql_perf, deprecation_tracking, code_splitting_audit, css_arch_deep, sec_dep_audit, webhook_signature, oauth_security, email_infra, health_check_depth, cors_security, feature_rollout, secret_lifecycle, rate_limit_strategy, container_security_scan, grpc_security, data_residency, deployment_progressive, obs_exemplar, data_pipeline_quality, service_mesh, plugin_architecture, mobile_app_security, data_masking, core_web_vitals, infra_cost, api_gateway_config, css_in_js_perf, crdt_state_sync, resource_quota, browser_compat_audit, floating_point, snapshot_testing, event_schema, form_validation, retry_idempotency, a11y_semantics, race_condition, cache_invalidation, data_loader_opt, event_versioning, connection_lifecycle, csp_nonce, struct_error_ctx, stream_backpressure, identifier_collision, graphql_query_depth, auth_token_rotation, mq_dead_letter, file_upload_sec, query_plan, encryption_at_rest, ws_connection_state, rate_limit_policy, payment_idempotency, cron_reliability, immutable_data, data_residency_compliance, response_envelope, compression_negotiation, dns_health, graceful_degradation, api_deprecation_strategy, db_safety, log_sampling, slo_tracking, api_key_mgmt, data_lineage, infra_drift, schema_evolution, wasm_interop, data_partition, plugin_lifecycle, time_sync, feature_store, vector_db, api_composition, audit_trail, graphql_cost, session_mgmt, csv_injection, tls_config, distributed_lock, event_dedup, allocator_pattern, webhook_retry, money_handling, pagination, resource_leak, c4_architecture, semaphore, dns_optimization, content_negotiation, retry_budget, cache_stampede, gateway_routing, search_sanitization, rate_limit_headers, data_consistency, mobile_hardening, build_config, grpc_interceptors, memory_alignment, saga_orchestration, ws_backpressure, bff_pattern, immutable_infra, csp_reporting, token_bucket, circuit_breaker, change_data_capture, api_federation, cache_warming, conn_multiplex, least_privilege, tracing_sampling, json_patch, event_snapshot, adaptive_rate, graceful_retry, encryption_transit, image_scanning, deadlock_detect, deprecation_comm, metrics_cardinality, api_key_rotation, data_retention, flag_cleanup, log_redaction, sli_slo, graceful_degrade, pagination_consistency, dep_drift, cqrs_pattern, outbox_idempotency, api_version_negotiation, connection_backpressure, graceful_startup, secret_detection, error_code_registry, cache_key_design, db_migration_safety, retry_strategy, health_check_completeness, log_structuring, event_schema_evolution, graceful_shutdown_timing, config_hot_reload, mutual_tls, dead_letter_queue, rate_limit_header, websocket_pool, container_image_opt, dns_prefetch_config, async_memory_leak, api_idempotency_key, service_mesh_policy`)
 }

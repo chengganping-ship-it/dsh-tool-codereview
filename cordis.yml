@@ -1,10 +1,10 @@
-# DeepSeek Harness Plugin: Code Review Assistant v0.44.0
-# Enterprise-grade code analysis toolkit with 321 comprehensive tools
+# DeepSeek Harness Plugin: Code Review Assistant v0.45.0
+# Enterprise-grade code analysis toolkit with 329 comprehensive tools
 
 - id: dsh-tool-codereview
   name: dsh-tool-codereview
-  version: 0.44.0
-  description: Enterprise Code Review & Security Scan - 321 tools including DB Migration Safety, Retry Strategy, Health Check Completeness, Log Structuring, Event Schema Evolution, Graceful Shutdown Timing, Config Hot-Reload, Mutual TLS
+  version: 0.45.0
+  description: Enterprise Code Review & Security Scan - 329 tools including Dead Letter Queue, Rate Limit Headers, WebSocket Pool, Container Image Opt, DNS Prefetch, Async Memory Leak, API Idempotency Key, Service Mesh Policy
   author: chengganping-ship-it
   tools:
     - code_review
@@ -324,3 +324,11 @@
     - graceful_shutdown_timing
     - config_hot_reload
     - mutual_tls
+    - dead_letter_queue
+    - rate_limit_header
+    - websocket_pool
+    - container_image_opt
+    - dns_prefetch_config
+    - async_memory_leak
+    - api_idempotency_key
+    - service_mesh_policy
