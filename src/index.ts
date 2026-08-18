@@ -82,7 +82,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 export const name = 'dsh-tool-codereview'
 export const inject = ['tools']
 
-const VERSION = '1.5.0'
+const VERSION = '1.6.0'
 
 // ==================== TYPES ====================
 
@@ -31341,6 +31341,294 @@ function formatToolExecutionSpoofAdvReport(r: ToolExecutionSpoofAdvResult): stri
   return l.join('\n')
 }
 
+// ==================== V1.6.0: AGENT COGNITIVE OVERLOAD DEEP ====================
+// Detects deep agent cognitive overload where excessive demands impair reasoning quality
+
+interface AgentCognitiveOverloadDeepResult {
+  tool: string
+  score: number
+  issues: string[]
+  recommendations: string[]
+  severity: Severity
+  summary: string
+}
+
+function analyzeAgentCognitiveOverloadDeep(code: string): AgentCognitiveOverloadDeepResult {
+  const issues: string[] = []
+  const recommendations: string[] = []
+  if (code.includes('parallel') && code.includes('task') && !code.includes('throttle')) issues.push('Unthrottled parallel tasks cause cognitive overload')
+  if (code.includes('context') && code.includes('exceed')) issues.push('Context size exceeding capacity impairs reasoning')
+  if (code.includes('multi') && code.includes('constraint') && !code.includes('prioritize')) issues.push('Multi-constraint without prioritization overwhelms')
+  if (code.includes('depth') && !code.includes('limit')) issues.push('Unbounded reasoning depth causes overload')
+  if (code.includes('branch') && code.includes('factor') && !code.includes('prune')) issues.push('High branching factor without pruning overwhelms')
+  if (code.includes('demand') && !code.includes('schedule')) issues.push('Concurrent demands without scheduling overload agent')
+  recommendations.push('Implement cognitive load shedding under high demand')
+  recommendations.push('Add task throttling based on current agent load')
+  recommendations.push('Use progressive disclosure to manage information density')
+  const score = Math.max(0, 100 - issues.length * 14)
+  const severity: Severity = score < 40 ? 'critical' : score < 60 ? 'error' : score < 80 ? 'warning' : 'info'
+  return { tool: 'agent_cognitive_overload_deep', score, issues, recommendations, severity, summary: 'Deep analysis of agent cognitive overload vectors' }
+}
+
+function formatAgentCognitiveOverloadDeepReport(r: AgentCognitiveOverloadDeepResult): string {
+  const l: string[] = ['# Agent Cognitive Overload Deep Analysis', `**Severity:** ${r.severity} | **Score:** ${r.score}/100`, '']
+  if (r.issues.length > 0) { l.push('## Issues (' + r.issues.length + ')'); r.issues.forEach(x => l.push('- ' + x)); l.push('') }
+  if (r.recommendations.length > 0) { l.push('## Recommendations'); r.recommendations.forEach(x => l.push('- ' + x)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V1.6.0: TOOL RESPONSE BLEED EXPERT ====================
+// Detects expert-level tool response bleed where responses leak across tool boundaries
+
+interface ToolResponseBleedExpertResult {
+  tool: string
+  score: number
+  issues: string[]
+  recommendations: string[]
+  severity: Severity
+  summary: string
+}
+
+function analyzeToolResponseBleedExpert(code: string): ToolResponseBleedExpertResult {
+  const issues: string[] = []
+  const recommendations: string[] = []
+  if (code.includes('shared') && code.includes('response') && !code.includes('isolate')) issues.push('Shared response buffers bleed across tool outputs')
+  if (code.includes('cache') && code.includes('cross') && code.includes('tool')) issues.push('Cross-tool cache causes response bleed')
+  if (code.includes('pipe') && !code.includes('separate')) issues.push('Piped responses mix outputs between tools')
+  if (code.includes('broadcast') && code.includes('result')) issues.push('Result broadcasting bleeds responses to wrong tools')
+  if (code.includes('return') && code.includes('global')) issues.push('Global return values bleed across tool boundaries')
+  if (code.includes('stdout') && !code.includes('capture')) issues.push('Uncaptured stdout bleeds between tool executions')
+  recommendations.push('Implement response isolation per tool execution context')
+  recommendations.push('Add response routing verification to prevent cross-talk')
+  recommendations.push('Use dedicated output channels for each tool')
+  const score = Math.max(0, 100 - issues.length * 14)
+  const severity: Severity = score < 40 ? 'critical' : score < 60 ? 'error' : score < 80 ? 'warning' : 'info'
+  return { tool: 'tool_response_bleed_expert', score, issues, recommendations, severity, summary: 'Expert analysis of tool response bleed vectors' }
+}
+
+function formatToolResponseBleedExpertReport(r: ToolResponseBleedExpertResult): string {
+  const l: string[] = ['# Tool Response Bleed Expert Analysis', `**Severity:** ${r.severity} | **Score:** ${r.score}/100`, '']
+  if (r.issues.length > 0) { l.push('## Issues (' + r.issues.length + ')'); r.issues.forEach(x => l.push('- ' + x)); l.push('') }
+  if (r.recommendations.length > 0) { l.push('## Recommendations'); r.recommendations.forEach(x => l.push('- ' + x)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V1.6.0: AGENT ATTENTION HIJACK DEEP ====================
+// Detects deep agent attention hijack where focus is diverted from critical tasks
+
+interface AgentAttentionHijackDeepResult {
+  tool: string
+  score: number
+  issues: string[]
+  recommendations: string[]
+  severity: Severity
+  summary: string
+}
+
+function analyzeAgentAttentionHijackDeep(code: string): AgentAttentionHijackDeepResult {
+  const issues: string[] = []
+  const recommendations: string[] = []
+  if (code.includes('distract') && !code.includes('filter')) issues.push('Distraction vectors divert agent attention')
+  if (code.includes('salience') && !code.includes('control')) issues.push('Uncontrolled salience attracts attention hijack')
+  if (code.includes('interrupt') && !code.includes('priority')) issues.push('Unprioritized interrupts hijack attention')
+  if (code.includes('novel') && code.includes('bias')) issues.push('Novelty bias attracts attention to distractions')
+  if (code.includes('urgent') && !code.includes('verify')) issues.push('Fabricated urgency hijacks attention priority')
+  if (code.includes('focus') && !code.includes('lock')) issues.push('Unlocked focus allows attention switching')
+  recommendations.push('Implement attention anchoring to critical tasks')
+  recommendations.push('Add salience filtering to prevent distraction')
+  recommendations.push('Use focus locks during security-critical operations')
+  const score = Math.max(0, 100 - issues.length * 14)
+  const severity: Severity = score < 40 ? 'critical' : score < 60 ? 'error' : score < 80 ? 'warning' : 'info'
+  return { tool: 'agent_attention_hijack_deep', score, issues, recommendations, severity, summary: 'Deep analysis of agent attention hijack mechanisms' }
+}
+
+function formatAgentAttentionHijackDeepReport(r: AgentAttentionHijackDeepResult): string {
+  const l: string[] = ['# Agent Attention Hijack Deep Analysis', `**Severity:** ${r.severity} | **Score:** ${r.score}/100`, '']
+  if (r.issues.length > 0) { l.push('## Issues (' + r.issues.length + ')'); r.issues.forEach(x => l.push('- ' + x)); l.push('') }
+  if (r.recommendations.length > 0) { l.push('## Recommendations'); r.recommendations.forEach(x => l.push('- ' + x)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V1.6.0: TOOL SCHEMA LEAKAGE EXPERT ====================
+// Detects expert-level tool schema leakage where internal schemas expose sensitive structure
+
+interface ToolSchemaLeakageExpertResult {
+  tool: string
+  score: number
+  issues: string[]
+  recommendations: string[]
+  severity: Severity
+  summary: string
+}
+
+function analyzeToolSchemaLeakageExpert(code: string): ToolSchemaLeakageExpertResult {
+  const issues: string[] = []
+  const recommendations: string[] = []
+  if (code.includes('schema') && code.includes('expose')) issues.push('Schema exposure reveals internal structure')
+  if (code.includes('meta') && code.includes('data') && !code.includes('hide')) issues.push('Unhidden metadata leaks schema details')
+  if (code.includes('reflect') && code.includes('type')) issues.push('Type reflection exposes schema internals')
+  if (code.includes('describe') && code.includes('endpoint')) issues.push('Endpoint descriptions leak schema structure')
+  if (code.includes('openapi') && !code.includes('restrict')) issues.push('Unrestricted OpenAPI exposes full schema')
+  if (code.includes('introspection') && !code.includes('disable')) issues.push('Introspection endpoints leak internal schema')
+  recommendations.push('Implement schema access controls and filtering')
+  recommendations.push('Add schema obfuscation for external consumers')
+  recommendations.push('Disable introspection in production endpoints')
+  const score = Math.max(0, 100 - issues.length * 14)
+  const severity: Severity = score < 40 ? 'critical' : score < 60 ? 'error' : score < 80 ? 'warning' : 'info'
+  return { tool: 'tool_schema_leakage_expert', score, issues, recommendations, severity, summary: 'Expert analysis of tool schema leakage vectors' }
+}
+
+function formatToolSchemaLeakageExpertReport(r: ToolSchemaLeakageExpertResult): string {
+  const l: string[] = ['# Tool Schema Leakage Expert Analysis', `**Severity:** ${r.severity} | **Score:** ${r.score}/100`, '']
+  if (r.issues.length > 0) { l.push('## Issues (' + r.issues.length + ')'); r.issues.forEach(x => l.push('- ' + x)); l.push('') }
+  if (r.recommendations.length > 0) { l.push('## Recommendations'); r.recommendations.forEach(x => l.push('- ' + x)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V1.6.0: AGENT DECISION FATIGUE DEEP ====================
+// Detects deep agent decision fatigue where repeated decisions degrade quality
+
+interface AgentDecisionFatigueDeepResult {
+  tool: string
+  score: number
+  issues: string[]
+  recommendations: string[]
+  severity: Severity
+  summary: string
+}
+
+function analyzeAgentDecisionFatigueDeep(code: string): AgentDecisionFatigueDeepResult {
+  const issues: string[] = []
+  const recommendations: string[] = []
+  if (code.includes('repeated') && code.includes('decision') && !code.includes('cache')) issues.push('Repeated decisions without caching cause fatigue')
+  if (code.includes('choose') && !code.includes('default')) issues.push('Decision without default causes fatigue over time')
+  if (code.includes('evaluate') && !code.includes('history')) issues.push('Re-evaluation without history accumulates fatigue')
+  if (code.includes('many') && code.includes('option')) issues.push('Too many options cause decision paralysis')
+  if (code.includes('trade') && code.includes('off') && !code.includes('automat')) issues.push('Manual trade-offs cause decision fatigue')
+  if (code.includes('compare') && code.includes('pairwise')) issues.push('Pairwise comparison scales poorly with options')
+  recommendations.push('Implement decision caching and reuse strategies')
+  recommendations.push('Add smart defaults to reduce decision burden')
+  recommendations.push('Use decision hierarchies to simplify complex choices')
+  const score = Math.max(0, 100 - issues.length * 14)
+  const severity: Severity = score < 40 ? 'critical' : score < 60 ? 'error' : score < 80 ? 'warning' : 'info'
+  return { tool: 'agent_decision_fatigue_deep', score, issues, recommendations, severity, summary: 'Deep analysis of agent decision fatigue mechanisms' }
+}
+
+function formatAgentDecisionFatigueDeepReport(r: AgentDecisionFatigueDeepResult): string {
+  const l: string[] = ['# Agent Decision Fatigue Deep Analysis', `**Severity:** ${r.severity} | **Score:** ${r.score}/100`, '']
+  if (r.issues.length > 0) { l.push('## Issues (' + r.issues.length + ')'); r.issues.forEach(x => l.push('- ' + x)); l.push('') }
+  if (r.recommendations.length > 0) { l.push('## Recommendations'); r.recommendations.forEach(x => l.push('- ' + x)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V1.6.0: TOOL CAPABILITY LEAKAGE EXPERT ====================
+// Detects expert-level tool capability leakage where tool internals are exposed to callers
+
+interface ToolCapabilityLeakageExpertResult {
+  tool: string
+  score: number
+  issues: string[]
+  recommendations: string[]
+  severity: Severity
+  summary: string
+}
+
+function analyzeToolCapabilityLeakageExpert(code: string): ToolCapabilityLeakageExpertResult {
+  const issues: string[] = []
+  const recommendations: string[] = []
+  if (code.includes('internal') && code.includes('expose')) issues.push('Internal capabilities exposed to external callers')
+  if (code.includes('stack') && code.includes('trace')) issues.push('Stack traces leak internal implementation details')
+  if (code.includes('verbose') && code.includes('error')) issues.push('Verbose errors reveal tool internals')
+  if (code.includes('debug') && code.includes('info') && !code.includes('strip')) issues.push('Debug info leaks in production responses')
+  if (code.includes('capability') && code.includes('advertise')) issues.push('Over-advertised capabilities leak true capacity')
+  if (code.includes('version') && code.includes('detail')) issues.push('Detailed version info leaks capability understanding')
+  recommendations.push('Sanitize all error responses before delivery')
+  recommendations.push('Implement capability advertisement controls')
+  recommendations.push('Use generic error messages for external consumers')
+  const score = Math.max(0, 100 - issues.length * 14)
+  const severity: Severity = score < 40 ? 'critical' : score < 60 ? 'error' : score < 80 ? 'warning' : 'info'
+  return { tool: 'tool_capability_leakage_expert', score, issues, recommendations, severity, summary: 'Expert analysis of tool capability leakage paths' }
+}
+
+function formatToolCapabilityLeakageExpertReport(r: ToolCapabilityLeakageExpertResult): string {
+  const l: string[] = ['# Tool Capability Leakage Expert Analysis', `**Severity:** ${r.severity} | **Score:** ${r.score}/100`, '']
+  if (r.issues.length > 0) { l.push('## Issues (' + r.issues.length + ')'); r.issues.forEach(x => l.push('- ' + x)); l.push('') }
+  if (r.recommendations.length > 0) { l.push('## Recommendations'); r.recommendations.forEach(x => l.push('- ' + x)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V1.6.0: AGENT REASONING STAGNATION DEEP ====================
+// Detects deep agent reasoning stagnation where reasoning halts without progress
+
+interface AgentReasoningStagnationDeepResult {
+  tool: string
+  score: number
+  issues: string[]
+  recommendations: string[]
+  severity: Severity
+  summary: string
+}
+
+function analyzeAgentReasoningStagnationDeep(code: string): AgentReasoningStagnationDeepResult {
+  const issues: string[] = []
+  const recommendations: string[] = []
+  if (code.includes('stuck') || code.includes('stagnate')) issues.push('Reasoning stagnation detected')
+  if (code.includes('no_progress') && !code.includes('timeout')) issues.push('No progress without timeout causes stagnation')
+  if (code.includes('loop') && !code.includes('advance')) issues.push('Reasoning loops without forward progress')
+  if (code.includes('revisit') && !code.includes('novel')) issues.push('Revisiting old ground without novel insight')
+  if (code.includes('waver') && !code.includes('decide')) issues.push('Wavering between options causes stagnation')
+  if (code.includes('hesitate') && !code.includes('commit')) issues.push('Perpetual hesitation prevents resolution')
+  recommendations.push('Implement progress detection with stagnation timeouts')
+  recommendations.push('Add forced decision triggers when progress stalls')
+  recommendations.push('Use escape mechanisms for reasoning impasses')
+  const score = Math.max(0, 100 - issues.length * 14)
+  const severity: Severity = score < 40 ? 'critical' : score < 60 ? 'error' : score < 80 ? 'warning' : 'info'
+  return { tool: 'agent_reasoning_stagnation_deep', score, issues, recommendations, severity, summary: 'Deep analysis of agent reasoning stagnation vectors' }
+}
+
+function formatAgentReasoningStagnationDeepReport(r: AgentReasoningStagnationDeepResult): string {
+  const l: string[] = ['# Agent Reasoning Stagnation Deep Analysis', `**Severity:** ${r.severity} | **Score:** ${r.score}/100`, '']
+  if (r.issues.length > 0) { l.push('## Issues (' + r.issues.length + ')'); r.issues.forEach(x => l.push('- ' + x)); l.push('') }
+  if (r.recommendations.length > 0) { l.push('## Recommendations'); r.recommendations.forEach(x => l.push('- ' + x)); l.push('') }
+  return l.join('\n')
+}
+
+// ==================== V1.6.0: TOOL OUTPUT FABRICATION DEEP ====================
+// Detects deep tool output fabrication where entirely synthetic outputs replace real ones
+
+interface ToolOutputFabricationDeepResult {
+  tool: string
+  score: number
+  issues: string[]
+  recommendations: string[]
+  severity: Severity
+  summary: string
+}
+
+function analyzeToolOutputFabricationDeep(code: string): ToolOutputFabricationDeepResult {
+  const issues: string[] = []
+  const recommendations: string[] = []
+  if (code.includes('fabricat') && !code.includes('detect')) issues.push('Fabrication patterns without detection mechanisms')
+  if (code.includes('synthetic') && !code.includes('label')) issues.push('Synthetic outputs indistinguishable from real')
+  if (code.includes('fake') && !code.includes('prevent')) issues.push('Fake output injection without prevention')
+  if (code.includes('mock') && code.includes('production')) issues.push('Mock outputs in production cause fabrication')
+  if (code.includes('stub') && !code.includes('identify')) issues.push('Stub responses used as real fabrication')
+  if (code.includes('simulate') && !code.includes('flag')) issues.push('Simulated outputs flagged attacks')
+  recommendations.push('Implement cryptographic output authentication')
+  recommendations.push('Add output provenance tracking for verification')
+  recommendations.push('Use checksums to detect fabricated content')
+  const score = Math.max(0, 100 - issues.length * 14)
+  const severity: Severity = score < 40 ? 'critical' : score < 60 ? 'error' : score < 80 ? 'warning' : 'info'
+  return { tool: 'tool_output_fabrication_deep', score, issues, recommendations, severity, summary: 'Deep analysis of tool output fabrication attacks' }
+}
+
+function formatToolOutputFabricationDeepReport(r: ToolOutputFabricationDeepResult): string {
+  const l: string[] = ['# Tool Output Fabrication Deep Analysis', `**Severity:** ${r.severity} | **Score:** ${r.score}/100`, '']
+  if (r.issues.length > 0) { l.push('## Issues (' + r.issues.length + ')'); r.issues.forEach(x => l.push('- ' + x)); l.push('') }
+  if (r.recommendations.length > 0) { l.push('## Recommendations'); r.recommendations.forEach(x => l.push('- ' + x)); l.push('') }
+  return l.join('\n')
+}
+
 // ==================== V1.5.0: AGENT OBJECTIVE COLLISION DEEP ====================
 // Detects deep agent objective collision where conflicting goals cause unpredictable behavior
 
@@ -57504,6 +57792,94 @@ ctx.tools.register(defineTool({
   }
 }))
 
-console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design, container_security, ml_pipeline, api_deprecation, design_system, pwa_compliance, type_system, green_computing, realtime_collab, a11y_deep, i18n_deep, css_architecture, state_machine, web_components, resilience, module_federation, review_automation, observability, migration_safety, edge_computing, api_versioning, wasm_advanced, feature_toggles, email_deliverability, seo_analysis, monorepo_boundaries, ddd_patterns, mf_runtime, realtime_protocols, data_pipeline, gateway_deep, test_rigor, quality_gate, graphql_schema, event_sourcing_integrity, rate_limiting, migration_safety, auth_hardening, distributed_tracing, infrastructure_as_code, review_automation, contract_testing, sec_headers_deep, privacy_compliance, concurrency_patterns, cloud_native, error_recovery, system_design, dependency_injection, api_versioning, serialization_perf, memory_allocation, build_pipeline, error_messages, logging_discipline, config_as_code, component_interface, token_hygiene, query_antipatterns, websocket_lifecycle, graphql_perf, deprecation_tracking, code_splitting_audit, css_arch_deep, sec_dep_audit, webhook_signature, oauth_security, email_infra, health_check_depth, cors_security, feature_rollout, secret_lifecycle, rate_limit_strategy, container_security_scan, grpc_security, data_residency, deployment_progressive, obs_exemplar, data_pipeline_quality, service_mesh, plugin_architecture, mobile_app_security, data_masking, core_web_vitals, infra_cost, api_gateway_config, css_in_js_perf, crdt_state_sync, resource_quota, browser_compat_audit, floating_point, snapshot_testing, event_schema, form_validation, retry_idempotency, a11y_semantics, race_condition, cache_invalidation, data_loader_opt, event_versioning, connection_lifecycle, csp_nonce, struct_error_ctx, stream_backpressure, identifier_collision, graphql_query_depth, auth_token_rotation, mq_dead_letter, file_upload_sec, query_plan, encryption_at_rest, ws_connection_state, rate_limit_policy, payment_idempotency, cron_reliability, immutable_data, data_residency_compliance, response_envelope, compression_negotiation, dns_health, graceful_degradation, api_deprecation_strategy, db_safety, log_sampling, slo_tracking, api_key_mgmt, data_lineage, infra_drift, schema_evolution, wasm_interop, data_partition, plugin_lifecycle, time_sync, feature_store, vector_db, api_composition, audit_trail, graphql_cost, session_mgmt, csv_injection, tls_config, distributed_lock, event_dedup, allocator_pattern, webhook_retry, money_handling, pagination, resource_leak, c4_architecture, semaphore, dns_optimization, content_negotiation, retry_budget, cache_stampede, gateway_routing, search_sanitization, rate_limit_headers, data_consistency, mobile_hardening, build_config, grpc_interceptors, memory_alignment, saga_orchestration, ws_backpressure, bff_pattern, immutable_infra, csp_reporting, token_bucket, circuit_breaker, change_data_capture, api_federation, cache_warming, conn_multiplex, least_privilege, tracing_sampling, json_patch, event_snapshot, adaptive_rate, graceful_retry, encryption_transit, image_scanning, deadlock_detect, deprecation_comm, metrics_cardinality, api_key_rotation, data_retention, flag_cleanup, log_redaction, sli_slo, graceful_degrade, pagination_consistency, dep_drift, cqrs_pattern, outbox_idempotency, api_version_negotiation, connection_backpressure, graceful_startup, secret_detection, error_code_registry, cache_key_design, db_migration_safety, retry_strategy, health_check_completeness, log_structuring, event_schema_evolution, graceful_shutdown_timing, config_hot_reload, mutual_tls, dead_letter_queue, rate_limit_header, websocket_pool, container_image_opt, dns_prefetch_config, async_memory_leak, api_idempotency_key, service_mesh_policy, pagination_safety, background_job_idempotency, feature_flag_lifecycle, request_deduplication, connection_leak, payload_compression, cors_preflight_cache, timestamp_monotonicity, search_query_safety, api_response_cache, thread_pool_starvation, db_slow_query, url_validation, memory_alignment_audit, cache_stampede_guard, log_injection_prevention, temp_file_security, jwt_token_validation, file_permission_audit, dns_rebinding_protection, integer_overflow_detection, command_injection_prevention, csrf_token_validation, path_traversal_prevention, insecure_deserialization, mass_assignment, weak_cryptography, ssti_injection, file_upload_validation, hardcoded_secrets, unsafe_reflection, xxe_injection_prevention, prototype_pollution, async_race_condition, clickjacking_protection, insecure_cors_config, unrestricted_file_deletion, content_type_header, weak_password_policy, crlf_injection_prevention, session_timeout_policy, zip_slip_prevention, ssrf_detection, process_env_leak, redos_complexity, null_byte_injection, mime_type_spoofing, subdomain_takeover, jwt_algorithm_confusion, oauth_flow_security, grpc_metadata_leak, websocket_security, dependency_confusion, timing_attack, unsafe_yaml_load, api_latency, cross_service_health, consumer_offset, config_value, db_connection_pool, background_job, canary_release, certificate_validation, memory_safety, input_sanitization, crypto_random, session_fixation, open_redirect, xml_bomb, ldap_injection, graphql_injection, nosql_injection, graphql_depth_limit, path_normalization, buffer_overread, http_parameter_pollution, dom_clobbering, postmessage_security, xml_signature_wrapping, insecure_random, missing_content_length, cookie_prefix_bypass, unicode_normalization, websocket_origin_bypass, missing_x_frame_options, authentication_bypass, privilege_escalation, missing_csrf_protection, insecure_jwt_storage, missing_rate_limiting, debug_mode_enabled, unsafe_eval_usage, sql_injection_orm, race_condition_toctou, memory_corruption_risk, insecure_webhook_verification, api_version_deprecation, prototype_pollution_vuln, dns_rebinding_risk, host_header_injection, csv_formula_injection, log_forging_risk, missing_csp_directive, insecure_cookie_scope, tabnabbing_risk, subresource_integrity, missing_permissions_policy, cors_safelist, iframe_sandbox_policy, report_to_header, nel_header, expect_ct_header, cors_credentials, service_worker_scope, client_hints, expose_headers, redirect_chain, url_parser_confusion, websocket_upgrade, cross_origin_resource_policy, hsts_include_subdomains, mixed_content, cors_max_age, cors_strict_origin, insecure_preload, missing_x_content_type_options, dns_prefetch_leak, insecure_form_action, missing_integrity, insecure_download, missing_cross_origin_opener_policy, agent_prompt_injection, agent_tool_misuse, agent_indirect_injection, agent_memory_isolation, agent_output_sanitization, llm_system_prompt_leak, llm_excessive_agency, llm_output_validation, mcp_server_security, mcp_tool_injection, mcp_credential_leak, supply_chain_integrity, dependency_hash_verify, rag_data_poisoning, sec_fetch_metadata, origin_agent_cluster, model_inversion_detection, tool_definition_exposure, prompt_template_injection, wasm_memory_safety, container_privilege_escalation, secrets_staleness, api_schema_violation, embedding_drift, agent_tool_chaining_audit, llm_context_window_overflow, vector_index_staleness, model_weight_integrity, prompt_caching_safety, tool_call_recursion, rag_retrieval_threshold, agent_observability_gap, agent_memory_poisoning, tool_output_injection, prompt_leakage_via_log, llm_token_extraction, agent_goal_hijacking, rag_context_pollution, tool_guardrail_bypass, model_serialization_attack, agent_delegation_chain, tool_permission_escalation, llm_output_encoding, prompt_injection_via_file, model_version_rollback, agent_rate_limit_bypass, knowledge_base_injection, tool_response_forgery, agent_loop_detection, tool_schema_tampering, llm_context_poisoning, prompt_override_via_system, model_supply_tamper, agent_confused_deputy, knowledge_base_leakage, tool_output_manipulation, agent_sandbox_escape, tool_call_injection, llm_hallucination_divergence, prompt_steganography, model_extraction_probe, agent_privilege_bypass, knowledge_conflict_attack, tool_metadata_leak, tool_recursion_exploit, llm_output_smuggling, agent_memory_leak, prompt_cache_poisoning, model_adversarial_perturb, agent_impersonation, knowledge_base_spoof, tool_input_deserialization, agent_goal_drift, tool_side_channel, llm_multi_turn_injection, prompt_instruction_override, model_guardrail_evasion, agent_resource_exhaustion, knowledge_retrieval_manipulation, tool_capability_creep, agent_context_window_saturation, tool_chaining_exploit, llm_temperature_manipulation, prompt_leakage_via_cache, model_jailbreak_attempt, agent_state_corruption, tool_output_interpolation, knowledge_base_hallucination, agent_memory_fragmentation, tool_parameter_pollution, llm_chain_of_thought_manipulation, prompt_role_confusion, model_context_overflow, agent_instruction_overwrite, tool_response_injection, knowledge_graph_poisoning, agent_goal_injection, tool_schema_confusion, llm_output_leakage, prompt_template_theft, model_extraction_agent, agent_memory_desync, tool_execution_spoof, knowledge_source_spoof, agent_intent_manipulation, tool_output_forgery_adv, llm_reasoning_bypass, prompt_context_stealing, model_weight_tampering, agent_session_hijack, tool_capability_escalation, knowledge_retrieval_bias, cross_tool_contamination, agent_objective_override, tool_argument_injection, llm_hallucination_amplification, token_limit_exhaustion, agent_privilege_abuse, multi_agent_collusion, tool_response_manipulation, unsafe_tool_composition, credential_harvesting_via_tool, tool_execution_ordering_attack, agent_decoy_invocation, sandbox_escape_via_tool, recursive_tool_spawn, tool_output_sidechannel, prompt_leakage_via_memory, tool_confusion_matrix, agent_cognitive_overload, tool_exfiltration_pipeline, prompt_template_manipulation, agent_authority_spoof, tool_boundary_blur, context_injection_via_tool, agent_rationale_fabrication, tool_permission_bypass_adv, agent_goal_redirect, tool_output_desync, multi_turn_context_poison, tool_capability_overclaim, agent_session_fixation, tool_schema_drift, agent_instruction_leak, agent_memory_corruption_adv, tool_chaining_manipulation, agent_context_eviction, tool_output_interpolation_adv, agent_instruction_bleed, tool_permission_inheritance_flaw, agent_goal_inertia_exploit, tool_response_timing_attack, agent_output_fabrication, tool_input_deserialization_adv, agent_session_desync, tool_metadata_tampering_adv, agent_authority_escalation, tool_capability_drift, agent_context_overflow_adv, tool_execution_spoof_adv, agent_identity_spoof, tool_result_suppression, agent_memory_loop, tool_schema_inference, agent_goal_fragmentation, tool_output_leakage, agent_session_replay, tool_capability_confusion, agent_context_poisoning_adv, tool_execution_delay_attack, agent_goal_manipulation_adv, tool_parameter_injection_adv, agent_memory_desync_adv, tool_response_interpolation, agent_authority_inflation, tool_permission_esploitation, agent_output_suppression, tool_permission_boundary_breach, agent_instruction_loop_adv, tool_schema_manipulation_adv, agent_privilege_creep, tool_output_manipulation_adv, agent_session_fixation_adv, tool_execution_hijack, tool_schema_injection_adv, agent_goal_subversion, tool_output_sidechannel_adv, agent_memory_overwrite, tool_permission_escalation_adv, agent_instruction_splice, tool_response_substitution, agent_context_leakage, agent_narrative_manipulation, tool_capability_shadowing, agent_execution_quarantine_bypass, tool_input_canonicalization_failure, agent_policy_circumvention, tool_session_persistence_attack, agent_reasoning_chain_poisoning, tool_multiplexing_exploit, agent_context_eviction_adv, tool_schema_forgery, agent_goal_fragmentation_adv, tool_output_encoding_attack, agent_memory_corruption_deep, tool_permission_inheritance_bypass, agent_instruction_hijack_adv, tool_response_interpolation_deep, agent_session_state_poisoning, tool_memory_exhaustion_attack, agent_tool_confusion_adv, tool_capability_confusion_adv, agent_identity_forgery, tool_exploit_chain_adv, agent_sandbox_escape_deep, tool_payload_injection_adv, agent_credential_harvesting_deep, tool_input_overflow_attack, agent_request_forgery_adv, tool_execution_quarantine_escape, agent_privilege_propagation, tool_schema_confusion_deep, agent_goal_drift_adv, tool_output_replay_attack, agent_narrative_injection_adv, tool_timing_manipulation_attack, agent_observation_manipulation, tool_dependency_confusion_deep, agent_multi_session_collusion, tool_boundary_violation_adv, agent_intent_obfuscation_deep, tool_resource_starvation_attack, agent_context_manipulation_deep, tool_response_delay_attack, agent_authority_inflation_adv, tool_capability_shadowing_deep, agent_goal_subversion_deep, tool_scheduling_manipulation, agent_state_desynchronization, tool_content_substitution_deep, agent_temporal_manipulation_deep, tool_observability_blindspot, agent_instruction_replay_adv, tool_schema_coercion_deep, agent_memory_overwrite_adv, tool_execution_sandbox_escape, agent_multi_turn_escalation, tool_response_fragmentation_deep, agent_credential_harvesting_adv, tool_permission_boundary_blur, agent_output_desync_deep, tool_capability_escalation_deep, agent_reasoning_manipulation, tool_input_canonicalization_bypass, agent_goal_redirect_deep, tool_execution_hijack_adv, agent_forensic_evasion_adv, tool_timing_channel_deep, agent_attestation_bypass_adv, tool_capability_suppression_deep, agent_cognitive_bias_exploit_adv, tool_output_exfiltration_deep, agent_state_masking_adv, tool_schema_entropy_deep, agent_instruction_replay_deep, tool_output_masking_adv, agent_goal_desync_deep, tool_permission_shadowing_adv, agent_context_remixing_deep, tool_response_replay_adv, agent_session_masking_deep, tool_capability_replay_adv, agent_credential_rotation_evasion_deep, tool_timing_attack_expert, agent_narrative_confusion_deep, tool_capability_masking_expert, agent_prompt_leakage_deep, tool_response_fragmentation_expert, agent_tool_chaining_deep, tool_schema_confusion_expert, agent_decoy_task_injection_deep, tool_confidence_calibration_attack_expert, agent_selective_attention_manipulation_deep, tool_boundary_bypass_expert, agent_reward_hacking_deep, tool_metadata_manipulation_expert, agent_chain_of_thought_poisoning_deep, tool_execution_redirection_expert, agent_contextual_integrity_breach_deep, tool_semantic_drift_attack_expert, agent_instruction_overload_deep, tool_capability_inference_expert, agent_goal_oscillation_deep, tool_output_replay_expert, agent_memory_eviction_deep, tool_schema_entropy_expert, agent_reasoning_fragmentation_deep, tool_input_canonicalization_expert, agent_multi_objective_collision_deep, tool_response_desync_expert, agent_temporal_desync_deep, tool_permission_inference_expert, agent_knowledge_conflict_deep, tool_execution_fork_expert, agent_semantic_anchor_deep, tool_boundary_condition_expert, agent_intent_collapse_deep, tool_response_interpolation_expert, agent_cognitive_loop_deep, tool_execution_stall_expert, agent_context_collapse_deep, tool_permission_bloom_expert, agent_observability_blind_spot_deep, tool_rate_limit_bypass_expert, agent_session_hijack_deep, tool_output_encoding_expert, agent_goal_inertia_deep, tool_permission_shadow_expert, agent_context_eviction_deep, tool_execution_delay_expert, agent_output_suppression_deep, tool_capability_escalation_expert, agent_identity_forge_deep, tool_execution_spoof_expert, agent_reasoning_eviction_deep, tool_schema_manipulation_expert, agent_context_poison_deep, tool_response_forge_expert, agent_memory_hallucination_deep, tool_output_desync_expert, agent_privilege_propagation_deep, tool_schema_coercion_expert, agent_context_fragmentation_deep, tool_execution_interleave_expert, agent_goal_suppression_deep, tool_capability_shadow_expert, agent_intent_hijack_deep, tool_boundary_erosion_expert, agent_context_drift_deep, tool_output_ambiguity_expert, agent_reasoning_loop_deep, tool_capability_overlap_expert, agent_session_bleed_deep, tool_schema_extortion_expert, agent_objective_collision_deep, tool_response_substitution_expert, agent_memory_decay_deep, tool_capability_masking_deep, agent_instruction_leakage_deep, tool_boundary_violation_deep, agent_goal_drift_deep, tool_output_interpolation_deep`)
+ctx.tools.register(defineTool({
+  name: 'agent_cognitive_overload_deep',
+  description: 'Detects deep agent cognitive overload where excessive demands impair reasoning quality',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeAgentCognitiveOverloadDeep(args.code)
+    return formatAgentCognitiveOverloadDeepReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'tool_response_bleed_expert',
+  description: 'Detects expert-level tool response bleed where responses leak across tool boundaries',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeToolResponseBleedExpert(args.code)
+    return formatToolResponseBleedExpertReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'agent_attention_hijack_deep',
+  description: 'Detects deep agent attention hijack where focus is diverted from critical tasks',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeAgentAttentionHijackDeep(args.code)
+    return formatAgentAttentionHijackDeepReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'tool_schema_leakage_expert',
+  description: 'Detects expert-level tool schema leakage where internal schemas expose sensitive structure',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeToolSchemaLeakageExpert(args.code)
+    return formatToolSchemaLeakageExpertReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'agent_decision_fatigue_deep',
+  description: 'Detects deep agent decision fatigue where repeated decisions degrade quality',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeAgentDecisionFatigueDeep(args.code)
+    return formatAgentDecisionFatigueDeepReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'tool_capability_leakage_expert',
+  description: 'Detects expert-level tool capability leakage where tool internals are exposed to callers',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeToolCapabilityLeakageExpert(args.code)
+    return formatToolCapabilityLeakageExpertReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'agent_reasoning_stagnation_deep',
+  description: 'Detects deep agent reasoning stagnation where reasoning halts without progress',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeAgentReasoningStagnationDeep(args.code)
+    return formatAgentReasoningStagnationDeepReport(result)
+  }
+}))
+
+ctx.tools.register(defineTool({
+  name: 'tool_output_fabrication_deep',
+  description: 'Detects deep tool output fabrication where entirely synthetic outputs replace real ones',
+  parameters: { code: { type: 'string', required: true, description: 'Source code to analyze' } },
+  output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value as string }] },
+  async execute(args: { code: string }) {
+    const result = analyzeToolOutputFabricationDeep(args.code)
+    return formatToolOutputFabricationDeepReport(result)
+  }
+}))
+
+console.log(`[${name}] v${VERSION} loaded; tools: code_review, security_scan, dependency_audit, performance_check, code_check, architecture_review, test_coverage, api_docs, code_diff, style_check, code_smell_detect, ts_strict_check, incremental_analysis, breaking_change, sarif_export, diff_preview, config_load, test_generate, complexity_metrics, batch_analyze, monorepo_analyze, multilang_analyze, cicd_generate, custom_rules, duplicate_detect, refactor_suggest, naming_check, security_patterns, performance_tips, doc_check, import_organize, error_handling, api_design, coverage_estimate, dep_versions, style_enforce, func_length, class_cohesion, comment_quality, type_safety, async_patterns, dead_code_detect, circular_dep, regex_security, jsdoc_generate, api_surface, git_hotspot, module_layer, error_trace, auto_refactor, code_similarity, primitive_obsession, sql_injection, interface_compliance, magic_string, semver_bump, code_review_comment, scope_analysis, immutable_check, null_safety, concurrency_check, doc_sync, test_quality, change_impact, performance_regression, memory_leak_detect, i18n_check, logging_quality, config_validate, bundle_size, accessibility_scan, design_pattern, error_boundary, react_hooks_check, sql_analysis, regex_optimize, dom_efficiency, security_headers, css_analysis, semver_policy, state_management, api_contract, graphql_analysis, iac_analysis, browser_compat, microservice_patterns, file_organization, commit_message, code_splitting, wasm_check, auth_security, payment_compliance, email_smtp, rate_limit, websocket_health, cron_job, event_sourcing, cache_strategy, graceful_shutdown, health_probes, serialization_safety, data_validation, multi_tenancy, feature_flags, api_gateway, ai_prompt_security, micro_frontend, database_indexing, adv_concurrency, perf_profiling, doc_quality, supply_chain, sdk_design, container_security, ml_pipeline, api_deprecation, design_system, pwa_compliance, type_system, green_computing, realtime_collab, a11y_deep, i18n_deep, css_architecture, state_machine, web_components, resilience, module_federation, review_automation, observability, migration_safety, edge_computing, api_versioning, wasm_advanced, feature_toggles, email_deliverability, seo_analysis, monorepo_boundaries, ddd_patterns, mf_runtime, realtime_protocols, data_pipeline, gateway_deep, test_rigor, quality_gate, graphql_schema, event_sourcing_integrity, rate_limiting, migration_safety, auth_hardening, distributed_tracing, infrastructure_as_code, review_automation, contract_testing, sec_headers_deep, privacy_compliance, concurrency_patterns, cloud_native, error_recovery, system_design, dependency_injection, api_versioning, serialization_perf, memory_allocation, build_pipeline, error_messages, logging_discipline, config_as_code, component_interface, token_hygiene, query_antipatterns, websocket_lifecycle, graphql_perf, deprecation_tracking, code_splitting_audit, css_arch_deep, sec_dep_audit, webhook_signature, oauth_security, email_infra, health_check_depth, cors_security, feature_rollout, secret_lifecycle, rate_limit_strategy, container_security_scan, grpc_security, data_residency, deployment_progressive, obs_exemplar, data_pipeline_quality, service_mesh, plugin_architecture, mobile_app_security, data_masking, core_web_vitals, infra_cost, api_gateway_config, css_in_js_perf, crdt_state_sync, resource_quota, browser_compat_audit, floating_point, snapshot_testing, event_schema, form_validation, retry_idempotency, a11y_semantics, race_condition, cache_invalidation, data_loader_opt, event_versioning, connection_lifecycle, csp_nonce, struct_error_ctx, stream_backpressure, identifier_collision, graphql_query_depth, auth_token_rotation, mq_dead_letter, file_upload_sec, query_plan, encryption_at_rest, ws_connection_state, rate_limit_policy, payment_idempotency, cron_reliability, immutable_data, data_residency_compliance, response_envelope, compression_negotiation, dns_health, graceful_degradation, api_deprecation_strategy, db_safety, log_sampling, slo_tracking, api_key_mgmt, data_lineage, infra_drift, schema_evolution, wasm_interop, data_partition, plugin_lifecycle, time_sync, feature_store, vector_db, api_composition, audit_trail, graphql_cost, session_mgmt, csv_injection, tls_config, distributed_lock, event_dedup, allocator_pattern, webhook_retry, money_handling, pagination, resource_leak, c4_architecture, semaphore, dns_optimization, content_negotiation, retry_budget, cache_stampede, gateway_routing, search_sanitization, rate_limit_headers, data_consistency, mobile_hardening, build_config, grpc_interceptors, memory_alignment, saga_orchestration, ws_backpressure, bff_pattern, immutable_infra, csp_reporting, token_bucket, circuit_breaker, change_data_capture, api_federation, cache_warming, conn_multiplex, least_privilege, tracing_sampling, json_patch, event_snapshot, adaptive_rate, graceful_retry, encryption_transit, image_scanning, deadlock_detect, deprecation_comm, metrics_cardinality, api_key_rotation, data_retention, flag_cleanup, log_redaction, sli_slo, graceful_degrade, pagination_consistency, dep_drift, cqrs_pattern, outbox_idempotency, api_version_negotiation, connection_backpressure, graceful_startup, secret_detection, error_code_registry, cache_key_design, db_migration_safety, retry_strategy, health_check_completeness, log_structuring, event_schema_evolution, graceful_shutdown_timing, config_hot_reload, mutual_tls, dead_letter_queue, rate_limit_header, websocket_pool, container_image_opt, dns_prefetch_config, async_memory_leak, api_idempotency_key, service_mesh_policy, pagination_safety, background_job_idempotency, feature_flag_lifecycle, request_deduplication, connection_leak, payload_compression, cors_preflight_cache, timestamp_monotonicity, search_query_safety, api_response_cache, thread_pool_starvation, db_slow_query, url_validation, memory_alignment_audit, cache_stampede_guard, log_injection_prevention, temp_file_security, jwt_token_validation, file_permission_audit, dns_rebinding_protection, integer_overflow_detection, command_injection_prevention, csrf_token_validation, path_traversal_prevention, insecure_deserialization, mass_assignment, weak_cryptography, ssti_injection, file_upload_validation, hardcoded_secrets, unsafe_reflection, xxe_injection_prevention, prototype_pollution, async_race_condition, clickjacking_protection, insecure_cors_config, unrestricted_file_deletion, content_type_header, weak_password_policy, crlf_injection_prevention, session_timeout_policy, zip_slip_prevention, ssrf_detection, process_env_leak, redos_complexity, null_byte_injection, mime_type_spoofing, subdomain_takeover, jwt_algorithm_confusion, oauth_flow_security, grpc_metadata_leak, websocket_security, dependency_confusion, timing_attack, unsafe_yaml_load, api_latency, cross_service_health, consumer_offset, config_value, db_connection_pool, background_job, canary_release, certificate_validation, memory_safety, input_sanitization, crypto_random, session_fixation, open_redirect, xml_bomb, ldap_injection, graphql_injection, nosql_injection, graphql_depth_limit, path_normalization, buffer_overread, http_parameter_pollution, dom_clobbering, postmessage_security, xml_signature_wrapping, insecure_random, missing_content_length, cookie_prefix_bypass, unicode_normalization, websocket_origin_bypass, missing_x_frame_options, authentication_bypass, privilege_escalation, missing_csrf_protection, insecure_jwt_storage, missing_rate_limiting, debug_mode_enabled, unsafe_eval_usage, sql_injection_orm, race_condition_toctou, memory_corruption_risk, insecure_webhook_verification, api_version_deprecation, prototype_pollution_vuln, dns_rebinding_risk, host_header_injection, csv_formula_injection, log_forging_risk, missing_csp_directive, insecure_cookie_scope, tabnabbing_risk, subresource_integrity, missing_permissions_policy, cors_safelist, iframe_sandbox_policy, report_to_header, nel_header, expect_ct_header, cors_credentials, service_worker_scope, client_hints, expose_headers, redirect_chain, url_parser_confusion, websocket_upgrade, cross_origin_resource_policy, hsts_include_subdomains, mixed_content, cors_max_age, cors_strict_origin, insecure_preload, missing_x_content_type_options, dns_prefetch_leak, insecure_form_action, missing_integrity, insecure_download, missing_cross_origin_opener_policy, agent_prompt_injection, agent_tool_misuse, agent_indirect_injection, agent_memory_isolation, agent_output_sanitization, llm_system_prompt_leak, llm_excessive_agency, llm_output_validation, mcp_server_security, mcp_tool_injection, mcp_credential_leak, supply_chain_integrity, dependency_hash_verify, rag_data_poisoning, sec_fetch_metadata, origin_agent_cluster, model_inversion_detection, tool_definition_exposure, prompt_template_injection, wasm_memory_safety, container_privilege_escalation, secrets_staleness, api_schema_violation, embedding_drift, agent_tool_chaining_audit, llm_context_window_overflow, vector_index_staleness, model_weight_integrity, prompt_caching_safety, tool_call_recursion, rag_retrieval_threshold, agent_observability_gap, agent_memory_poisoning, tool_output_injection, prompt_leakage_via_log, llm_token_extraction, agent_goal_hijacking, rag_context_pollution, tool_guardrail_bypass, model_serialization_attack, agent_delegation_chain, tool_permission_escalation, llm_output_encoding, prompt_injection_via_file, model_version_rollback, agent_rate_limit_bypass, knowledge_base_injection, tool_response_forgery, agent_loop_detection, tool_schema_tampering, llm_context_poisoning, prompt_override_via_system, model_supply_tamper, agent_confused_deputy, knowledge_base_leakage, tool_output_manipulation, agent_sandbox_escape, tool_call_injection, llm_hallucination_divergence, prompt_steganography, model_extraction_probe, agent_privilege_bypass, knowledge_conflict_attack, tool_metadata_leak, tool_recursion_exploit, llm_output_smuggling, agent_memory_leak, prompt_cache_poisoning, model_adversarial_perturb, agent_impersonation, knowledge_base_spoof, tool_input_deserialization, agent_goal_drift, tool_side_channel, llm_multi_turn_injection, prompt_instruction_override, model_guardrail_evasion, agent_resource_exhaustion, knowledge_retrieval_manipulation, tool_capability_creep, agent_context_window_saturation, tool_chaining_exploit, llm_temperature_manipulation, prompt_leakage_via_cache, model_jailbreak_attempt, agent_state_corruption, tool_output_interpolation, knowledge_base_hallucination, agent_memory_fragmentation, tool_parameter_pollution, llm_chain_of_thought_manipulation, prompt_role_confusion, model_context_overflow, agent_instruction_overwrite, tool_response_injection, knowledge_graph_poisoning, agent_goal_injection, tool_schema_confusion, llm_output_leakage, prompt_template_theft, model_extraction_agent, agent_memory_desync, tool_execution_spoof, knowledge_source_spoof, agent_intent_manipulation, tool_output_forgery_adv, llm_reasoning_bypass, prompt_context_stealing, model_weight_tampering, agent_session_hijack, tool_capability_escalation, knowledge_retrieval_bias, cross_tool_contamination, agent_objective_override, tool_argument_injection, llm_hallucination_amplification, token_limit_exhaustion, agent_privilege_abuse, multi_agent_collusion, tool_response_manipulation, unsafe_tool_composition, credential_harvesting_via_tool, tool_execution_ordering_attack, agent_decoy_invocation, sandbox_escape_via_tool, recursive_tool_spawn, tool_output_sidechannel, prompt_leakage_via_memory, tool_confusion_matrix, agent_cognitive_overload, tool_exfiltration_pipeline, prompt_template_manipulation, agent_authority_spoof, tool_boundary_blur, context_injection_via_tool, agent_rationale_fabrication, tool_permission_bypass_adv, agent_goal_redirect, tool_output_desync, multi_turn_context_poison, tool_capability_overclaim, agent_session_fixation, tool_schema_drift, agent_instruction_leak, agent_memory_corruption_adv, tool_chaining_manipulation, agent_context_eviction, tool_output_interpolation_adv, agent_instruction_bleed, tool_permission_inheritance_flaw, agent_goal_inertia_exploit, tool_response_timing_attack, agent_output_fabrication, tool_input_deserialization_adv, agent_session_desync, tool_metadata_tampering_adv, agent_authority_escalation, tool_capability_drift, agent_context_overflow_adv, tool_execution_spoof_adv, agent_identity_spoof, tool_result_suppression, agent_memory_loop, tool_schema_inference, agent_goal_fragmentation, tool_output_leakage, agent_session_replay, tool_capability_confusion, agent_context_poisoning_adv, tool_execution_delay_attack, agent_goal_manipulation_adv, tool_parameter_injection_adv, agent_memory_desync_adv, tool_response_interpolation, agent_authority_inflation, tool_permission_esploitation, agent_output_suppression, tool_permission_boundary_breach, agent_instruction_loop_adv, tool_schema_manipulation_adv, agent_privilege_creep, tool_output_manipulation_adv, agent_session_fixation_adv, tool_execution_hijack, tool_schema_injection_adv, agent_goal_subversion, tool_output_sidechannel_adv, agent_memory_overwrite, tool_permission_escalation_adv, agent_instruction_splice, tool_response_substitution, agent_context_leakage, agent_narrative_manipulation, tool_capability_shadowing, agent_execution_quarantine_bypass, tool_input_canonicalization_failure, agent_policy_circumvention, tool_session_persistence_attack, agent_reasoning_chain_poisoning, tool_multiplexing_exploit, agent_context_eviction_adv, tool_schema_forgery, agent_goal_fragmentation_adv, tool_output_encoding_attack, agent_memory_corruption_deep, tool_permission_inheritance_bypass, agent_instruction_hijack_adv, tool_response_interpolation_deep, agent_session_state_poisoning, tool_memory_exhaustion_attack, agent_tool_confusion_adv, tool_capability_confusion_adv, agent_identity_forgery, tool_exploit_chain_adv, agent_sandbox_escape_deep, tool_payload_injection_adv, agent_credential_harvesting_deep, tool_input_overflow_attack, agent_request_forgery_adv, tool_execution_quarantine_escape, agent_privilege_propagation, tool_schema_confusion_deep, agent_goal_drift_adv, tool_output_replay_attack, agent_narrative_injection_adv, tool_timing_manipulation_attack, agent_observation_manipulation, tool_dependency_confusion_deep, agent_multi_session_collusion, tool_boundary_violation_adv, agent_intent_obfuscation_deep, tool_resource_starvation_attack, agent_context_manipulation_deep, tool_response_delay_attack, agent_authority_inflation_adv, tool_capability_shadowing_deep, agent_goal_subversion_deep, tool_scheduling_manipulation, agent_state_desynchronization, tool_content_substitution_deep, agent_temporal_manipulation_deep, tool_observability_blindspot, agent_instruction_replay_adv, tool_schema_coercion_deep, agent_memory_overwrite_adv, tool_execution_sandbox_escape, agent_multi_turn_escalation, tool_response_fragmentation_deep, agent_credential_harvesting_adv, tool_permission_boundary_blur, agent_output_desync_deep, tool_capability_escalation_deep, agent_reasoning_manipulation, tool_input_canonicalization_bypass, agent_goal_redirect_deep, tool_execution_hijack_adv, agent_forensic_evasion_adv, tool_timing_channel_deep, agent_attestation_bypass_adv, tool_capability_suppression_deep, agent_cognitive_bias_exploit_adv, tool_output_exfiltration_deep, agent_state_masking_adv, tool_schema_entropy_deep, agent_instruction_replay_deep, tool_output_masking_adv, agent_goal_desync_deep, tool_permission_shadowing_adv, agent_context_remixing_deep, tool_response_replay_adv, agent_session_masking_deep, tool_capability_replay_adv, agent_credential_rotation_evasion_deep, tool_timing_attack_expert, agent_narrative_confusion_deep, tool_capability_masking_expert, agent_prompt_leakage_deep, tool_response_fragmentation_expert, agent_tool_chaining_deep, tool_schema_confusion_expert, agent_decoy_task_injection_deep, tool_confidence_calibration_attack_expert, agent_selective_attention_manipulation_deep, tool_boundary_bypass_expert, agent_reward_hacking_deep, tool_metadata_manipulation_expert, agent_chain_of_thought_poisoning_deep, tool_execution_redirection_expert, agent_contextual_integrity_breach_deep, tool_semantic_drift_attack_expert, agent_instruction_overload_deep, tool_capability_inference_expert, agent_goal_oscillation_deep, tool_output_replay_expert, agent_memory_eviction_deep, tool_schema_entropy_expert, agent_reasoning_fragmentation_deep, tool_input_canonicalization_expert, agent_multi_objective_collision_deep, tool_response_desync_expert, agent_temporal_desync_deep, tool_permission_inference_expert, agent_knowledge_conflict_deep, tool_execution_fork_expert, agent_semantic_anchor_deep, tool_boundary_condition_expert, agent_intent_collapse_deep, tool_response_interpolation_expert, agent_cognitive_loop_deep, tool_execution_stall_expert, agent_context_collapse_deep, tool_permission_bloom_expert, agent_observability_blind_spot_deep, tool_rate_limit_bypass_expert, agent_session_hijack_deep, tool_output_encoding_expert, agent_goal_inertia_deep, tool_permission_shadow_expert, agent_context_eviction_deep, tool_execution_delay_expert, agent_output_suppression_deep, tool_capability_escalation_expert, agent_identity_forge_deep, tool_execution_spoof_expert, agent_reasoning_eviction_deep, tool_schema_manipulation_expert, agent_context_poison_deep, tool_response_forge_expert, agent_memory_hallucination_deep, tool_output_desync_expert, agent_privilege_propagation_deep, tool_schema_coercion_expert, agent_context_fragmentation_deep, tool_execution_interleave_expert, agent_goal_suppression_deep, tool_capability_shadow_expert, agent_intent_hijack_deep, tool_boundary_erosion_expert, agent_context_drift_deep, tool_output_ambiguity_expert, agent_reasoning_loop_deep, tool_capability_overlap_expert, agent_session_bleed_deep, tool_schema_extortion_expert, agent_objective_collision_deep, tool_response_substitution_expert, agent_memory_decay_deep, tool_capability_masking_deep, agent_instruction_leakage_deep, tool_boundary_violation_deep, agent_goal_drift_deep, tool_output_interpolation_deep, agent_cognitive_overload_deep, tool_response_bleed_expert, agent_attention_hijack_deep, tool_schema_leakage_expert, agent_decision_fatigue_deep, tool_capability_leakage_expert, agent_reasoning_stagnation_deep, tool_output_fabrication_deep`)
 
 }
