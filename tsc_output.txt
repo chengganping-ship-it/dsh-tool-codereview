@@ -1,6 +1,0 @@
-src/index.ts(27598,40): error TS1109: Expression expected.
-src/index.ts(27598,54): error TS1127: Invalid character.
-src/index.ts(27598,56): error TS1109: Expression expected.
-src/index.ts(27598,72): error TS1127: Invalid character.
-src/index.ts(27598,73): error TS1135: Argument expression expected.
-src/index.ts(27598,74): error TS1109: Expression expected.
