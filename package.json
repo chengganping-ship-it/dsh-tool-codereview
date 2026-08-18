@@ -1,7 +1,7 @@
 {
   "name": "dsh-tool-codereview",
-  "version": "0.37.0",
-  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 265 tools, Money Handling, Pagination, Resource Leak, C4 Architecture, Semaphore, DNS Optimization, Content Negotiation, Retry Budget",
+  "version": "0.38.0",
+  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 273 tools, Cache Stampede, Gateway Routing, Search Sanitization, Rate Limit Headers, Data Consistency, Mobile Hardening, Build Config, gRPC Interceptors",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
