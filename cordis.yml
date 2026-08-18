@@ -1,10 +1,10 @@
-# DeepSeek Harness Plugin: Code Review Assistant v0.88.0
-# Enterprise-grade code analysis toolkit with 678 comprehensive tools
+# DeepSeek Harness Plugin: Code Review Assistant v0.89.0
+# Enterprise-grade code analysis toolkit with 686 comprehensive tools
 
 - id: dsh-tool-codereview
   name: dsh-tool-codereview
-  version: 0.88.0
-  description: Enterprise Code Review & Security Scan - 678 tools including Agent Output Suppression, Tool Permission Boundary Breach, Agent Instruction Loop Adv, Tool Schema Manipulation Adv, Agent Privilege Creep, Tool Output Manipulation Adv, Agent Session Fixation Adv, Tool Execution Hijack, Agent Session State Poisoning, Tool Memory Exhaustion Attack, Agent Tool Confusion Adv, Tool Capability Confusion Adv, Agent Identity Forgery, Tool Exploit Chain Adv, Agent Sandbox Escape Deep, Tool Payload Injection Adv
+  version: 0.89.0
+  description: Enterprise Code Review & Security Scan - 686 tools including Agent Output Suppression, Tool Permission Boundary Breach, Agent Instruction Loop Adv, Tool Schema Manipulation Adv, Agent Privilege Creep, Tool Output Manipulation Adv, Agent Session Fixation Adv, Tool Execution Hijack, Agent Credential Harvesting Deep, Tool Input Overflow Attack, Agent Request Forgery Adv, Tool Execution Quarantine Escape, Agent Privilege Propagation, Tool Schema Confusion Deep, Agent Goal Drift Adv, Tool Output Replay Attack
   author: chengganping-ship-it
   tools:
     - code_review
@@ -682,3 +682,11 @@
     - tool_exploit_chain_adv
     - agent_sandbox_escape_deep
     - tool_payload_injection_adv
+    - agent_credential_harvesting_deep
+    - tool_input_overflow_attack
+    - agent_request_forgery_adv
+    - tool_execution_quarantine_escape
+    - agent_privilege_propagation
+    - tool_schema_confusion_deep
+    - agent_goal_drift_adv
+    - tool_output_replay_attack
