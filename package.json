@@ -1,7 +1,7 @@
 {
   "name": "dsh-tool-codereview",
-  "version": "0.45.0",
-  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 329 tools, Dead Letter Queue, Rate Limit Headers, WebSocket Pool, Container Image Opt, DNS Prefetch, Async Memory Leak, API Idempotency Key, Service Mesh Policy",
+  "version": "0.46.0",
+  "description": "Enterprise Code Review & Security Scan plugin for DeepSeek Harness - 337 tools, Pagination Safety, Background Job Idempotency, Feature Flag Lifecycle, Request Deduplication, Connection Leak, Payload Compression, CORS Preflight Cache, Timestamp Monotonicity",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
